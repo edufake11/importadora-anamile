@@ -42,7 +42,7 @@
 
 <div class="drawer-backdrop" id="backdrop"></div>
 <aside class="drawer" id="drawer" aria-label="Mi selección"><div class="drawer-head"><h2>Mi selección 💗</h2><button class="close" id="closeCart" aria-label="Cerrar">×</button></div><div class="cart-content" id="selectionContent"></div>
-<div class="checkout"><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="m-share" id="clearSel" type="button" style="display:block;margin:0 auto">Vaciar mi selección</button><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
+<div class="checkout"><div class="cart-total" id="cartTotal" hidden></div><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="m-share" id="clearSel" type="button" style="display:block;margin:0 auto">Vaciar mi selección</button><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
 <button class="btn fab" id="fab">💗 Ver mi selección <span id="fabCount"></span></button>
 <button class="top" id="top" aria-label="Volver arriba">↑</button>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -63,6 +63,9 @@ function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const multi=g=>g.variants.length>1;
 const title=(g,v)=>g.name+(multi(g)&&v.label?' · '+v.label:'');
 const money=n=>'S/ '+Number(n).toFixed(2);
+const MINM=()=>MIN_MAYOR||2;
+const listPrice=v=>v.price||v.wholesale||null;
+function unitPrice(v,q){if(v.wholesale&&(q>=MINM()||!v.price))return {p:v.wholesale,mayor:true};if(v.price)return {p:v.price,mayor:false};return null}
 const swBg=h=>h==='#dff0f7'?'linear-gradient(135deg,#fff 45%,#cfe8f3 55%)':h;
 const plural={Color:'colores',Modelo:'modelos','Tamaño':'tamaños'};
 function lock(){document.body.classList.toggle('lock',$('drawer').classList.contains('open')||!$('modal').hidden)}
@@ -70,9 +73,10 @@ function totalQty(){return Object.values(selected).reduce((a,b)=>a+b,0)}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('show'),1900)}
 function bump(){const b=$('openCart');b.classList.remove('bump');void b.offsetWidth;b.classList.add('bump')}
 /* selección (por variante) */
-function renderSel(){const c=$('selectionContent');c.replaceChildren();const n=totalQty();
-for(const id in selected){const {g,v}=byV[id],q=selected[id];const it=el('div','item'),im=el('img');im.src=v.img;im.alt='';const w=el('div');w.append(el('strong',null,title(g,v)),el('small',null,v.id));
+function renderSel(){const c=$('selectionContent');c.replaceChildren();const n=totalQty();let total=0,unk=0;
+for(const id in selected){const {g,v}=byV[id],q=selected[id];const it=el('div','item'),im=el('img');im.src=v.img;im.alt='';const w=el('div');w.append(el('strong',null,title(g,v)),el('small',null,v.id));const up=unitPrice(v,q);if(up){total+=up.p*q;w.append(el('div','lp',money(up.p)+' c/u'+(up.mayor?' (por mayor)':'')+' · '+money(up.p*q)))}else{unk++;w.append(el('div','lp','Precio por consultar'))}
 const qt=el('div','qty'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(id,-1);pl.onclick=()=>changeQty(id,1);qt.append(m,el('span',null,String(q)),pl);w.append(qt);it.append(im,w);c.append(it)}
+const tt=$('cartTotal');tt.hidden=!n;if(n)tt.textContent=(total?'Total estimado: '+money(total):'Total por consultar')+(total&&unk?' + '+unk+' por consultar':'');
 if(!n)c.append(el('div','empty','Todavía no has elegido nada. Agrega los productos que te interesen.'));
 $('count').textContent='('+n+')';$('fabCount').textContent='('+n+')';$('sendWhatsapp').disabled=!n;
 $('fab').classList.toggle('show',n>0&&$('modal').hidden&&!$('drawer').classList.contains('open'));
@@ -83,7 +87,10 @@ function changeQty(id,d){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if
 function card(g,list,i,isNew,pref){const a=el('article','product');a.style.setProperty('--i',Math.min(i,12));let vi=pref?Math.max(0,g.variants.findIndex(v=>v.label===pref)):0;
 const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[vi].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));
 const d=el('div','details'),h=el('h3',null,g.name),code=el('div','code',g.variants[vi].id),pr=el('div','pr');
-const setPrice=()=>{const v=g.variants[vi];pr.className=v.price?'pr':'pr ask';pr.textContent=v.price?money(v.price):'Consultar precio'};setPrice();
+const hasSw0=multi(g)&&g.variants.every(v=>v.swatch),pl=g.variants.map(listPrice).filter(Boolean),varies=pl.length&&Math.min(...pl)!==Math.max(...pl);
+const setPrice=()=>{const v=g.variants[vi];pr.replaceChildren();const lp=listPrice(v);if(!lp){pr.className='pr ask';pr.textContent='Consultar precio';return}pr.className='pr';
+if(multi(g)&&!hasSw0&&varies){pr.textContent='Desde '+money(Math.min(...pl));return}
+pr.textContent=money(lp);if(v.price&&v.wholesale)pr.append(el('small','pr2','Mayor (desde '+MINM()+') '+money(v.wholesale)));else if(!v.price&&v.wholesale)pr.append(el('small','pr2','Precio por mayor'))};setPrice();
 d.append(h,code,pr);o.append(ph,d);o.onclick=()=>openModal(g.id,list,vi,o,im);
 const q=el('button','quick','+');q.dataset.q=g.variants[vi].id;
 q.onclick=e=>{e.stopPropagation();changeQty(g.variants[vi].id,1)};q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
@@ -103,6 +110,7 @@ function setFilter(f){filter=f;shown=STEP;document.querySelectorAll('.chip').for
 function renderActions(){const box=$('mActions');box.replaceChildren();const g=curG,v=g.variants[curI],q=selected[v.id]||0;
 if(!q){const b=el('button','btn','💗 Agregar a mi selección');b.onclick=()=>changeQty(v.id,1);box.append(b)}
 else{const s=el('div','stepper'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(v.id,-1);pl.onclick=()=>changeQty(v.id,1);s.append(m,el('span',null,q+(q===1?' unidad en tu selección':' unidades en tu selección')),pl);box.append(s)}
+if(v.price&&v.wholesale){const hint=el('p','m-hint2');hint.textContent=q>=MINM()?'✓ Con '+q+' unidades se aplica el precio por mayor: '+money(v.wholesale)+' c/u':(q===1?'Agrega 1 más y cada una sale a '+money(v.wholesale)+' (precio por mayor)':'Desde '+MINM()+' unidades: '+money(v.wholesale)+' c/u (precio por mayor)');box.prepend(hint)}
 const w=el('a','btn ghost','Preguntar por este producto');w.target='_blank';w.rel='noopener noreferrer';
 w.href='https://wa.me/'+WA+'?text='+encodeURIComponent('Hola, Importadora Anamile 🎀\nMe interesa este producto: '+title(g,v)+' ('+v.id+').\n¿Me confirman precio por mayor y menor y disponibilidad?');box.append(w);
 const sh=el('button','m-share','Compartir este producto');sh.onclick=async()=>{const u=location.href;try{if(navigator.share){await navigator.share({title:title(g,v)+' · Anamile',url:u})}else{await navigator.clipboard.writeText(u);toast('Enlace copiado')}}catch(e){}};box.append(sh);if(g.page){const pg=el('a','m-share','Ver página del producto');pg.href=g.page+'#'+v.id;box.append(pg)}}
@@ -111,7 +119,8 @@ $('mTitle').textContent=title(g,v);$('mCode').textContent='Código '+v.id;
 const dl=$('mChars');dl.replaceChildren();const rows=[['Código',v.id],['Categoría',g.cat]];if(multi(g)&&v.label)rows.push([g.vtype||'Modelo',v.label]);if(v.dim)rows.push(['Medidas',v.dim]);if(v.mat)rows.push(['Material',v.mat]);
 rows.forEach(([k,x])=>dl.append(el('dt',null,k),el('dd',null,x)));
 const pr=$('mPrice');pr.replaceChildren();
-if(v.price){const b=el('div','big',money(v.price));b.append(el('small',null,'  precio por menor'));pr.append(b);if(v.wholesale)pr.append(el('div','mayor','Por mayor: '+money(v.wholesale)+(v.minWholesale?' desde '+v.minWholesale+' unidades':'')))}
+if(v.price){const b=el('div','big',money(v.price));b.append(el('small',null,v.wholesale?'  precio por menor (1 unidad)':'  precio por unidad'));pr.append(b);if(v.wholesale)pr.append(el('div','mayor','Por mayor: '+money(v.wholesale)+' c/u desde '+(v.minWholesale||MINM())+' unidades'))}
+else if(v.wholesale){const b=el('div','big',money(v.wholesale));b.append(el('small',null,'  precio por mayor'));pr.append(b);pr.append(el('p',null,'Precio por mayor directo.'))}
 else{pr.append(el('div','ask','Consulta el precio por WhatsApp'));pr.append(el('p',null,'Tenemos precio por mayor y por menor.'))}
 document.querySelectorAll('#mVars .vbtn').forEach((b,k)=>b.setAttribute('aria-pressed',k===curI));
 const vl=$('mVarLabel');vl.replaceChildren(document.createTextNode((g.vtype||'Modelo')+': '),el('b',null,v.label));
@@ -125,16 +134,17 @@ const rel=$('mRel');rel.replaceChildren();groups.filter(x=>x.cat===g.cat&&x.id!=
 $('mRelBox').hidden=!rel.children.length;$('mImg').classList.remove('zoom');$('mPanel').scrollTop=0;document.querySelector('.m-info').scrollTop=0;
 renderVariantInfo()}
 function swapImg(src,alt){const img=$('mImg');img.classList.add('swap');setTimeout(()=>{img.src=src;img.alt=alt;img.classList.remove('swap')},170)}
+let pushedHist=false;
 function setHash(replace){const v=curG.variants[curI];history[replace?'replaceState':'pushState']({p:v.id},'','#p='+encodeURIComponent(v.id))}
 function pickVariant(k){if(k===curI)return;curI=k;const v=curG.variants[k];$('mImg').classList.remove('zoom');swapImg(v.img,title(curG,v));renderVariantInfo();setHash(true)}
 function go(gid,i){fillModal(gid,i);const v=curG.variants[curI];swapImg(v.img,title(curG,v));setHash(true)}
 function step(d){if(ctx.length<2)return;go(ctx[(ctx.indexOf(curG.id)+d+ctx.length)%ctx.length],0)}
 function openModal(gid,list,i,from,fromImg,fromHash){ctx=list&&list.includes(gid)?list:[gid];opener=from||null;const m=$('modal');m.hidden=false;const img=$('mImg');
-fillModal(gid,i);const v=curG.variants[curI];img.src=v.img;img.alt=title(curG,v);setHash(!!fromHash);
+fillModal(gid,i);const v=curG.variants[curI];img.src=v.img;img.alt=title(curG,v);setHash(!!fromHash);pushedHist=!fromHash;
 lock();requestAnimationFrame(()=>{m.classList.add('open');$('mClose').focus({preventScroll:true});
 if(fromImg&&!mobile()&&img.animate){const a=fromImg.getBoundingClientRect(),b=img.getBoundingClientRect();if(a.width&&b.width){img.animate([{transform:`translate(${a.left-b.left}px,${a.top-b.top}px) scale(${a.width/b.width},${a.height/b.height})`,borderRadius:'22px'},{transform:'none',borderRadius:'0'}],{duration:480,easing:'cubic-bezier(.2,.8,.2,1)'})}}});renderSel()}
-function hideModal(){const m=$('modal');if(m.hidden)return;m.classList.remove('open');setTimeout(()=>{m.hidden=true;curG=null;lock();renderSel()},mobile()?380:300);if(opener&&document.contains(opener))opener.focus({preventScroll:true})}
-function closeModal(){if(history.state&&history.state.p)history.back();else hideModal()}
+function hideModal(){const m=$('modal');if(m.hidden)return;pushedHist=false;m.classList.remove('open');setTimeout(()=>{m.hidden=true;curG=null;lock();renderSel()},mobile()?380:300);if(opener&&document.contains(opener))opener.focus({preventScroll:true})}
+function closeModal(){if(pushedHist){pushedHist=false;history.back()}else{history.replaceState(null,'',location.pathname+location.search);hideModal()}}
 window.addEventListener('popstate',e=>{const id=e.state&&e.state.p;if(id&&byV[id]){const {g,i}=byV[id];if($('modal').hidden)openModal(g.id,null,i,null,null,true);else{curG&&curG.id===g.id?pickVariant(i):go(g.id,i)}}else hideModal()});
 $('mClose').onclick=closeModal;$('mBack').onclick=closeModal;$('mPrev').onclick=()=>step(-1);$('mNext').onclick=()=>step(1);
 $('mImg').onclick=e=>{const i=e.currentTarget,r=i.getBoundingClientRect();i.style.transformOrigin=((e.clientX-r.left)/r.width*100)+'% '+((e.clientY-r.top)/r.height*100)+'%';i.classList.toggle('zoom')};
@@ -147,7 +157,7 @@ else if(open&&e.key==='ArrowRight')step(1);else if(open&&e.key==='ArrowLeft')ste
 else if(open&&e.key==='Tab'){const f=[...$('mPanel').querySelectorAll('button:not([hidden]),a[href]')].filter(x=>x.offsetParent!==null);if(!f.length)return;const a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
 function toggleCart(o){$('drawer').classList.toggle('open',o);$('backdrop').classList.toggle('open',o);lock();renderSel()}
 $('openCart').onclick=()=>toggleCart(true);$('fab').onclick=()=>toggleCart(true);$('closeCart').onclick=()=>toggleCart(false);$('backdrop').onclick=()=>toggleCart(false);
-$('sendWhatsapp').onclick=()=>{const L=['Hola, Importadora Anamile 🎀','Quisiera consultar por lo siguiente:',''];for(const id in selected){const {g,v}=byV[id];L.push('• '+title(g,v)+' ('+v.id+') — Cantidad: '+selected[id]+(v.price?' — '+money(v.price):''))}L.push('','¿Me pueden confirmar precios por mayor/menor y disponibilidad?','Gracias.');window.open('https://wa.me/'+WA+'?text='+encodeURIComponent(L.join('\n')),'_blank','noopener,noreferrer')};
+$('sendWhatsapp').onclick=()=>{const L=['Hola, Importadora Anamile 🎀','Quisiera consultar por lo siguiente:',''];let total=0;for(const id in selected){const {g,v}=byV[id],q=selected[id],up=unitPrice(v,q);if(up)total+=up.p*q;L.push('• '+title(g,v)+' ('+v.id+') — Cantidad: '+q+(up?' — '+money(up.p)+' c/u'+(up.mayor?' (por mayor)':'')+' = '+money(up.p*q):''))}if(total)L.push('','Total estimado: '+money(total));L.push('','¿Me confirman disponibilidad?','Gracias.');window.open('https://wa.me/'+WA+'?text='+encodeURIComponent(L.join('\n')),'_blank','noopener,noreferrer')};
 /* arranque */
 const chips=$('chips');['Todos',...CATS].forEach(f=>{const b=el('button','chip',f);b.dataset.f=f;b.setAttribute('aria-pressed',f==='Todos');b.onclick=()=>setFilter(f);chips.append(b)});
 CATS.forEach(c=>{const first=groups.find(g=>g.cat===c),n=groups.filter(g=>g.cat===c).length;const b=el('button','cat'),ph=el('div','ph'),im=el('img');im.src=first.variants[0].img;im.alt='';im.loading='lazy';fade(im);ph.append(im);const s=el('span',null,c);s.append(el('em',null,String(n)));b.append(ph,s);b.onclick=()=>{setFilter(c);$('catalogo').scrollIntoView({behavior:'smooth'})};$('catgrid').append(b)});
