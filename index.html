@@ -20,7 +20,7 @@
 <section class="container" id="novedades"><div class="section-head"><h2>Recién llegados ♡</h2><p>Toca un producto para ver su foto grande, características y precio.</p></div><div class="grid six" id="newProducts"></div></section>
 <section class="categories" id="categorias"><div class="container"><div class="section-head"><h2>Nuestras categorías</h2><p>Toca una categoría para ver sus productos.</p></div><div class="catgrid" id="catgrid"></div></div></section>
 <section class="container" id="catalogo"><div class="section-head"><h2>Catálogo Importadora Anamile</h2><p>Agrega a tu selección lo que te interese y te enviamos todo por WhatsApp en un solo mensaje.</p></div>
-<div class="bar"><div class="bar-in"><input class="search" id="q" type="search" placeholder="Buscar por nombre, código o material" aria-label="Buscar productos"><div class="chips" id="chips"></div></div></div>
+<div class="bar"><div class="bar-in"><input class="search" id="q" type="search" placeholder="Buscar por nombre, código o material" aria-label="Buscar productos"><div class="chips" id="chips"></div><div class="bar-row"><div class="colors" id="colors" role="group" aria-label="Filtrar por color"></div><select class="sort" id="sort" aria-label="Ordenar productos"><option value="">Ordenar: destacados</option><option value="az">Nombre A–Z</option><option value="cod">Código</option></select></div></div></div>
 <div class="grid" id="catalogProducts"></div><div class="nores" id="nores" hidden>No encontramos productos con esa búsqueda. Prueba con otra palabra o escríbenos por WhatsApp.</div>
 <div class="more"><button class="btn ghost" id="moreBtn">Ver más productos</button><p class="count-note" id="note"></p></div></section>
 <section class="steps"><div class="container"><div class="section-head"><h2>Comprar es fácil</h2></div><div class="steps-g"><div class="step"><h3>Elige</h3><p>Recorre el catálogo y agrega a tu selección todo lo que te guste.</p></div><div class="step"><h3>Consulta</h3><p>Se abre WhatsApp con tu lista lista. Te confirmamos precios por mayor y menor y disponibilidad.</p></div><div class="step"><h3>Coordina</h3><p>Acordamos tu compra en nuestra tienda de Galería Plaza Central.</p></div></div></div></section>
@@ -42,7 +42,7 @@
 
 <div class="drawer-backdrop" id="backdrop"></div>
 <aside class="drawer" id="drawer" aria-label="Mi selección"><div class="drawer-head"><h2>Mi selección 💗</h2><button class="close" id="closeCart" aria-label="Cerrar">×</button></div><div class="cart-content" id="selectionContent"></div>
-<div class="checkout"><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
+<div class="checkout"><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="m-share" id="clearSel" type="button" style="display:block;margin:0 auto">Vaciar mi selección</button><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
 <button class="btn fab" id="fab">💗 Ver mi selección <span id="fabCount"></span></button>
 <button class="top" id="top" aria-label="Volver arriba">↑</button>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -52,8 +52,11 @@ const CATS=['Exhibidores','Joyeros','Cofres y cajitas','Organizadores','Espejos'
 const WA='51906990985',STEP=24;
 const groups=PRODUCTS,byG=Object.fromEntries(groups.map(g=>[g.id,g])),byV={};
 groups.forEach(g=>g.variants.forEach((v,i)=>{byV[v.id]={g,v,i}}));
-const selected={};let filter='Todos',query='',shown=STEP,ctx=[],curG=null,curI=0,opener=null;
+const selected={};let sortBy='',colorF='';let filter='Todos',query='',shown=STEP,ctx=[],curG=null,curI=0,opener=null;
 const $=id=>document.getElementById(id);
+const KEY='anamile_sel';
+function saveSel(){try{localStorage.setItem(KEY,JSON.stringify(selected))}catch(e){}}
+try{const o=JSON.parse(localStorage.getItem(KEY)||'{}');for(const id in o)if(byV[id]&&o[id]>0)selected[id]=Math.min(+o[id]||0,999)}catch(e){}
 const mobile=()=>matchMedia('(max-width:800px)').matches;
 function fade(i){const d=()=>i.classList.add('in');if(i.complete&&i.naturalWidth)d();else{i.onload=d;i.onerror=d}return i}
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
@@ -75,24 +78,25 @@ $('count').textContent='('+n+')';$('fabCount').textContent='('+n+')';$('sendWhat
 $('fab').classList.toggle('show',n>0&&$('modal').hidden&&!$('drawer').classList.contains('open'));
 document.querySelectorAll('[data-q]').forEach(b=>b.classList.toggle('on',!!selected[b.dataset.q]));
 if(curG)renderActions()}
-function changeQty(id,d){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if(!selected[id])delete selected[id];if(d>0){bump();const {g,v}=byV[id];toast('Agregado: '+title(g,v)+' 💗')}renderSel()}
+function changeQty(id,d){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if(!selected[id])delete selected[id];saveSel();if(d>0){bump();const {g,v}=byV[id];toast('Agregado: '+title(g,v)+' 💗')}renderSel()}
 /* tarjetas */
-function card(g,list,i,isNew){const a=el('article','product');a.style.setProperty('--i',Math.min(i,12));let vi=0;
-const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[0].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));
-const d=el('div','details'),h=el('h3',null,g.name),code=el('div','code',g.variants[0].id),pr=el('div','pr');
+function card(g,list,i,isNew,pref){const a=el('article','product');a.style.setProperty('--i',Math.min(i,12));let vi=pref?Math.max(0,g.variants.findIndex(v=>v.label===pref)):0;
+const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[vi].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));
+const d=el('div','details'),h=el('h3',null,g.name),code=el('div','code',g.variants[vi].id),pr=el('div','pr');
 const setPrice=()=>{const v=g.variants[vi];pr.className=v.price?'pr':'pr ask';pr.textContent=v.price?money(v.price):'Consultar precio'};setPrice();
 d.append(h,code,pr);o.append(ph,d);o.onclick=()=>openModal(g.id,list,vi,o,im);
-const q=el('button','quick','+');q.dataset.q=g.variants[0].id;
+const q=el('button','quick','+');q.dataset.q=g.variants[vi].id;
 q.onclick=e=>{e.stopPropagation();changeQty(g.variants[vi].id,1)};q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
 a.append(o,q);
 if(multi(g)){const dots=el('div','dots');dots.setAttribute('role','group');dots.setAttribute('aria-label','Elegir '+(g.vtype||'modelo').toLowerCase());
 const hasSw=g.variants.every(v=>v.swatch);
-if(hasSw){g.variants.forEach((v,k)=>{const b=el('button');b.style.background=swBg(v.swatch);b.title=v.label;b.setAttribute('aria-label',v.label);b.setAttribute('aria-pressed',k===0);
+if(hasSw){g.variants.forEach((v,k)=>{const b=el('button');b.style.background=swBg(v.swatch);b.title=v.label;b.setAttribute('aria-label',v.label);b.setAttribute('aria-pressed',k===vi);
 b.onclick=e=>{e.stopPropagation();vi=k;dots.querySelectorAll('button').forEach((x,j)=>x.setAttribute('aria-pressed',j===k));im.classList.remove('in');im.src=v.img;fade(im);code.textContent=v.id;q.dataset.q=v.id;setPrice();renderSel()};dots.append(b)});}
 dots.append(el('small',null,g.variants.length+' '+(plural[g.vtype]||'opciones')));a.append(dots)}
 return a}
-function filtered(){const t=query.trim().toLowerCase();return groups.filter(g=>(filter==='Todos'||g.cat===filter)&&(!t||(g.id+' '+g.name+' '+g.cat+' '+g.variants.map(v=>v.id+' '+v.label+' '+v.mat+' '+v.dim).join(' ')).toLowerCase().includes(t)))}
-function renderCatalog(){const gr=$('catalogProducts');gr.replaceChildren();const l=filtered(),ids=l.map(g=>g.id);l.slice(0,shown).forEach((g,i)=>gr.append(card(g,ids,i%STEP)));
+function filtered(){const t=query.trim().toLowerCase();let r=groups.filter(g=>(filter==='Todos'||g.cat===filter)&&(!colorF||g.variants.some(v=>v.label===colorF&&v.swatch))&&(!t||(g.id+' '+g.name+' '+g.cat+' '+g.variants.map(v=>v.id+' '+v.label+' '+v.mat+' '+v.dim).join(' ')).toLowerCase().includes(t)));
+if(sortBy==='az')r=[...r].sort((x,y)=>x.name.localeCompare(y.name,'es')||x.id.localeCompare(y.id));else if(sortBy==='cod')r=[...r].sort((x,y)=>x.id.localeCompare(y.id,'es',{numeric:true}));return r}
+function renderCatalog(){const gr=$('catalogProducts');gr.replaceChildren();const l=filtered(),ids=l.map(g=>g.id);l.slice(0,shown).forEach((g,i)=>gr.append(card(g,ids,i%STEP,false,colorF)));
 $('nores').hidden=l.length>0;$('moreBtn').hidden=l.length<=shown;$('note').textContent=l.length?'Mostrando '+Math.min(shown,l.length)+' de '+l.length+' productos':'';renderSel()}
 function setFilter(f){filter=f;shown=STEP;document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',c.dataset.f===f));renderCatalog()}
 /* detalle */
@@ -147,6 +151,11 @@ $('sendWhatsapp').onclick=()=>{const L=['Hola, Importadora Anamile 🎀','Quisie
 /* arranque */
 const chips=$('chips');['Todos',...CATS].forEach(f=>{const b=el('button','chip',f);b.dataset.f=f;b.setAttribute('aria-pressed',f==='Todos');b.onclick=()=>setFilter(f);chips.append(b)});
 CATS.forEach(c=>{const first=groups.find(g=>g.cat===c),n=groups.filter(g=>g.cat===c).length;const b=el('button','cat'),ph=el('div','ph'),im=el('img');im.src=first.variants[0].img;im.alt='';im.loading='lazy';fade(im);ph.append(im);const s=el('span',null,c);s.append(el('em',null,String(n)));b.append(ph,s);b.onclick=()=>{setFilter(c);$('catalogo').scrollIntoView({behavior:'smooth'})};$('catgrid').append(b)});
+const cnt={},hx={};groups.forEach(g=>{if(g.vtype==='Color')g.variants.forEach(v=>{if(v.swatch){cnt[v.label]=(cnt[v.label]||0)+1;hx[v.label]=v.swatch}})});
+const cbox=$('colors');const mk=(lab,bg)=>{const b=el('button','cdot');b.dataset.c=lab;b.title=lab||'Todos los colores';b.setAttribute('aria-label',lab?'Color '+lab:'Todos los colores');b.setAttribute('aria-pressed',lab===colorF);if(bg)b.style.background=swBg(bg);else{b.classList.add('all');b.textContent='Todos'}b.onclick=()=>{colorF=lab;shown=STEP;cbox.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x.dataset.c===colorF));renderCatalog()};cbox.append(b)};
+mk('',null);Object.keys(cnt).sort((x,y)=>cnt[y]-cnt[x]).forEach(l=>mk(l,hx[l]));
+$('sort').onchange=e=>{sortBy=e.target.value;shown=STEP;renderCatalog()};
+$('clearSel').onclick=()=>{for(const k in selected)delete selected[k];saveSel();renderSel()};
 const news=groups.filter(g=>g.new),nids=news.map(g=>g.id);news.forEach((g,i)=>$('newProducts').append(card(g,nids,i,true)));
 $('q').oninput=e=>{query=e.target.value;shown=STEP;renderCatalog()};$('moreBtn').onclick=()=>{shown+=STEP;renderCatalog()};
 const tr=$('track');const words=['Exhibidores de bisutería','Cajitas de regalo','Joyeros','Acrílicos','Organizadores para el hogar','Venta por mayor y menor'];for(let k=0;k<2;k++)words.concat(words).forEach(w=>tr.append(el('span',null,w)));
@@ -154,5 +163,6 @@ $('burger').onclick=()=>{const s=$('links').classList.toggle('show');$('burger')
 $('links').onclick=()=>{$('links').classList.remove('show');$('burger').textContent='☰'};
 addEventListener('scroll',()=>$('top').classList.toggle('show',scrollY>900),{passive:true});$('top').onclick=()=>scrollTo({top:0,behavior:'smooth'});
 $('year').textContent=new Date().getFullYear();renderCatalog();
+if(location.hash==='#seleccion')toggleCart(true);
 const hm=location.hash.match(/^#p=(.+)$/);if(hm){const id=decodeURIComponent(hm[1]);if(byV[id]){const {g,i}=byV[id];openModal(g.id,filtered().map(x=>x.id),i,null,null,true)}}
 </script></body></html>
