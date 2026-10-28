@@ -5,22 +5,25 @@
 <meta property="og:title" content="Importadora Anamile | Venta por mayor y menor"><meta property="og:description" content="Exhibidores, joyeros, cajitas de regalo, acrílicos y organizadores. Consulta por WhatsApp."><meta property="og:image" content="portada-productos.jpg"><link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="icon" href="favicon.ico" sizes="48x48"><link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32"><link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="manifest" href="site.webmanifest">
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"Store","name":"Importadora Anamile","image":"logo-anamile.png","telephone":["+51906990985","+51937665192","+51995632101","+51903220197"],"address":{"@type":"PostalAddress","streetAddress":"Jirón Andahuaylas 1138, Galería Plaza Central","addressLocality":"Lima","addressCountry":"PE"},"openingHours":"Mo-Sa 09:30-20:00"}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Pacifico&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="estilos.css"></head><body>
-<div class="announcement">🎀 Venta por mayor y menor · Galería Plaza Central, Lima</div>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Playfair+Display:wght@600;700&family=Pacifico&display=swap" rel="stylesheet">
+<link rel="preload" as="image" href="portada-productos.jpg"><link rel="stylesheet" href="estilos.css"></head><body>
+<div class="announcement">🎀 <span class="ann-a">Desde 2 unidades, precio por mayor</span> <span class="ann-sep">·</span> <span id="openNow"></span></div>
 <header class="header"><nav class="nav"><a class="logo" href="#inicio" aria-label="Importadora Anamile, inicio"><img src="logo-sm.png" width="52" height="52" alt="Anamile Importadora"></a>
 <div class="links" id="links"><a href="#novedades">Novedades</a><a href="#categorias">Categorías</a><a href="#catalogo">Catálogo</a><a href="#visitanos">Contacto</a></div>
 <div class="nav-r"><button class="cart-btn" id="openCart" aria-label="Abrir mi selección">💗 <span class="lbl">Mi selección </span><span id="count">(0)</span></button><button class="burger" id="burger" aria-label="Menú" aria-expanded="false">☰</button></div></nav></header>
 <main>
 <section class="hero" id="inicio"><div class="hero-copy intro"><span class="badge">Venta por mayor y menor</span><img class="hero-logo" src="logo-anamile.png" width="350" height="350" alt="Anamile Importadora">
 <h1>Exhibidores, joyeros, cajitas de regalo y más.</h1><p>Exhibidores de bisutería, cajitas de regalo, joyeros, acrílicos y organizadores para el hogar. Elige tus favoritos y consúltanos por WhatsApp.</p>
-<div class="hero-actions"><a class="btn" href="#catalogo">Ver catálogo</a><a class="btn ghost" href="#visitanos">Cómo contactarnos</a></div></div>
+<div class="hero-actions"><a class="btn" href="#catalogo">Ver catálogo</a><a class="btn ghost" href="#visitanos">Cómo contactarnos</a></div><ul class="hero-trust"><li>Venta por mayor y menor</li><li>Precio por mayor desde 2 unidades</li><li>Atención por WhatsApp</li></ul></div>
 <div class="hero-photo" role="img" aria-label="Joyeros, exhibidores, organizadores y accesorios en tonos rosados y dorados"><span class="fl" style="left:12%;top:14%;font-size:30px">✦</span><span class="fl" style="right:12%;top:22%;font-size:38px;animation-delay:-2s">♥</span><span class="fl" style="left:22%;bottom:18%;font-size:24px;animation-delay:-4s">✦</span></div></section>
+<div class="stats" id="stats" aria-label="Datos de la tienda"></div>
 <div class="marquee" aria-hidden="true"><div class="track" id="track"></div></div>
 <section class="container" id="novedades"><div class="section-head"><h2>Recién llegados ♡</h2><p>Toca un producto para ver su foto grande, características y precio.</p></div><div class="grid six" id="newProducts"></div></section>
 <section class="categories" id="categorias"><div class="container"><div class="section-head"><h2>Nuestras categorías</h2><p>Toca una categoría para ver sus productos.</p></div><div class="catgrid" id="catgrid"></div></div></section>
+<section class="mayor"><div class="container"><div class="section-head"><h2>Mientras más llevas, mejor precio</h2><p>Desde 2 unidades en total —del mismo producto o de productos distintos— todo tu pedido sale a precio por mayor.</p></div>
+<div class="mayor-g"><div class="mcard"><small>1 unidad</small><b>Precio por menor</b><span id="exA">—</span><p id="exAp"></p></div><div class="mplus" aria-hidden="true">→</div><div class="mcard hot"><small>2 o más unidades</small><b>Precio por mayor</b><span id="exB">—</span><p>cada una, aunque sean de productos distintos</p></div></div></div></section>
 <section class="container" id="catalogo"><div class="section-head"><h2>Catálogo Importadora Anamile</h2><p>Agrega a tu selección lo que te interese y te enviamos todo por WhatsApp en un solo mensaje.</p></div>
-<div class="bar"><div class="bar-in"><input class="search" id="q" type="search" placeholder="Buscar por nombre, código o material" aria-label="Buscar productos"><div class="chips" id="chips"></div><div class="bar-row"><div class="colors" id="colors" role="group" aria-label="Filtrar por color"></div><select class="sort" id="sort" aria-label="Ordenar productos"><option value="">Ordenar: destacados</option><option value="az">Nombre A–Z</option><option value="cod">Código</option></select></div></div></div>
+<div class="bar"><div class="bar-in"><div class="sbox"><input class="search" id="q" type="search" placeholder="Buscar por nombre, código o material" aria-label="Buscar productos" autocomplete="off" aria-controls="sugg"><ul class="sugg" id="sugg" role="listbox" hidden></ul></div><div class="chips" id="chips"></div><div class="bar-row"><div class="colors" id="colors" role="group" aria-label="Filtrar por color"></div><select class="sort" id="sort" aria-label="Ordenar productos"><option value="">Ordenar: destacados</option><option value="az">Nombre A–Z</option><option value="cod">Código</option></select></div></div></div>
 <div class="grid" id="catalogProducts"></div><div class="nores" id="nores" hidden>No encontramos productos con esa búsqueda. Prueba con otra palabra o escríbenos por WhatsApp.</div>
 <div class="more"><button class="btn ghost" id="moreBtn">Ver más productos</button><p class="count-note" id="note"></p></div></section>
 <section class="steps"><div class="container"><div class="section-head"><h2>Comprar es fácil</h2></div><div class="steps-g"><div class="step"><h3>Elige</h3><p>Recorre el catálogo y agrega a tu selección todo lo que te guste.</p></div><div class="step"><h3>Consulta</h3><p>Se abre WhatsApp con tu lista lista. Te confirmamos precios por mayor y menor y disponibilidad.</p></div><div class="step"><h3>Coordina</h3><p>Acordamos tu compra en nuestra tienda de Galería Plaza Central.</p></div></div></div></section>
@@ -31,8 +34,14 @@
 <div class="line"><div><b>Exhibidores</b><span>906 990 985 / 937 665 192</span></div><a class="wa" target="_blank" rel="noopener noreferrer" href="https://wa.me/51906990985">WhatsApp</a></div>
 <div class="line"><div><b>Joyeros / Cajitas</b><span>995 632 101</span></div><a class="wa" target="_blank" rel="noopener noreferrer" href="https://wa.me/51995632101">WhatsApp</a></div>
 <div class="line"><div><b>Acrílicos / Cocina</b><span>903 220 197</span></div><a class="wa" target="_blank" rel="noopener noreferrer" href="https://wa.me/51903220197">WhatsApp</a></div></div>
+<div class="map"><iframe title="Mapa de Importadora Anamile, Galería Plaza Central" loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=Jir%C3%B3n+Andahuaylas+1138,+Lima,+Per%C3%BA&output=embed"></iframe></div>
 </section></main>
-<footer class="footer"><div class="logo"><img src="logo-sm.png" alt="Anamile Importadora"></div><p>Venta por mayor y menor</p><p>Exhibidores de bisutería · Cajitas de regalo · Joyeros · Acrílicos · Organizadores</p><p>Jirón Andahuaylas 1138 · Galería Plaza Central · Tiendas 261 · 254 · 210</p><small>© <span id="year"></span> Importadora Anamile</small></footer>
+<footer class="footer"><div class="foot-g">
+<div><img src="logo-sm.png" width="84" height="84" alt="Anamile Importadora"><p>Importadora de exhibidores de bisutería, cajitas de regalo, joyeros, acrílicos y organizadores. Venta por mayor y menor.</p></div>
+<div><h4>Explora</h4><a href="#novedades">Novedades</a><a href="#categorias">Categorías</a><a href="#catalogo">Catálogo</a><a href="#visitanos">Contacto</a></div>
+<div><h4>Visítanos</h4><p>Jirón Andahuaylas 1138<br>Galería Plaza Central, Lima<br>Tiendas 261 · 254 · 210</p><p>Lunes a sábado<br>9:30 a. m. – 8:00 p. m.</p></div>
+<div><h4>Escríbenos</h4><a target="_blank" rel="noopener noreferrer" href="https://wa.me/51906990985">Exhibidores · 906 990 985</a><a target="_blank" rel="noopener noreferrer" href="https://wa.me/51937665192">Exhibidores · 937 665 192</a><a target="_blank" rel="noopener noreferrer" href="https://wa.me/51995632101">Joyeros / Cajitas · 995 632 101</a><a target="_blank" rel="noopener noreferrer" href="https://wa.me/51903220197">Acrílicos / Cocina · 903 220 197</a></div></div>
+<small>© <span id="year"></span> Importadora Anamile</small></footer>
 
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="mTitle"><div class="m-back" id="mBack"></div>
 <div class="m-panel" id="mPanel"><button class="m-close" id="mClose" aria-label="Cerrar">×</button>
@@ -42,9 +51,14 @@
 
 <div class="drawer-backdrop" id="backdrop"></div>
 <aside class="drawer" id="drawer" aria-label="Mi selección"><div class="drawer-head"><h2>Mi selección 💗</h2><button class="close" id="closeCart" aria-label="Cerrar">×</button></div><div class="cart-content" id="selectionContent"></div>
-<div class="checkout"><div class="cart-total" id="cartTotal" hidden></div><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="m-share" id="clearSel" type="button" style="display:block;margin:0 auto">Vaciar mi selección</button><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
+<div class="checkout"><div class="cart-total" id="cartTotal" hidden></div><p class="notice">Al continuar se abre WhatsApp con tu lista lista para enviar. No se realiza ningún pago automático.</p><button class="m-share" id="clearSel" type="button" style="display:block;margin:0 auto">Vaciar mi selección</button><button class="btn ghost" id="quoteBtn" type="button" disabled>📄 Descargar cotización</button><button class="btn" id="sendWhatsapp" disabled>Consultar por WhatsApp ↗</button><p class="notice">📍 Jirón Andahuaylas 1138, Galería Plaza Central, tiendas 261 · 254 · 210.</p></div></aside>
 <button class="btn fab" id="fab">💗 Ver mi selección <span id="fabCount"></span></button>
 <button class="top" id="top" aria-label="Volver arriba">↑</button>
+<div class="wa-wrap"><div class="wa-pop" id="waPop" hidden><h3>¿Con quién quieres hablar?</h3>
+<a target="_blank" rel="noopener noreferrer" href="https://wa.me/51906990985?text=Hola%2C%20Importadora%20Anamile%20%F0%9F%8E%80%0AQuisiera%20informaci%C3%B3n%20sobre%20exhibidores.">Exhibidores<small>906 990 985</small></a>
+<a target="_blank" rel="noopener noreferrer" href="https://wa.me/51995632101?text=Hola%2C%20Importadora%20Anamile%20%F0%9F%8E%80%0AQuisiera%20informaci%C3%B3n%20sobre%20joyeros%20y%20cajitas.">Joyeros / Cajitas<small>995 632 101</small></a>
+<a target="_blank" rel="noopener noreferrer" href="https://wa.me/51903220197?text=Hola%2C%20Importadora%20Anamile%20%F0%9F%8E%80%0AQuisiera%20informaci%C3%B3n%20sobre%20acr%C3%ADlicos%20y%20cocina.">Acrílicos / Cocina<small>903 220 197</small></a></div>
+<button class="wa-btn" id="waBtn" aria-label="Chatear por WhatsApp" aria-expanded="false" aria-controls="waPop"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.200zm4.500-6.100c-.2-.1-1.500-.7-1.700-.8-.2-.1-.4-.1-.6.100l-.8 1c-.1.200-.3.200-.5.100-1.500-.7-2.500-1.300-3.400-2.900-.3-.5.300-.5.800-1.500.1-.2 0-.3 0-.5l-.8-1.800c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.100-.7.300-.8.800-1 1.700-.9 2.700.2 1.100.8 2.100 1.500 3 1.400 1.800 3.200 3.100 5.500 3.800.8.200 1.900.1 2.500-.4.400-.4.700-1 .8-1.600 0-.2 0-.3-.3-.4z"/></svg></button></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="productos.js"></script>
 <script>
@@ -78,11 +92,12 @@ for(const id in selected){const {g,v}=byV[id],q=selected[id];const it=el('div','
 const qt=el('div','qty'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(id,-1);pl.onclick=()=>changeQty(id,1);qt.append(m,el('span',null,String(q)),pl);w.append(qt);it.append(im,w);c.append(it)}
 const tt=$('cartTotal');tt.hidden=!n;if(n)tt.textContent=(total?'Total estimado: '+money(total):'Total por consultar')+(total&&unk?' + '+unk+' por consultar':'');
 if(!n)c.append(el('div','empty','Todavía no has elegido nada. Agrega los productos que te interesen.'));
-$('count').textContent='('+n+')';$('fabCount').textContent='('+n+')';$('sendWhatsapp').disabled=!n;
+$('count').textContent='('+n+')';$('fabCount').textContent='('+n+')';$('sendWhatsapp').disabled=!n;$('quoteBtn').disabled=!n;
 $('fab').classList.toggle('show',n>0&&$('modal').hidden&&!$('drawer').classList.contains('open'));
 document.querySelectorAll('[data-q]').forEach(b=>b.classList.toggle('on',!!selected[b.dataset.q]));
 if(curG)renderActions()}
-function changeQty(id,d){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if(!selected[id])delete selected[id];saveSel();if(d>0){bump();const {g,v}=byV[id];toast('Agregado: '+title(g,v)+' 💗')}renderSel()}
+function fly(src){if(!src||matchMedia('(prefers-reduced-motion:reduce)').matches||!document.contains(src))return;const a=src.getBoundingClientRect(),t=$('openCart').getBoundingClientRect();if(!a.width||!t.width)return;const sz=Math.min(a.width,110),cx=a.left+a.width/2,cy=a.top+a.height/2,c=document.createElement('img');c.src=src.currentSrc||src.src;c.alt='';c.className='fly';c.style.cssText=`left:${cx-sz/2}px;top:${cy-sz/2}px;width:${sz}px;height:${sz}px`;document.body.append(c);const dx=t.left+t.width/2-cx,dy=t.top+t.height/2-cy;c.animate([{transform:'translate(0,0) scale(1)',opacity:1},{transform:`translate(${dx*.55}px,${dy*.55-50}px) scale(.6)`,opacity:.95,offset:.5},{transform:`translate(${dx}px,${dy}px) scale(.1)`,opacity:.15}],{duration:760,easing:'cubic-bezier(.45,.05,.55,.95)'}).onfinish=()=>c.remove()}
+function changeQty(id,d,from){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if(!selected[id])delete selected[id];saveSel();if(d>0){fly(from);bump();const {g,v}=byV[id];toast('Agregado: '+title(g,v)+' 💗')}renderSel()}
 /* tarjetas */
 function card(g,list,i,isNew,pref){const a=el('article','product');a.style.setProperty('--i',Math.min(i,12));let vi=pref?Math.max(0,g.variants.findIndex(v=>v.label===pref)):0;
 const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[vi].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));
@@ -93,7 +108,7 @@ if(multi(g)&&!hasSw0&&varies){pr.textContent='Desde '+money(Math.min(...pl));ret
 pr.textContent=money(lp);if(v.price&&v.wholesale)pr.append(el('small','pr2','Mayor (desde '+MINM()+') '+money(v.wholesale)));else if(!v.price&&v.wholesale)pr.append(el('small','pr2','Precio por mayor'))};setPrice();
 d.append(h,code,pr);o.append(ph,d);o.onclick=()=>openModal(g.id,list,vi,o,im);
 const q=el('button','quick','+');q.dataset.q=g.variants[vi].id;
-q.onclick=e=>{e.stopPropagation();changeQty(g.variants[vi].id,1)};q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
+q.onclick=e=>{e.stopPropagation();changeQty(g.variants[vi].id,1,im)};q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
 a.append(o,q);
 if(multi(g)){const dots=el('div','dots');dots.setAttribute('role','group');dots.setAttribute('aria-label','Elegir '+(g.vtype||'modelo').toLowerCase());
 const hasSw=g.variants.every(v=>v.swatch);
@@ -108,8 +123,8 @@ $('nores').hidden=l.length>0;$('moreBtn').hidden=l.length<=shown;$('note').textC
 function setFilter(f){filter=f;shown=STEP;document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',c.dataset.f===f));renderCatalog()}
 /* detalle */
 function renderActions(){const box=$('mActions');box.replaceChildren();const g=curG,v=g.variants[curI],q=selected[v.id]||0;
-if(!q){const b=el('button','btn','💗 Agregar a mi selección');b.onclick=()=>changeQty(v.id,1);box.append(b)}
-else{const s=el('div','stepper'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(v.id,-1);pl.onclick=()=>changeQty(v.id,1);s.append(m,el('span',null,q+(q===1?' unidad en tu selección':' unidades en tu selección')),pl);box.append(s)}
+if(!q){const b=el('button','btn','💗 Agregar a mi selección');b.onclick=()=>changeQty(v.id,1,$('mImg'));box.append(b)}
+else{const s=el('div','stepper'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(v.id,-1);pl.onclick=()=>changeQty(v.id,1,$('mImg'));s.append(m,el('span',null,q+(q===1?' unidad en tu selección':' unidades en tu selección')),pl);box.append(s)}
 if(v.price&&v.wholesale){const N=totalQty(),hint=el('p','m-hint2');hint.textContent=N>=MINM()?'✓ Tu selección tiene '+N+' unidades: se aplica el precio por mayor ('+money(v.wholesale)+' c/u)':(N===1?'Agrega 1 unidad más (de este u otro producto) y todo sale a precio por mayor: '+money(v.wholesale)+' c/u':'Con '+MINM()+' unidades en total (pueden ser de productos distintos) se aplica el precio por mayor: '+money(v.wholesale)+' c/u');box.prepend(hint)}
 const w=el('a','btn ghost','Preguntar por este producto');w.target='_blank';w.rel='noopener noreferrer';
 w.href='https://wa.me/'+WA+'?text='+encodeURIComponent('Hola, Importadora Anamile 🎀\nMe interesa este producto: '+title(g,v)+' ('+v.id+').\n¿Me confirman precio por mayor y menor y disponibilidad?');box.append(w);
@@ -167,11 +182,48 @@ mk('',null);Object.keys(cnt).sort((x,y)=>cnt[y]-cnt[x]).forEach(l=>mk(l,hx[l]));
 $('sort').onchange=e=>{sortBy=e.target.value;shown=STEP;renderCatalog()};
 $('clearSel').onclick=()=>{for(const k in selected)delete selected[k];saveSel();renderSel()};
 const news=groups.filter(g=>g.new),nids=news.map(g=>g.id);news.forEach((g,i)=>$('newProducts').append(card(g,nids,i,true)));
-$('q').oninput=e=>{query=e.target.value;shown=STEP;renderCatalog()};$('moreBtn').onclick=()=>{shown+=STEP;renderCatalog()};
+function suggest(){const t=query.trim().toLowerCase(),u=$('sugg');u.replaceChildren();if(t.length<2){u.hidden=true;return}
+const r=groups.filter(g=>(g.id+' '+g.name+' '+g.cat+' '+g.variants.map(v=>v.id+' '+v.label+' '+v.mat).join(' ')).toLowerCase().includes(t));if(!r.length){u.hidden=true;return}
+const ids=r.map(x=>x.id);r.slice(0,6).forEach(g=>{const li=el('li'),b=el('button'),im=el('img');b.type='button';im.src=g.variants[0].img;im.alt='';b.append(im);const w=el('span'),lp=listPrice(g.variants[0]);w.append(el('strong',null,g.name),el('small',null,g.id+(multi(g)?' · '+g.variants.length+' '+(plural[g.vtype]||'opciones'):'')+(lp?' · '+money(lp):'')));b.append(w);b.onmousedown=e=>e.preventDefault();b.onclick=()=>{u.hidden=true;openModal(g.id,ids,0,b,null)};li.append(b);u.append(li)});u.hidden=false}
+$('q').oninput=e=>{query=e.target.value;shown=STEP;renderCatalog();suggest()};$('q').onfocus=suggest;$('q').onblur=()=>setTimeout(()=>{$('sugg').hidden=true},150);$('q').addEventListener('keydown',e=>{if(e.key==='Escape')$('sugg').hidden=true});$('moreBtn').onclick=()=>{shown+=STEP;renderCatalog()};
 const tr=$('track');const words=['Exhibidores de bisutería','Cajitas de regalo','Joyeros','Acrílicos','Organizadores para el hogar','Venta por mayor y menor'];for(let k=0;k<2;k++)words.concat(words).forEach(w=>tr.append(el('span',null,w)));
 $('burger').onclick=()=>{const s=$('links').classList.toggle('show');$('burger').setAttribute('aria-expanded',s);$('burger').textContent=s?'✕':'☰'};
 $('links').onclick=()=>{$('links').classList.remove('show');$('burger').textContent='☰'};
 addEventListener('scroll',()=>$('top').classList.toggle('show',scrollY>900),{passive:true});$('top').onclick=()=>scrollTo({top:0,behavior:'smooth'});
+/* extras de nivel premium */
+(function(){
+const stats=[[groups.length,'productos'],[groups.reduce((a,g)=>a+g.variants.length,0),'modelos y colores'],[CATS.length,'categorías'],[4,'líneas de atención']];
+const sb=$('stats');stats.forEach(([n,l])=>{const d=el('div','st'),b=el('b',null,'0');b.dataset.n=n;d.append(b,el('span',null,l));sb.append(d)});
+const count=b=>{const n=+b.dataset.n;if(matchMedia('(prefers-reduced-motion:reduce)').matches){b.textContent=n;return}const t0=performance.now(),D=1100;(function f(t){const k=Math.min(1,(t-t0)/D);b.textContent=Math.round(n*(1-Math.pow(1-k,3)));if(k<1)requestAnimationFrame(f)})(t0)};
+const a=byV['DA-10641-1'];if(a&&a.v.price&&a.v.wholesale){$('exA').textContent=money(a.v.price);$('exB').textContent=money(a.v.wholesale);$('exAp').textContent=a.g.name+' '+a.v.id}else{$('exA').textContent='Precio por menor';$('exB').textContent='Precio por mayor'}
+function openStatus(){try{const o={};new Intl.DateTimeFormat('en-US',{timeZone:'America/Lima',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date()).forEach(p=>o[p.type]=p.value);const wd=o.weekday,m=(+o.hour%24)*60+(+o.minute);
+if(wd!=='Sun'&&m>=570&&m<1200)return '🟢 Abierto ahora · cierra a las 8:00 p. m.';if(wd!=='Sun'&&m<570)return '🔴 Cerrado · abrimos hoy a las 9:30 a. m.';return '🔴 Cerrado · abrimos '+(wd==='Sat'||wd==='Sun'?'el lunes':'mañana')+' a las 9:30 a. m.'}catch(e){return ''}}
+const st=openStatus();$('openNow').textContent=st;if(!st)document.querySelector('.ann-sep').hidden=true;
+$('waBtn').onclick=e=>{e.stopPropagation();const h=$('waPop').hidden;$('waPop').hidden=!h;$('waBtn').setAttribute('aria-expanded',h)};
+document.addEventListener('click',e=>{if(!e.target.closest('.wa-wrap')){$('waPop').hidden=true;$('waBtn').setAttribute('aria-expanded',false)}});
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+$('quoteBtn').onclick=()=>{const N=totalQty();if(!N)return;let total=0,unk=0,rows='';for(const id in selected){const {g,v}=byV[id],q=selected[id],up=unitPrice(v,N),sub=up?up.p*q:0;if(up)total+=sub;else unk++;rows+=`<tr><td>${esc(v.id)}</td><td>${esc(title(g,v))}</td><td class="n">${q}</td><td class="n">${up?money(up.p)+(up.mayor?' <small>mayor</small>':''):'Consultar'}</td><td class="n">${up?money(sub):'—'}</td></tr>`}
+const w=window.open('','_blank');if(!w){toast('Permite las ventanas emergentes para ver la cotización');return}
+const d=new Date(),fecha=d.toLocaleDateString('es-PE',{day:'numeric',month:'long',year:'numeric'}),num='COT-'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'-'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0'),logo=new URL('logo-sm.png',location.href).href;
+w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Cotización ${num} · Importadora Anamile</title><style>
+*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#3a1f2d;margin:0;padding:36px;max-width:820px;margin-inline:auto}
+header{display:flex;align-items:center;gap:18px;border-bottom:4px solid #d6125f;padding-bottom:16px}header img{width:84px;height:84px}h1{margin:0;color:#d6125f;font-size:28px}header p{margin:2px 0;color:#6e1740;font-size:13px}
+.meta{display:flex;justify-content:space-between;margin:18px 0;font-size:14px}table{width:100%;border-collapse:collapse;font-size:14px}th{background:#d6125f;color:#fff;text-align:left;padding:9px 10px}td{padding:9px 10px;border-bottom:1px solid #f1d3df}.n{text-align:right;white-space:nowrap}th.n{text-align:right}
+.tot{margin-top:14px;text-align:right;font-size:20px;font-weight:700;color:#d6125f}.note{margin-top:22px;font-size:12px;color:#7a5568;line-height:1.5}footer{margin-top:26px;border-top:1px solid #f1d3df;padding-top:12px;font-size:12.5px;color:#6e1740}small{font-weight:700;color:#d6125f}
+@media print{body{padding:0}.noprint{display:none}}</style></head><body>
+<header><img src="${logo}" alt=""><div><h1>Cotización</h1><p><b>Importadora Anamile</b> · Venta por mayor y menor</p><p>Jirón Andahuaylas 1138, Galería Plaza Central, Lima · Tiendas 261 · 254 · 210</p></div></header>
+<div class="meta"><span><b>N.º</b> ${num}</span><span><b>Fecha:</b> ${fecha}</span></div>
+<table><thead><tr><th>Código</th><th>Producto</th><th class="n">Cant.</th><th class="n">Precio unit.</th><th class="n">Subtotal</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="tot">Total estimado: ${money(total)}${unk?' <span style="font-size:13px;color:#7a5568;font-weight:400">+ '+unk+' por consultar</span>':''}</div>
+<p class="note">Precios en soles (S/). Desde ${MINM()} unidades en total se aplica el precio por mayor. Cotización referencial: precios y disponibilidad se confirman por WhatsApp.</p>
+<footer>Exhibidores: 906 990 985 / 937 665 192 · Joyeros y cajitas: 995 632 101 · Acrílicos y cocina: 903 220 197<br>Lunes a sábado, 9:30 a. m. – 8:00 p. m.</footer>
+<p class="noprint" style="text-align:center;margin-top:24px"><button onclick="print()" style="background:#d6125f;color:#fff;border:0;border-radius:99px;padding:12px 26px;font-size:15px;font-weight:700;cursor:pointer">Imprimir / guardar como PDF</button></p>
+</body></html>`);w.document.close();setTimeout(()=>{try{w.focus();w.print()}catch(e){}},500)};
+const hd=document.querySelector('.header');addEventListener('scroll',()=>hd.classList.toggle('scrolled',scrollY>8),{passive:true});
+if('IntersectionObserver' in window){const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('v');if(e.target.classList.contains('st'))count(e.target.querySelector('b'));io.unobserve(e.target)}}),{threshold:.15,rootMargin:'0px 0px -5% 0px'});
+document.querySelectorAll('.section-head,.step,.mcard,.mplus,.st,.location .card,.map,.catgrid .cat,.foot-g>div').forEach((x,i)=>{if(!reduce)x.classList.add('rv');x.style.setProperty('--d',i%4);io.observe(x)});let sw;addEventListener('scroll',()=>{clearTimeout(sw);sw=setTimeout(()=>document.querySelectorAll('.rv:not(.v)').forEach(x=>{if(x.getBoundingClientRect().bottom<0){x.classList.add('v');io.unobserve(x)}}),250)},{passive:true})}
+else document.querySelectorAll('.st b').forEach(count)})();
 $('year').textContent=new Date().getFullYear();renderCatalog();
 if(location.hash==='#seleccion')toggleCart(true);
 const hm=location.hash.match(/^#p=(.+)$/);if(hm){const id=decodeURIComponent(hm[1]);if(byV[id]){const {g,i}=byV[id];openModal(g.id,filtered().map(x=>x.id),i,null,null,true)}}
