@@ -282,3 +282,29 @@ a{color:inherit;text-decoration:none}button,input{font:inherit;color:inherit}but
 .fab{visibility:hidden;transition:transform .4s var(--ease),visibility 0s .4s}.fab.show{visibility:visible;transition:transform .4s var(--ease),visibility 0s}
 .dots{padding-right:58px}
 @media(max-width:540px){.ann-a,.ann-sep{display:none}.announcement{font-size:13.5px}.dots{padding-right:50px}}
+
+/* ===== más movimiento ===== */
+.progress{position:fixed;top:0;left:0;right:0;height:4px;z-index:60;background:linear-gradient(90deg,var(--rose),var(--gold));transform-origin:0 50%;transform:scaleX(0);pointer-events:none;border-radius:0 4px 4px 0}
+.hero-photo:before{inset:-70px 0;translate:0 var(--py,0px)}
+.has-hf{position:relative;overflow:hidden}
+.hf{position:absolute;bottom:-40px;color:var(--rose);opacity:0;pointer-events:none;z-index:1;animation:hfup linear infinite;will-change:transform}
+.hero .hf{z-index:1}.hero-copy{z-index:2}
+@keyframes hfup{0%{transform:translateY(0) rotate(0) scale(.7);opacity:0}12%{opacity:.5}85%{opacity:.28}100%{transform:translateY(calc(var(--hh,600px)*-1 - 60px)) rotate(35deg) scale(1.15);opacity:0}}
+.mayor .hf,.banner .hf{color:#fff}.mayor .container,.banner>:not(.hf){position:relative;z-index:2}
+.btn:not(.ghost):not(:disabled){position:relative;overflow:hidden}
+.btn:not(.ghost):not(:disabled):after{content:"";position:absolute;top:0;bottom:0;width:55%;left:-90%;background:linear-gradient(100deg,transparent,#ffffff59,transparent);transform:skewX(-20deg);animation:shine 5s ease-in-out infinite;pointer-events:none}
+@keyframes shine{0%,62%{left:-90%}100%{left:140%}}
+.section-head h2:after{content:"";display:block;width:0;height:4px;border-radius:4px;margin:12px auto 0;background:linear-gradient(90deg,var(--rose),var(--gold));transition:width 1s var(--ease) .35s}
+.section-head.v h2:after,.section-head:not(.rv) h2:after{width:96px}
+.mplus{animation:nudge 1.7s ease-in-out infinite}@keyframes nudge{50%{translate:10px 0}}
+.mcard.hot{position:relative;animation:glow 2.8s ease-in-out infinite}@keyframes glow{50%{box-shadow:0 26px 64px #d6125f99}}
+.save{position:absolute;top:-14px;right:-10px;background:var(--gold);color:#fff;font-style:normal;font-weight:800;font-size:13px;padding:6px 14px;border-radius:999px;transform:rotate(6deg);box-shadow:0 8px 18px #c79a3b66;animation:wob 3s ease-in-out infinite}.save[hidden]{display:none}
+@keyframes wob{50%{transform:rotate(-3deg) scale(1.06)}}
+.social{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.soc{display:inline-flex!important;align-items:center;gap:8px;padding:8px 16px!important;border-radius:999px;border:1.5px solid var(--rose);color:var(--rose);font-weight:800;font-size:14px;opacity:1!important;transition:background .2s,color .2s,transform .2s var(--ease)}
+.soc:hover{background:var(--rose);color:#fff;text-decoration:none!important;transform:translateY(-2px)}
+.social.light .soc{border-color:#ffffff66;color:#fff}.social.light .soc:hover{background:#fff;color:var(--wine)}
+.line.follow{border-bottom:0}
+.logo img{animation:wiggle 6s ease-in-out 2s infinite}@keyframes wiggle{0%,92%,100%{transform:rotate(0)}95%{transform:rotate(-10deg)}98%{transform:rotate(8deg)}}
+@media(max-width:800px){.mplus{animation:none}.save{right:6px}}
+@media(prefers-reduced-motion:reduce){.hf,.progress{display:none}.btn:after,.mplus,.mcard.hot,.save,.logo img{animation:none!important}}
