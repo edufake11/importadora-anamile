@@ -6,7 +6,10 @@
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"Store","name":"Importadora Anamile","image":"logo-anamile.png","telephone":["+51906990985","+51937665192","+51995632101","+51903220197"],"address":{"@type":"PostalAddress","streetAddress":"Jirón Andahuaylas 1138, Galería Plaza Central","addressLocality":"Lima","addressCountry":"PE"},"openingHours":"Mo-Sa 09:00-20:00","geo":{"@type":"GeoCoordinates","latitude":-12.0549508,"longitude":-77.026963},"hasMap":"https://maps.app.goo.gl/L9X1c9sPo9eTAo1p9","sameAs":["https://www.tiktok.com/@importadoraanamile","https://www.facebook.com/profile.php?id=100057298276029"]}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Playfair+Display:wght@600;700&family=Pacifico&display=swap" rel="stylesheet">
-<link rel="preload" as="image" href="portada-productos.jpg"><link rel="stylesheet" href="estilos.css?v=4"></head><body>
+<script>(function(){var PH='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect width="400" height="300" fill="#fde8ef"/><g fill="#f4a6c0" transform="translate(200 150) scale(1.4) translate(-32 -33)"><path d="M16 42 13 23l10 8 9-13 9 13 10-8-3 19z"/><rect x="16" y="45" width="32" height="5" rx="2.5"/><circle cx="13" cy="22" r="3.4"/><circle cx="32" cy="16.5" r="3.6"/><circle cx="51" cy="22" r="3.4"/></g></svg>');
+addEventListener('error',function(e){var i=e.target;if(!i||i.tagName!=='IMG'||i.dataset.ph)return;var m=i.src.match(/^(.*\/img\/)([^\/?#]+?)\.(jpe?g|png|webp)(?:[?#].*)?$/i);if(!m)return;
+var tried=(i.dataset.tried||'').split('|').filter(Boolean);tried.push(i.src);var n0=decodeURIComponent(m[2]),cand=[];[n0,n0.toLowerCase()].forEach(function(n){['jpg','png','webp','jpeg'].forEach(function(x){var u=m[1]+encodeURIComponent(n)+'.'+x;if(cand.indexOf(u)<0)cand.push(u)})});
+var next=cand.filter(function(c){return tried.indexOf(c)<0})[0];i.dataset.tried=tried.join('|');if(next)i.src=next;else{i.dataset.ph='1';i.src=PH}},true)})();</script><link rel="preload" as="image" href="portada-productos.jpg"><link rel="stylesheet" href="estilos.css?v=5"></head><body>
 <div class="progress" id="progress" aria-hidden="true"></div>
 <div class="announcement">🎀 <span class="ann-a">Desde 2 unidades, precio por mayor</span> <span class="ann-sep">·</span> <span id="openNow"></span></div>
 <header class="header"><nav class="nav"><a class="logo" href="#inicio" aria-label="Importadora Anamile, inicio"><img src="logo-sm.png" width="52" height="52" alt="Anamile Importadora"></a>
@@ -61,7 +64,7 @@
 <a target="_blank" rel="noopener noreferrer" href="https://wa.me/51903220197?text=Hola%2C%20Importadora%20Anamile%20%F0%9F%8E%80%0AQuisiera%20informaci%C3%B3n%20sobre%20acr%C3%ADlicos%20y%20cocina.">Acrílicos / Cocina<small>903 220 197</small></a></div>
 <button class="wa-btn" id="waBtn" aria-label="Chatear por WhatsApp" aria-expanded="false" aria-controls="waPop"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.200zm4.500-6.100c-.2-.1-1.500-.7-1.700-.8-.2-.1-.4-.1-.6.100l-.8 1c-.1.200-.3.200-.5.100-1.500-.7-2.500-1.300-3.400-2.900-.3-.5.300-.5.800-1.500.1-.2 0-.3 0-.5l-.8-1.800c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.100-.7.300-.8.800-1 1.700-.9 2.700.2 1.100.8 2.100 1.500 3 1.400 1.800 3.200 3.100 5.500 3.800.8.200 1.900.1 2.500-.4.400-.4.700-1 .8-1.600 0-.2 0-.3-.3-.4z"/></svg></button></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="productos.js?v=4"></script>
+<script src="productos.js?v=5"></script>
 <script>
 const CATS=['Exhibidores','Joyeros','Cofres y cajitas','Organizadores','Espejos','Relojes','Bolsas y llaveros'];
 const WA='51906990985',STEP=24;
@@ -73,7 +76,7 @@ const KEY='anamile_sel';
 function saveSel(){try{localStorage.setItem(KEY,JSON.stringify(selected))}catch(e){}}
 try{const o=JSON.parse(localStorage.getItem(KEY)||'{}');for(const id in o)if(byV[id]&&o[id]>0)selected[id]=Math.min(+o[id]||0,999)}catch(e){}
 const mobile=()=>matchMedia('(max-width:800px)').matches;
-function fade(i){const d=()=>i.classList.add('in');if(i.complete&&i.naturalWidth)d();else{i.onload=d;i.onerror=d}return i}
+function fade(i){const d=()=>i.classList.add('in');if(i.complete&&i.naturalWidth)d();else{i.onload=d}return i}
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 const multi=g=>g.variants.length>1;
 const title=(g,v)=>g.name+(multi(g)&&v.label?' · '+v.label:'');
@@ -137,7 +140,7 @@ $('mTitle').textContent=title(g,v);$('mCode').textContent='Código '+v.id;
 const dl=$('mChars');dl.replaceChildren();const rows=[['Código',v.id],['Categoría',g.cat]];if(multi(g)&&v.label)rows.push([g.vtype||'Modelo',v.label]);if(v.dim)rows.push(['Medidas',v.dim]);if(v.mat)rows.push(['Material',v.mat]);
 rows.forEach(([k,x])=>dl.append(el('dt',null,k),el('dd',null,x)));
 const pr=$('mPrice');pr.replaceChildren();
-if(v.price){const b=el('div','big',money(v.price));b.append(el('small',null,v.wholesale?'  precio por menor (1 unidad)':'  precio por unidad'));pr.append(b);if(v.wholesale)pr.append(el('div','mayor','Por mayor: '+money(v.wholesale)+' c/u desde '+(v.minWholesale||MINM())+' unidades en total (pueden ser de productos distintos)'))}
+if(v.price){const b=el('div','big',money(v.price));b.append(el('small',null,v.wholesale?'  precio por menor (1 unidad)':'  precio por unidad'));pr.append(b);if(v.wholesale)pr.append(el('div','mayor','Por mayor: '+money(v.wholesale)+' c/u desde '+(v.minWholesale||MINM())+' unidades'))}
 else if(v.wholesale){const b=el('div','big',money(v.wholesale));b.append(el('small',null,'  precio por mayor'));pr.append(b);pr.append(el('p',null,'Precio por mayor directo.'))}
 else{pr.append(el('div','ask','Consulta el precio por WhatsApp'));pr.append(el('p',null,'Tenemos precio por mayor y por menor.'))}
 document.querySelectorAll('#mVars .vbtn').forEach((b,k)=>b.setAttribute('aria-pressed',k===curI));
@@ -164,6 +167,7 @@ if(fromImg&&!mobile()&&img.animate){const a=fromImg.getBoundingClientRect(),b=im
 function hideModal(){const m=$('modal');if(m.hidden)return;pushedHist=false;m.classList.remove('open');setTimeout(()=>{m.hidden=true;curG=null;lock();renderSel()},mobile()?380:300);if(opener&&document.contains(opener))opener.focus({preventScroll:true})}
 function closeModal(){if(pushedHist){pushedHist=false;history.back()}else{history.replaceState(null,'',location.pathname+location.search);hideModal()}}
 window.addEventListener('popstate',e=>{const id=e.state&&e.state.p;if(id&&byV[id]){const {g,i}=byV[id];if($('modal').hidden)openModal(g.id,null,i,null,null,true);else{curG&&curG.id===g.id?pickVariant(i):go(g.id,i)}}else hideModal()});
+$('mImg').addEventListener('load',()=>$('mMedia').style.setProperty('--bg','url("'+$('mImg').currentSrc+'")'));
 $('mClose').onclick=closeModal;$('mBack').onclick=closeModal;$('mPrev').onclick=()=>step(-1);$('mNext').onclick=()=>step(1);
 $('mImg').onclick=e=>{const i=e.currentTarget,r=i.getBoundingClientRect();i.style.transformOrigin=((e.clientX-r.left)/r.width*100)+'% '+((e.clientY-r.top)/r.height*100)+'%';i.classList.toggle('zoom')};
 $('mImg').addEventListener('mousemove',e=>{const i=e.currentTarget;if(!i.classList.contains('zoom'))return;const r=i.getBoundingClientRect();i.style.transformOrigin=((e.clientX-r.left)/r.width*100)+'% '+((e.clientY-r.top)/r.height*100)+'%'});
