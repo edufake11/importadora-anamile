@@ -366,3 +366,25 @@ a{color:inherit;text-decoration:none}button,input{font:inherit;color:inherit}but
 .pp-bar{display:none}
 @media(max-width:800px){.pp-bar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:30;gap:10px;transform:translateY(160%);transition:transform .4s var(--ease);background:#fffafcf2;backdrop-filter:blur(10px);padding:10px;border-radius:999px;box-shadow:0 12px 34px #a90a4938;border:1px solid var(--line)}
 .pp-bar.show{transform:none}.pp-bar .btn{flex:1;padding-left:10px;padding-right:10px}.pp-wrap{padding-bottom:100px}}
+
+/* ===== barra inferior móvil + cotización por WhatsApp ===== */
+.bnav{display:none}
+.wa-q{background:#1fa855}.wa-q:hover{background:#178a45}
+@media(max-width:800px){
+.bnav{display:flex;position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:25;justify-content:space-around;align-items:stretch;gap:2px;padding:8px 6px;background:#3a1230f2;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-radius:28px;box-shadow:0 14px 38px #2b0a1b73;border:1px solid #ffffff1f}
+.bnav a,.bnav button{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;border:0;background:none;color:#f9d6e4;font-weight:800;font-size:11.5px;padding:6px 2px;border-radius:20px;transition:background .25s,color .25s,transform .25s var(--ease)}
+.bnav i{position:relative;font-style:normal;font-size:24px;line-height:1.1;transition:transform .3s var(--ease)}
+.bnav span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.bnav a.on,.bnav button[aria-expanded=true]{background:#ffffff1f;color:#fff}.bnav a.on i{transform:translateY(-2px) scale(1.12)}
+.bnav a:active,.bnav button:active{transform:scale(.94)}
+.bnav b{position:absolute;right:-12px;top:-5px;min-width:19px;height:19px;border-radius:99px;background:#ff3d8b;color:#fff;font-size:11px;line-height:19px;padding:0 5px;box-shadow:0 0 0 2px #3a1230}
+.bnav b[hidden]{display:none}
+.fab{display:none!important}
+.wa-wrap{bottom:calc(100px + env(safe-area-inset-bottom));right:14px}.wa-btn{display:none}.wa-pop{bottom:0}
+.top{bottom:calc(100px + env(safe-area-inset-bottom));left:14px}
+.toast{bottom:calc(108px + env(safe-area-inset-bottom))}
+.footer{padding-bottom:130px}
+.pp-wrap~.pp-bar{bottom:calc(12px + env(safe-area-inset-bottom))}
+}
+
+.install{display:block;margin:0 auto 16px;background:#ffffff1f;color:#fff;border:1.5px solid #ffffff59;border-radius:999px;padding:10px 22px;font-weight:800;font-size:14px;cursor:pointer;transition:background .2s}.install:hover{background:#ffffff38}.install[hidden]{display:none}

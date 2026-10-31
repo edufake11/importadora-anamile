@@ -1,1 +1,88 @@
-{"name":"Importadora Anamile","short_name":"Anamile","description":"Venta por mayor y menor de exhibidores, joyeros, cajitas de regalo y organizadores.","start_url":"./index.html","display":"standalone","background_color":"#fffafc","theme_color":"#d6125f","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png"},{"src":"icon-512.png","sizes":"512x512","type":"image/png"},{"src":"icon-maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
+{
+ "id": "./index.html",
+ "name": "Importadora Anamile",
+ "short_name": "Anamile",
+ "description": "Catálogo de exhibidores de bisutería, joyeros, cajitas de regalo, acrílicos y organizadores. Venta por mayor y menor en Lima.",
+ "lang": "es-PE",
+ "dir": "ltr",
+ "start_url": "./index.html?source=pwa",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "portrait",
+ "background_color": "#fffafc",
+ "theme_color": "#d6125f",
+ "categories": [
+  "shopping",
+  "business"
+ ],
+ "icons": [
+  {
+   "src": "icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icon-maskable-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "maskable"
+  }
+ ],
+ "shortcuts": [
+  {
+   "name": "Ver catálogo",
+   "short_name": "Catálogo",
+   "url": "./index.html#catalogo",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192",
+     "type": "image/png"
+    }
+   ]
+  },
+  {
+   "name": "Mi selección",
+   "short_name": "Mi lista",
+   "url": "./index.html#seleccion",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192",
+     "type": "image/png"
+    }
+   ]
+  },
+  {
+   "name": "Todos los productos",
+   "short_name": "Productos",
+   "url": "./productos.html",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192",
+     "type": "image/png"
+    }
+   ]
+  },
+  {
+   "name": "Escribir por WhatsApp",
+   "short_name": "WhatsApp",
+   "url": "https://wa.me/51906990985",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192",
+     "type": "image/png"
+    }
+   ]
+  }
+ ]
+}
