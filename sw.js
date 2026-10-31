@@ -1,5 +1,5 @@
 /* Anamile: caché para que el sitio abra rápido y funcione con mala señal. */
-const V='anamile-v6',IMG='anamile-img-v6',CORE=['./','index.html','estilos.css?v=6','productos.js?v=6','logo-sm.png','logo-anamile.png','favicon.svg'];
+const V='anamile-v7',IMG='anamile-img-v7',CORE=['./','index.html','estilos.css?v=7','productos.js?v=7','logo-sm.png','logo-anamile.png','favicon.svg'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>Promise.allSettled(CORE.map(u=>c.add(u)))).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V&&k!==IMG).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',e=>{const r=e.request;if(r.method!=='GET')return;const u=new URL(r.url);if(u.origin!==location.origin)return;

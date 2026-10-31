@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Editor de productos · Anamile</title>
+<style>
+:root{--rose:#d6125f;--wine:#6e1740;--blush:#fde8ef;--pink:#f9c9da;--line:#f1d3df;--muted:#7a5568}
+*{box-sizing:border-box}body{margin:0;font-family:Nunito,Segoe UI,Arial,sans-serif;background:#fffafc;color:#3a1f2d;line-height:1.45}
+header{padding:22px 24px 10px;max-width:1280px;margin:auto}h1{margin:0 0 4px;color:var(--wine);font-size:28px}p.lead{margin:0;color:var(--muted)}
+.btn{background:var(--rose);color:#fff;border:0;border-radius:999px;padding:11px 22px;font-weight:800;font-size:15px;cursor:pointer}
+.top{position:sticky;top:0;z-index:5;background:#fffafcf5;backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:12px 24px}
+.top-in{max-width:1280px;margin:auto;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+input[type=search],select{border:1.5px solid var(--pink);border-radius:999px;padding:9px 16px;font:inherit;background:#fff}
+label.chk{font-weight:700;color:var(--wine);font-size:14px;display:flex;gap:6px;align-items:center}.spacer{flex:1}
+#drop{max-width:1280px;margin:18px auto;padding:0 24px}.box{border:3px dashed var(--pink);background:#fff;border-radius:24px;padding:34px;text-align:center}.box.over{background:var(--blush);border-color:var(--rose)}.box b{display:block;font-size:19px;color:var(--wine);margin-bottom:6px}
+main{max-width:1280px;margin:0 auto;padding:12px 24px 80px}
+table{border-collapse:collapse;width:100%;min-width:1000px;font-size:14px}th{position:sticky;top:60px;background:var(--rose);color:#fff;text-align:left;padding:9px 8px;z-index:2;font-size:13px}
+td{padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:middle}tr.first td{border-top:3px solid var(--blush)}
+td input{width:100%;border:1.5px solid transparent;background:#fff8fb;border-radius:9px;padding:6px 8px;font:inherit;font-size:14px}td input:hover{border-color:var(--pink)}td input:focus{outline:0;border-color:var(--rose);background:#fff}
+td input.n{width:92px;text-align:right}td.code{font-weight:800;color:var(--rose);white-space:nowrap}
+tr.nop td.pcell input{background:#fff2c9}.dot{display:inline-block;width:14px;height:14px;border-radius:50%;border:1px solid #0003;flex:none}
+.sub{color:var(--muted);font-size:12px}.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--wine);color:#fff;padding:11px 22px;border-radius:99px;font-weight:700;opacity:0;transition:opacity .3s;pointer-events:none}.toast.show{opacity:1}
+.help{max-width:1280px;margin:0 auto;padding:0 24px 10px}.help details{background:var(--blush);border-radius:16px;padding:12px 18px}.help summary{font-weight:800;color:var(--wine);cursor:pointer}.help ol{margin:8px 0 0;padding-left:20px}
+</style></head><body>
+<header><h1>Editor de productos</h1><p class="lead">Cambia precios, colores, medidas y nombres sin tocar código. Todo ocurre en tu computadora.</p></header>
+<div class="help"><details><summary>¿Cómo se usa? (3 pasos)</summary><ol><li>Elige tu archivo <b>productos.js</b> (el que está en la carpeta del sitio).</li><li>Edita lo que quieras en la tabla. Las casillas amarillas son productos que aún no tienen precio.</li><li>Presiona <b>Descargar productos.js</b> y reemplaza ese archivo en tu sitio. Las páginas de producto se actualizan solas con ese mismo archivo.</li></ol></details></div>
+<div id="drop"><div class="box" id="box"><b>Arrastra aquí tu archivo productos.js</b><p style="margin:0 0 14px;color:var(--muted)">o elígelo desde tu computadora</p><button class="btn" id="pick">Elegir productos.js</button><input type="file" id="file" accept=".js,text/javascript" hidden></div></div>
+<div class="top" id="bar" hidden><div class="top-in"><input type="search" id="q" placeholder="Buscar por código o nombre" aria-label="Buscar"><select id="cat" aria-label="Categoría"></select><label class="chk"><input type="checkbox" id="np"> Solo sin precio</label><span id="count" class="sub"></span><span class="spacer"></span><button class="btn" id="save">Descargar productos.js</button></div></div>
+<main><table id="t" hidden><thead><tr><th>Código</th><th>Producto</th><th>Color / modelo</th><th>Medidas</th><th>Material</th><th>Precio menor (S/)</th><th>Precio mayor (S/)</th></tr></thead><tbody id="tb"></tbody></table></main>
+<div class="toast" id="toast" role="status"></div>
+<datalist id="colors"><option value="Negro"><option value="Blanco"><option value="Rosado"><option value="Dorado"><option value="Plateado"><option value="Gris"><option value="Crema"><option value="Rojo"><option value="Verde"><option value="Azul"><option value="Morado"><option value="Naranja"><option value="Amarillo"><option value="Marrón"><option value="Transparente"></datalist>
+<script>
+const $=i=>document.getElementById(i);
+const COL={negro:'#222222',blanco:'#ffffff',rosado:'#f4a6c0',dorado:'#d4af37',plateado:'#c0c0c0',gris:'#9a9a9a',crema:'#f3e6cf',rojo:'#d62839',verde:'#2e9e5b',azul:'#2f6fd0',morado:'#8e5bd0',naranja:'#f28c28',amarillo:'#f4d03f','marrón':'#7a4a2b',marron:'#7a4a2b',transparente:'#dff0f7'};
+let head='',data=[],busy=false,pending=false;
+const toast=m=>{const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)};
+$('pick').onclick=()=>$('file').click();$('file').onchange=e=>load(e.target.files[0]);
+const box=$('box');['dragenter','dragover'].forEach(t=>box.addEventListener(t,e=>{e.preventDefault();box.classList.add('over')}));['dragleave','drop'].forEach(t=>box.addEventListener(t,e=>{e.preventDefault();box.classList.remove('over')}));box.addEventListener('drop',e=>load(e.dataTransfer.files[0]));
+async function load(f){if(!f)return;const txt=await f.text();const i=txt.indexOf('const PRODUCTS=');if(i<0){toast('Ese archivo no parece ser productos.js');return}
+try{head=txt.slice(0,i);data=JSON.parse(txt.slice(i+15).trim().replace(/;\s*$/,''))}catch(e){toast('No pude leer el archivo');return}
+$('drop').hidden=true;$('bar').hidden=false;$('t').hidden=false;
+const cats=[...new Set(data.map(g=>g.cat))];$('cat').innerHTML='<option value="">Todas las categorías</option>'+cats.map(c=>'<option>'+c+'</option>').join('');render()}
+function recalc(g){g.variants.forEach(v=>{const k=(v.label||'').trim().toLowerCase();v.swatch=COL[k]||null});
+  if(g.variants.length>1)g.vtype=g.variants.every(v=>v.swatch)?'Color':(g.vtype==='Tamaño'?'Tamaño':'Modelo')}
+function num(v){v=String(v).replace(',','.').trim();if(v==='')return null;const n=parseFloat(v);return isNaN(n)?null:Math.max(0,n)}
+function missing(){let s=0;data.forEach(g=>g.variants.forEach(v=>{if(!(v.price||v.wholesale))s++}));return s}
+function render(){if(busy){pending=true;return}busy=true;try{doRender()}finally{busy=false;if(pending){pending=false;setTimeout(render,0)}}}
+function doRender(){const q=$('q').value.trim().toLowerCase(),cat=$('cat').value,np=$('np').checked,tb=$('tb');tb.replaceChildren();let n=0;
+data.forEach(g=>{if(cat&&g.cat!==cat)return;if(q&&!(g.id+' '+g.name+' '+g.variants.map(v=>v.id+' '+v.label).join(' ')).toLowerCase().includes(q))return;
+ g.variants.forEach((v,i)=>{const has=v.price||v.wholesale;if(np&&has)return;n++;const tr=document.createElement('tr');if(i===0)tr.className='first';if(!has)tr.classList.add('nop');
+  const td=()=>{const c=document.createElement('td');tr.append(c);return c};
+  const inp=(val,cls)=>{const x=document.createElement('input');x.value=val??'';if(cls)x.className=cls;return x};
+  const c0=td();c0.className='code';c0.textContent=v.id;
+  const c1=td();if(i===0){const x=inp(g.name);x.title='Nombre del producto';x.onchange=()=>{g.name=x.value.trim()||g.name;setTimeout(render,0)};c1.append(x);const s=document.createElement('div');s.className='sub';s.textContent=g.cat+(g.variants.length>1?' · '+g.variants.length+' opciones':'');c1.append(s)}else{c1.innerHTML='<span class="sub">↳ mismo producto</span>'}
+  const c2=td();c2.style.cssText='display:flex;align-items:center;gap:6px;border-bottom:1px solid #f1d3df';if(v.swatch){const d=document.createElement('i');d.className='dot';d.style.background=v.swatch;c2.append(d)}
+  const lab=inp(v.label);lab.setAttribute('list','colors');lab.placeholder=g.variants.length>1?'ej. Rojo':'—';lab.disabled=g.variants.length===1;lab.onchange=()=>{v.label=lab.value.trim();recalc(g);setTimeout(render,0)};c2.append(lab);
+  const dim=inp(v.dim);dim.onchange=()=>{v.dim=dim.value.trim()};td().append(dim);
+  const mat=inp(v.mat);mat.onchange=()=>{v.mat=mat.value.trim()};td().append(mat);
+  const upd=()=>{tr.classList.toggle('nop',!(v.price||v.wholesale));$('count').textContent=n+' filas · '+missing()+' variantes sin precio'};
+  const p1=inp(v.price,'n');p1.inputMode='decimal';p1.onchange=()=>{v.price=num(p1.value);upd()};const c3=td();c3.className='pcell';c3.append(p1);
+  const p2=inp(v.wholesale,'n');p2.inputMode='decimal';p2.onchange=()=>{v.wholesale=num(p2.value);upd()};const c4=td();c4.className='pcell';c4.append(p2);
+  tb.append(tr)})});
+ $('count').textContent=n+' filas · '+missing()+' variantes sin precio'}
+['q','cat','np'].forEach(i=>$(i).addEventListener(i==='q'?'input':'change',render));
+$('save').onclick=()=>{data.forEach(g=>g.variants.forEach(v=>{if(v.price===undefined)v.price=null;if(v.wholesale===undefined)v.wholesale=null}));
+ const out=head+'const PRODUCTS='+JSON.stringify(data)+';\n';const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([out],{type:'text/javascript'}));a.download='productos.js';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000);toast('Listo: reemplaza productos.js en tu sitio')};
+</script></body></html>

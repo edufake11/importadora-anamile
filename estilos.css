@@ -355,3 +355,14 @@ a{color:inherit;text-decoration:none}button,input{font:inherit;color:inherit}but
 .rm{align-self:start;border:0;background:none;color:var(--muted);font-size:24px;line-height:1;padding:2px 6px}.rm:hover{color:var(--rose)}
 /* contraste AA */
 .save{background:#9a6b12}.cat em,.m-cat{color:var(--rose-dk)}
+
+/* ===== skeleton, cliente, barra fija producto ===== */
+.ph{background:linear-gradient(110deg,#fde8ef 30%,#fff6f9 50%,#fde8ef 70%);background-size:220% 100%;animation:shim 1.5s linear infinite}
+@keyframes shim{to{background-position:-220% 0}}
+.cust{display:grid;gap:8px;margin:2px 0 8px}
+.cust input,.cust textarea{width:100%;border:1.5px solid var(--pink);border-radius:14px;padding:10px 14px;font:inherit;font-size:14px;background:#fff;resize:none;color:var(--ink)}
+.cust input:focus,.cust textarea:focus{outline:0;border-color:var(--rose)}
+@media(prefers-reduced-motion:reduce){.ph{animation:none}}
+.pp-bar{display:none}
+@media(max-width:800px){.pp-bar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:30;gap:10px;transform:translateY(160%);transition:transform .4s var(--ease);background:#fffafcf2;backdrop-filter:blur(10px);padding:10px;border-radius:999px;box-shadow:0 12px 34px #a90a4938;border:1px solid var(--line)}
+.pp-bar.show{transform:none}.pp-bar .btn{flex:1;padding-left:10px;padding-right:10px}.pp-wrap{padding-bottom:100px}}
