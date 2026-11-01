@@ -22,7 +22,7 @@ if(dims.length)t+=' Medidas: '+(dims.length===1?dims[0]:dims.slice(0,3).join(' �
 if(pr.length)t+=' Precio por menor desde '+money(Math.min(...pr))+(wh.length?' y por mayor desde '+money(Math.min(...wh))+' (desde '+MM+' unidades).':'.');else if(wh.length)t+=' Precio por mayor desde '+money(Math.min(...wh))+'.';
 const d=document.querySelector('.pp-detail');if(d)d.textContent=t+' Venta por mayor y menor en Galería Plaza Central, Lima.';const dsc=document.querySelector('.pp-info .m-desc');if(dsc&&G.desc)dsc.textContent=G.desc}
 let cur=0;
-function ui(){const o=rd();$('cnt').textContent='('+Object.values(o).reduce((a,b)=>a+(+b||0),0)+')';const q=o[V[cur].id]||0;$('ppAdd').textContent=q?'✓ En tu selección ('+q+') · Agregar otro':'💗 Agregar a mi selección';const a2=$('ppAdd2');if(a2)a2.textContent=q?'✓ ('+q+') Agregar otro':'💗 Agregar'}
+function ui(){const o=rd();$('cnt').textContent='('+Object.values(o).reduce((a,b)=>a+(+b||0),0)+')';const q=o[V[cur].id]||0;$('ppAdd').textContent=q?'✓ En tu selección ('+q+') · Agregar otro':'Agregar a mi selección';const a2=$('ppAdd2');if(a2)a2.textContent=q?'✓ ('+q+') Agregar otro':'Agregar'}
 function show(i,animate){cur=i;const v=V[i],im=$('ppImg');document.querySelectorAll('.vbtn').forEach((x,k)=>x.setAttribute('aria-pressed',k===i));
 const set=()=>{im.src=v.img;im.alt=v.alt;im.style.opacity=1};if(animate){im.style.opacity=.15;setTimeout(set,160)}else set();
 $('ppRows').innerHTML=v.rows;$('ppPrice').innerHTML=v.price;$('ppWa').href=v.wa;const w2=$('ppWa2');if(w2)w2.href=v.wa;$('ppCat').href='../index.html#p='+encodeURIComponent(v.id);
