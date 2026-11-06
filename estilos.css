@@ -393,7 +393,7 @@ body.lock:has(.bnav)::after{display:none}
 .install{display:block;margin:0 auto 16px;background:#ffffff1f;color:#fff;border:1.5px solid #ffffff59;border-radius:999px;padding:10px 22px;font-weight:800;font-size:14px;cursor:pointer;transition:background .2s}.install:hover{background:#ffffff38}.install[hidden]{display:none}
 
 /* la foto se ve completa en la tarjeta, sin cortar el producto */
-.product .ph{aspect-ratio:1/1;background:#f6e3d3;animation:none}
+.product .ph{aspect-ratio:1/1;background:#fce2ee;animation:none}
 .product .ph img{object-fit:contain}
 
 /* más brillo en botones, tarjetas y precios */
