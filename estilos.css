@@ -420,3 +420,14 @@ body.lock:has(.bnav)::after{display:none}
 .bn-wrap{position:relative;display:block}
 .bn-wrap b{position:absolute;right:-12px;top:-5px;min-width:19px;height:19px;border-radius:99px;background:#ff3d8b;color:#fff;font-size:11px;font-style:normal;line-height:19px;padding:0 5px;text-align:center;box-shadow:0 0 0 2px #3a1230}
 .bn-wrap b[hidden]{display:none}
+
+
+/* pie claro */
+.footer{background:linear-gradient(180deg,#fff4f8,var(--blush) 60%,var(--pink-2));color:var(--ink);border-top:1px solid var(--line)}
+.foot-g h4{color:var(--rose)}
+.foot-g p,.foot-g a{opacity:1;color:var(--ink)}.foot-g a:hover{color:var(--rose)}
+.footer>small{border-top-color:var(--line);color:var(--wine);opacity:.8}
+.footer .social.light .soc{border-color:var(--rose);color:var(--rose)}
+.footer .social.light .soc:hover{background:var(--rose);color:#fff}
+@media(min-width:901px){.foot-g{grid-template-columns:1.3fr .8fr .9fr 1.1fr 1.4fr}}
+/* /pie claro */

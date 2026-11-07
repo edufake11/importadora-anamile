@@ -9,17 +9,18 @@ const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const swBg=h=>h==='#dff0f7'?'linear-gradient(135deg,#fff 45%,#cfe8f3 55%)':h;
 const rd=()=>{try{return JSON.parse(localStorage.getItem(K))||{}}catch(e){return {}}},wr=o=>{try{localStorage.setItem(K,JSON.stringify(o))}catch(e){}};
 function rows(g,v){const m=g.variants.length>1;const r=[['Código',v.id],['Categoría',g.cat]];if(m&&v.label)r.push([g.vtype||'Modelo',v.label]);if(v.dim)r.push(['Medidas',v.dim]);if(v.mat)r.push(['Material',v.mat]);return r.map(([k,x])=>'<dt>'+esc(k)+'</dt><dd>'+esc(x)+'</dd>').join('')}
-function price(v){if(v.price&&v.wholesale)return '<div class="big">'+money(v.price)+'<small>  precio por menor (1 unidad)</small></div><div class="mayor">Por mayor: '+money(v.wholesale)+' c/u desde '+MM+' unidades en total</div><p>Consulta disponibilidad por WhatsApp.</p>';
-if(v.price)return '<div class="big">'+money(v.price)+'<small>  precio por unidad</small></div><p>Consulta disponibilidad por WhatsApp.</p>';
+function price(v){if(v.price&&v.wholesale)return '<div class="big">'+money(v.price)+'<small>  '+(DZ?'la docena (por menor)':'precio por menor (1 unidad)')+'</small></div><div class="mayor">Por mayor: '+money(v.wholesale)+PER+' desde '+MM+(DZ?' docenas':' unidades')+' en total</div><p>Consulta disponibilidad por WhatsApp.</p>';
+if(v.price)return '<div class="big">'+money(v.price)+'<small>  '+(DZ?'la docena':'precio por unidad')+'</small></div><p>Consulta disponibilidad por WhatsApp.</p>';
 if(v.wholesale)return '<div class="big">'+money(v.wholesale)+'<small>  precio por mayor</small></div><p>Precio por mayor directo. Consulta disponibilidad por WhatsApp.</p>';
 return '<div class="ask">Consulta el precio por WhatsApp</div><p>Venta por mayor y por menor.</p>'}
+const DZ=!!G&&(G.unit==='docena'||/llavero/i.test(G.name)),PER=DZ?' la docena':' c/u';
 const ttl=(g,v)=>g.name+(g.variants.length>1&&v.label?' · '+v.label:'');
 const wa=(g,v)=>'https://wa.me/51906990985?text='+encodeURIComponent('Hola, Importadora Anamile 🎀\nMe interesa este producto: '+ttl(g,v)+' ('+v.id+').\n¿Me confirman precio por mayor y menor y disponibilidad?');
 let V;if(G){V=G.variants.map(v=>({img:'../'+v.img,id:v.id,label:v.label,swatch:v.swatch,title:ttl(G,v),rows:rows(G,v),price:price(v),wa:wa(G,v),alt:(G.name+' '+(v.label||'')+' código '+v.id).replace('  ',' ')}))}else V=D.V;
 if(G){const vs=G.variants,n=vs.length,kind={Color:'colores',Modelo:'modelos','Tamaño':'tamaños'}[G.vtype]||'opciones';let t=G.name+' '+G.id+(n>1?' disponible en '+n+' '+kind+': '+vs.map(v=>v.label).join(', ')+'.':'.');
 const u=a=>[...new Set(a.filter(Boolean))],dims=u(vs.map(v=>v.dim)),mats=u(vs.map(v=>v.mat)),pr=vs.map(v=>v.price).filter(Boolean),wh=vs.map(v=>v.wholesale).filter(Boolean);
 if(dims.length)t+=' Medidas: '+(dims.length===1?dims[0]:dims.slice(0,3).join(' · '))+'.';if(mats.length)t+=' Material: '+mats.slice(0,2).join(', ').toLowerCase()+'.';
-if(pr.length)t+=' Precio por menor desde '+money(Math.min(...pr))+(wh.length?' y por mayor desde '+money(Math.min(...wh))+' (desde '+MM+' unidades).':'.');else if(wh.length)t+=' Precio por mayor desde '+money(Math.min(...wh))+'.';
+if(pr.length)t+=' Precio por menor desde '+money(Math.min(...pr))+(DZ?' la docena':'')+(wh.length?' y por mayor desde '+money(Math.min(...wh))+' (desde '+MM+(DZ?' docenas':' unidades')+').':'.');else if(wh.length)t+=' Precio por mayor desde '+money(Math.min(...wh))+'.';
 const d=document.querySelector('.pp-detail');if(d)d.textContent=t+' Venta por mayor y menor en Galería Plaza Central, Lima.';const dsc=document.querySelector('.pp-info .m-desc');if(dsc&&G.desc)dsc.textContent=G.desc}
 let cur=0;
 function ui(){const o=rd();$('cnt').textContent='('+Object.values(o).reduce((a,b)=>a+(+b||0),0)+')';const q=o[V[cur].id]||0;$('ppAdd').textContent=q?'✓ En tu selección ('+q+') · Agregar otro':'Agregar a mi selección';const a2=$('ppAdd2');if(a2)a2.textContent=q?'✓ ('+q+') Agregar otro':'Agregar'}
