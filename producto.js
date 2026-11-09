@@ -23,14 +23,14 @@ if(dims.length)t+=' Medidas: '+(dims.length===1?dims[0]:dims.slice(0,3).join(' �
 if(pr.length)t+=' Precio por menor desde '+money(Math.min(...pr))+(DZ?' la docena':'')+(wh.length?' y por mayor desde '+money(Math.min(...wh))+' (desde '+MM+(DZ?' docenas':' unidades')+').':'.');else if(wh.length)t+=' Precio por mayor desde '+money(Math.min(...wh))+'.';
 const d=document.querySelector('.pp-detail');if(d)d.textContent=t+' Venta por mayor y menor en Galería Plaza Central, Lima.';const dsc=document.querySelector('.pp-info .m-desc');if(dsc&&G.desc)dsc.textContent=G.desc}
 let cur=0;
-function ui(){const o=rd();$('cnt').textContent='('+Object.values(o).reduce((a,b)=>a+(+b||0),0)+')';const q=o[V[cur].id]||0;$('ppAdd').textContent=q?'✓ En tu selección ('+q+') · Agregar otro':'Agregar a mi selección';const a2=$('ppAdd2');if(a2)a2.textContent=q?'✓ ('+q+') Agregar otro':'Agregar'}
+function ui(){const o=rd();$('cnt').textContent='('+Object.values(o).reduce((a,b)=>a+(+b||0),0)+')';const q=o[V[cur].id]||0,so=!!(G&&G.variants[cur]&&G.variants[cur].agotado);$('ppAdd').disabled=so;if($('ppAdd2'))$('ppAdd2').disabled=so;if(so){$('ppAdd').textContent='Agotado';if($('ppAdd2'))$('ppAdd2').textContent='Agotado';return}$('ppAdd').textContent=q?'✓ En tu selección ('+q+') · Agregar otro':'Agregar a mi selección';const a2=$('ppAdd2');if(a2)a2.textContent=q?'✓ ('+q+') Agregar otro':'Agregar'}
 function show(i,animate){cur=i;const v=V[i],im=$('ppImg');document.querySelectorAll('.vbtn').forEach((x,k)=>x.setAttribute('aria-pressed',k===i));
 const set=()=>{im.src=v.img;im.alt=v.alt;im.style.opacity=1};if(animate){im.style.opacity=.15;setTimeout(set,160)}else set();
-$('ppRows').innerHTML=v.rows;$('ppPrice').innerHTML=v.price;$('ppWa').href=v.wa;const w2=$('ppWa2');if(w2)w2.href=v.wa;$('ppCat').href='../index.html#p='+encodeURIComponent(v.id);
+$('ppRows').innerHTML=v.rows;$('ppPrice').innerHTML=(G&&G.variants[i]&&G.variants[i].agotado?'<p class="soldnote">Agotado por ahora. Escríbenos por WhatsApp para saber cuándo vuelve.</p>':'')+v.price;$('ppWa').href=v.wa;const w2=$('ppWa2');if(w2)w2.href=v.wa;$('ppCat').href='../index.html#p='+encodeURIComponent(v.id);
 const l=$('vl');if(l)l.lastElementChild.textContent=v.label;ui()}
 if(G)document.querySelectorAll('.vbtn').forEach((b,k)=>{const v=G.variants[k];if(!v)return;const im=b.querySelector('img');if(im){im.src='../'+v.img;im.alt=V[k].alt}const sp=b.querySelector('span');if(sp)sp.textContent=v.label;const d=b.querySelector('.dot');if(d&&v.swatch)d.style.background=swBg(v.swatch)});
 document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{const i=+b.dataset.i;show(i,true);history.replaceState(null,'','#'+V[i].id)});
-const addOne=()=>{const o=rd(),id=V[cur].id;o[id]=(o[id]||0)+1;wr(o);ui()};
+const addOne=()=>{if(G&&G.variants[cur]&&G.variants[cur].agotado)return;const o=rd(),id=V[cur].id;o[id]=(o[id]||0)+1;wr(o);ui()};
 $('ppAdd').onclick=addOne;if($('ppAdd2'))$('ppAdd2').onclick=addOne;
 const h=decodeURIComponent(location.hash.slice(1)),k0=V.findIndex(v=>v.id===h);show(k0>0?k0:0,false);
 (function(){const im=$('ppImg'),m=im.parentNode,f=()=>m.style.setProperty('--bg','url("'+im.currentSrc+'")');im.addEventListener('load',f);if(im.complete)f()})();

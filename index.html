@@ -102,7 +102,7 @@ function unitPrice(v,q){if(v.wholesale&&(q>=MINM()||!v.price))return {p:v.wholes
 const swBg=h=>h==='#dff0f7'?'linear-gradient(135deg,#fff 45%,#cfe8f3 55%)':h;
 const plural={Color:'colores',Modelo:'modelos','Tamaño':'tamaños'};
 function lock(){document.body.classList.toggle('lock',$('drawer').classList.contains('open')||!$('modal').hidden)}
-const DZ=g=>!!g&&(g.unit==='docena'||/llavero/i.test(g.name)),UN=g=>DZ(g)?' la docena':g&&g.unit==='paquete'?' el paquete':'',PER=g=>UN(g)||' c/u';
+const DZ=g=>!!g&&(g.unit==='docena'||/llavero/i.test(g.name)),UN=g=>DZ(g)?' la docena':g&&g.unit==='paquete'?' el paquete':'',PER=g=>UN(g)||' c/u',SOLD=v=>!!(v&&v.agotado),ALLSOLD=g=>g.variants.every(SOLD);
 function totalQty(){return Object.values(selected).reduce((a,b)=>a+b,0)}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('show'),1900)}
 function bump(){const b=$('openCart');b.classList.remove('bump');void b.offsetWidth;b.classList.add('bump')}
@@ -130,7 +130,7 @@ function plus1(t){const p=document.createElement('span');p.textContent='+1';p.st
 function changeQty(id,d,from){const b=selected[id]||0;selected[id]=Math.max(0,b+d);if(!selected[id])delete selected[id];saveSel();if(d>0){track('add_to_cart',{item_id:id});if(from&&!matchMedia('(prefers-reduced-motion:reduce)').matches)fly(from);else bump();const {g,v}=byV[id];toast('Agregado: '+title(g,v)+' ')}renderSel()}
 /* tarjetas */
 function card(g,list,i,isNew,pref){const a=el('article','product');a.style.setProperty('--i',Math.min(i,12));let vi=pref?Math.max(0,g.variants.findIndex(v=>v.label===pref)):0;
-const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[vi].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));
+const o=el('button','open');o.setAttribute('aria-label','Ver detalle de '+g.name);const ph=el('div','ph'),im=el('img');im.src=g.variants[vi].img;im.alt=g.name;im.loading='lazy';fade(im);ph.append(im);if(isNew)ph.append(el('span','pill','Novedad'));if(ALLSOLD(g)){a.classList.add('sold');ph.append(el('span','pill out','Agotado'))}
 const d=el('div','details'),h=el('h3',null,g.name),code=el('div','code',g.variants[vi].id),pr=el('div','pr');
 const hasSw0=multi(g)&&g.variants.every(v=>v.swatch),pl=g.variants.map(listPrice).filter(Boolean),varies=pl.length&&Math.min(...pl)!==Math.max(...pl);
 const setPrice=()=>{const v=g.variants[vi];pr.replaceChildren();const lp=listPrice(v);if(!lp){pr.className='pr ask';pr.textContent='Consultar precio';return}pr.className='pr';
@@ -139,7 +139,7 @@ pr.textContent=money(lp)+UN(g);if(v.price&&v.wholesale)pr.append(el('small','pr2
 d.append(h,code,pr);o.append(ph,d);o.onclick=()=>openModal(g.id,list,vi,o,im);
 const fv=el('button','fav');fv.dataset.g=g.id;fv.type='button';fv.setAttribute('aria-label','Guardar '+g.name+' en favoritos');fv.onclick=e=>{e.stopPropagation();toggleFav(g.id)};ph.append(fv);
 const q=el('button','quick','+');q.dataset.q=g.variants[vi].id;
-q.onclick=e=>{e.stopPropagation();changeQty(g.variants[vi].id,1,im)};q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
+q.onclick=e=>{e.stopPropagation();if(SOLD(g.variants[vi]))return openModal(g.id,list,vi,o,im);changeQty(g.variants[vi].id,1,im)};if(ALLSOLD(g))q.hidden=true;q.setAttribute('aria-label','Agregar '+g.name+' a mi selección');
 a.append(o,q);
 if(multi(g)){const dots=el('div','dots');dots.setAttribute('role','group');dots.setAttribute('aria-label','Elegir '+(g.vtype||'modelo').toLowerCase());
 const hasSw=g.variants.every(v=>v.swatch);
@@ -160,7 +160,7 @@ $('nores').hidden=l.length>0;$('nores').textContent=filter==='Favoritos'?'Aún n
 function setFilter(f){filter=f;shown=STEP;document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',c.dataset.f===f));renderCatalog()}
 /* detalle */
 function renderActions(){const box=$('mActions');box.replaceChildren();const g=curG,v=g.variants[curI],q=selected[v.id]||0;
-if(!q){const b=el('button','btn','Agregar a mi selección');b.onclick=()=>changeQty(v.id,1,$('mImg'));box.append(b)}
+if(!q&&SOLD(v)){const b=el('button','btn','Agotado');b.disabled=true;box.append(b)}else if(!q){const b=el('button','btn','Agregar a mi selección');b.onclick=()=>changeQty(v.id,1,$('mImg'));box.append(b)}
 else{const s=el('div','stepper'),m=el('button',null,'−'),pl=el('button',null,'+');m.setAttribute('aria-label','Quitar uno');pl.setAttribute('aria-label','Agregar uno');m.onclick=()=>changeQty(v.id,-1);pl.onclick=()=>changeQty(v.id,1,$('mImg'));s.append(m,el('span',null,q+(DZ(g)?(q===1?' docena':' docenas'):(q===1?' unidad':' unidades'))+' en tu selección'),pl);box.append(s)}
 if(v.price&&v.wholesale){const N=totalQty(),hint=el('p','m-hint2');hint.textContent=N>=MINM()?'✓ Tu selección tiene '+N+' unidades: se aplica el precio por mayor ('+money(v.wholesale)+PER(g)+')':(N===1?'Agrega 1 unidad más (de este u otro producto) y todo sale a precio por mayor: '+money(v.wholesale)+PER(g):'Con '+MINM()+' unidades en total (pueden ser de productos distintos) se aplica el precio por mayor: '+money(v.wholesale)+PER(g));box.prepend(hint)}
 const w=el('a','btn ghost','Preguntar por este producto');w.target='_blank';w.rel='noopener noreferrer';
@@ -170,7 +170,7 @@ function renderVariantInfo(){const g=curG,v=g.variants[curI];
 $('mTitle').textContent=title(g,v);$('mCode').textContent='Código '+v.id;
 const dl=$('mChars');dl.replaceChildren();const rows=[['Código',v.id],['Categoría',g.cat]];if(multi(g)&&v.label)rows.push([g.vtype||'Modelo',v.label]);if(v.dim)rows.push(['Medidas',v.dim]);if(v.mat)rows.push(['Material',v.mat]);
 rows.forEach(([k,x])=>dl.append(el('dt',null,k),el('dd',null,x)));
-const pr=$('mPrice');pr.replaceChildren();
+const pr=$('mPrice');pr.replaceChildren();if(SOLD(curG.variants[curI]))pr.append(el('p','soldnote','Agotado por ahora. Escríbenos por WhatsApp para saber cuándo vuelve.'));
 if(v.price){const b=el('div','big',money(v.price));b.append(el('small',null,DZ(curG)?(v.wholesale?'  la docena (por menor)':'  la docena'):(v.wholesale?'  precio por menor (1 unidad)':'  precio por unidad')));pr.append(b);if(v.wholesale)pr.append(el('div','mayor','Por mayor: '+money(v.wholesale)+PER(curG)+' desde '+(v.minWholesale||MINM())+(DZ(curG)?' docenas':' unidades')))}
 else if(v.wholesale){const b=el('div','big',money(v.wholesale));b.append(el('small',null,UN(curG)?' '+UN(curG)+' (por mayor)':'  precio por mayor'));pr.append(b);pr.append(el('p',null,'Precio por mayor directo.'))}
 else{pr.append(el('div','ask','Consulta el precio por WhatsApp'));pr.append(el('p',null,'Tenemos precio por mayor y por menor.'))}
