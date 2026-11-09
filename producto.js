@@ -11,9 +11,9 @@ const rd=()=>{try{return JSON.parse(localStorage.getItem(K))||{}}catch(e){return
 function rows(g,v){const m=g.variants.length>1;const r=[['Código',v.id],['Categoría',g.cat]];if(m&&v.label)r.push([g.vtype||'Modelo',v.label]);if(v.dim)r.push(['Medidas',v.dim]);if(v.mat)r.push(['Material',v.mat]);return r.map(([k,x])=>'<dt>'+esc(k)+'</dt><dd>'+esc(x)+'</dd>').join('')}
 function price(v){if(v.price&&v.wholesale)return '<div class="big">'+money(v.price)+'<small>  '+(DZ?'la docena (por menor)':'precio por menor (1 unidad)')+'</small></div><div class="mayor">Por mayor: '+money(v.wholesale)+PER+' desde '+MM+(DZ?' docenas':' unidades')+' en total</div><p>Consulta disponibilidad por WhatsApp.</p>';
 if(v.price)return '<div class="big">'+money(v.price)+'<small>  '+(DZ?'la docena':'precio por unidad')+'</small></div><p>Consulta disponibilidad por WhatsApp.</p>';
-if(v.wholesale)return '<div class="big">'+money(v.wholesale)+'<small>  precio por mayor</small></div><p>Precio por mayor directo. Consulta disponibilidad por WhatsApp.</p>';
+if(v.wholesale)return '<div class="big">'+money(v.wholesale)+'<small>'+(UN?' '+UN+' (por mayor)':'  precio por mayor')+'</small></div><p>Precio por mayor directo. Consulta disponibilidad por WhatsApp.</p>';
 return '<div class="ask">Consulta el precio por WhatsApp</div><p>Venta por mayor y por menor.</p>'}
-const DZ=!!G&&(G.unit==='docena'||/llavero/i.test(G.name)),PER=DZ?' la docena':' c/u';
+const DZ=!!G&&(G.unit==='docena'||/llavero/i.test(G.name)),UN=DZ?' la docena':G&&G.unit==='paquete'?' el paquete':'',PER=UN||' c/u';
 const ttl=(g,v)=>g.name+(g.variants.length>1&&v.label?' · '+v.label:'');
 const wa=(g,v)=>'https://wa.me/51906990985?text='+encodeURIComponent('Hola, Importadora Anamile 🎀\nMe interesa este producto: '+ttl(g,v)+' ('+v.id+').\n¿Me confirman precio por mayor y menor y disponibilidad?');
 let V;if(G){V=G.variants.map(v=>({img:'../'+v.img,id:v.id,label:v.label,swatch:v.swatch,title:ttl(G,v),rows:rows(G,v),price:price(v),wa:wa(G,v),alt:(G.name+' '+(v.label||'')+' código '+v.id).replace('  ',' ')}))}else V=D.V;
