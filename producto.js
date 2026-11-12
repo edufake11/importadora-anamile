@@ -28,7 +28,7 @@ function show(i,animate){cur=i;const v=V[i],im=$('ppImg');document.querySelector
 const set=()=>{im.src=v.img;im.alt=v.alt;im.style.opacity=1};if(animate){im.style.opacity=.15;setTimeout(set,160)}else set();
 $('ppRows').innerHTML=v.rows;$('ppPrice').innerHTML=(G&&G.variants[i]&&G.variants[i].agotado?'<p class="soldnote">Agotado por ahora. Escríbenos por WhatsApp para saber cuándo vuelve.</p>':'')+v.price;$('ppWa').href=v.wa;const w2=$('ppWa2');if(w2)w2.href=v.wa;$('ppCat').href='../index.html#p='+encodeURIComponent(v.id);
 const l=$('vl');if(l)l.lastElementChild.textContent=v.label;ui()}
-if(G)document.querySelectorAll('.vbtn').forEach((b,k)=>{const v=G.variants[k];if(!v)return;const im=b.querySelector('img');if(im){im.src='../'+v.img;im.alt=V[k].alt}const sp=b.querySelector('span');if(sp)sp.textContent=v.label;const d=b.querySelector('.dot');if(d&&v.swatch)d.style.background=swBg(v.swatch)});
+if(G)document.querySelectorAll('.vbtn').forEach((b,k)=>{const v=G.variants[k];if(!v)return;const im=b.querySelector('img');if(im){im.src='../'+v.img.replace(/^img\//,'img/t/').replace(/\.jpg$/,'.webp');im.alt=V[k].alt}const sp=b.querySelector('span');if(sp)sp.textContent=v.label;const d=b.querySelector('.dot');if(d&&v.swatch)d.style.background=swBg(v.swatch)});
 document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{const i=+b.dataset.i;show(i,true);history.replaceState(null,'','#'+V[i].id)});
 const addOne=()=>{if(G&&G.variants[cur]&&G.variants[cur].agotado)return;const o=rd(),id=V[cur].id;o[id]=(o[id]||0)+1;wr(o);ui()};
 $('ppAdd').onclick=addOne;if($('ppAdd2'))$('ppAdd2').onclick=addOne;

@@ -439,3 +439,8 @@ body.lock:has(.bnav)::after{display:none}
 .btn[disabled]{background:#cbbfc5!important;box-shadow:none!important;cursor:not-allowed;transform:none!important}
 .soldnote{margin:0 0 10px;padding:8px 12px;border-radius:12px;background:#f3e9ee;color:#6e5a64;font-weight:700;font-size:14px}
 /* /agotados */
+/* portada compacta en celular */
+@media(max-width:600px){.hero-copy{padding:20px 18px 18px}.hero-logo{width:150px;margin:8px auto 2px}.hero p{margin-top:6px}
+.hero-actions{flex-wrap:nowrap;gap:10px;margin-top:14px}.hero-actions .btn{flex:1;padding-left:10px;padding-right:10px;white-space:nowrap;justify-content:center}
+.hero-trust{display:none}.hero-photo{min-height:190px}#novedades{padding-top:34px}#novedades .section-head{margin-bottom:18px}}
+/* /portada compacta en celular */
