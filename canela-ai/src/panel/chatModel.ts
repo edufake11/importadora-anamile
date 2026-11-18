@@ -1,5 +1,5 @@
 // Modelo de datos del chat (puro, sin React) para poder probarlo.
-import type { ImageData, ProviderId, WireMessage } from '../lib/ipc';
+import type { ImageData, ProviderId, Usage, WireMessage } from '../lib/ipc';
 
 export interface ToolActivity {
   callId: string;
@@ -37,6 +37,10 @@ export interface UiMessage {
   confirms?: PendingConfirm[];
   /** Mensaje generado al terminar un trabajo en segundo plano. */
   job?: boolean;
+  /** Resumen automático de la parte antigua de la conversación. */
+  summary?: boolean;
+  usage?: Usage;
+  costUsd?: number | null;
 }
 
 export interface Conversation {
@@ -113,4 +117,27 @@ export function bubbleSnippet(text: string, max = 140): string {
 
 export function newId(): string {
   return crypto.randomUUID();
+}
+
+/** Tamaño aproximado (caracteres) de lo que se enviaría al modelo. */
+export function wireSize(messages: UiMessage[]): number {
+  return JSON.stringify(toWire(messages)).length;
+}
+
+export const COMPACT_AT_CHARS = 350_000;
+export const KEEP_RECENT = 6;
+
+/**
+ * Sustituye la parte antigua por un resumen y deja los últimos mensajes sólo
+ * con su texto (sin bloques internos ni imágenes), para que el historial
+ * siga siendo válido y mucho más corto.
+ */
+export function compactWith(messages: UiMessage[], summary: string, id: string): UiMessage[] {
+  const recent = messages.slice(-KEEP_RECENT).map((m) => ({ ...m, transcript: undefined, images: undefined, confirms: undefined }));
+  return [{ id, role: 'user', status: 'done', summary: true, text: `[Resumen de nuestra conversación anterior]\n${summary}` }, ...recent];
+}
+
+export function conversationCost(messages: UiMessage[]): number | null {
+  const costs = messages.map((m) => m.costUsd).filter((c): c is number => typeof c === 'number');
+  return costs.length ? costs.reduce((a, b) => a + b, 0) : null;
 }

@@ -35,6 +35,8 @@ pub struct Memory {
     pub source: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Memoria temporal: se olvida sola después de esta fecha. `None` = permanente.
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -257,6 +259,7 @@ fn memory_from(r: &Row) -> rusqlite::Result<Memory> {
         source: r.get(3)?,
         created_at: r.get(4)?,
         updated_at: r.get(5)?,
+        expires_at: r.get(6)?,
     })
 }
 
@@ -312,6 +315,30 @@ impl Db {
 
     // ------------------------------------------------------------ memoria
 
+    /// Recuerdo temporal: caduca en `days` días.
+    pub fn memory_add_temporary(&self, kind: &str, content: &str, source: &str, days: i64) -> DbResult<Memory> {
+        let m = self.memory_add(kind, content, source)?;
+        let until = (Local::now() + chrono::Duration::days(days.clamp(1, 365)))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        self.memory_set_expiry(m.id, Some(&until))
+    }
+
+    pub fn memory_set_expiry(&self, id: i64, until: Option<&str>) -> DbResult<Memory> {
+        self.with(|c| c.execute("UPDATE memories SET expires_at = ?1 WHERE id = ?2", params![until, id]))?;
+        self.memory_get(id)?.ok_or_else(|| format!("No existe el recuerdo #{id}."))
+    }
+
+    /// Borra los recuerdos temporales caducados.
+    pub fn memory_purge_expired(&self) -> DbResult<usize> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                params![now_str()],
+            )
+        })
+    }
+
     pub fn memory_add(&self, kind: &str, content: &str, source: &str) -> DbResult<Memory> {
         let content = clean_text(content, 1000)?;
         let kind = normalize_kind(kind);
@@ -319,7 +346,7 @@ impl Db {
         // Evita duplicados exactos.
         if let Some(existing) = self.with(|c| {
             c.query_row(
-                "SELECT id, kind, content, source, created_at, updated_at FROM memories WHERE lower(content) = lower(?1)",
+                "SELECT id, kind, content, source, created_at, updated_at, expires_at FROM memories WHERE lower(content) = lower(?1)",
                 params![content],
                 memory_from,
             )
@@ -340,7 +367,7 @@ impl Db {
     pub fn memory_get(&self, id: i64) -> DbResult<Option<Memory>> {
         self.with(|c| {
             c.query_row(
-                "SELECT id, kind, content, source, created_at, updated_at FROM memories WHERE id = ?1",
+                "SELECT id, kind, content, source, created_at, updated_at, expires_at FROM memories WHERE id = ?1",
                 params![id],
                 memory_from,
             )
@@ -350,6 +377,7 @@ impl Db {
 
     /// Lista recuerdos; `query` busca por palabras (todas deben aparecer).
     pub fn memory_list(&self, kind: Option<&str>, query: Option<&str>, limit: usize) -> DbResult<Vec<Memory>> {
+        let now = now_str();
         let kind = kind.filter(|k| !k.trim().is_empty()).map(normalize_kind);
         let words: Vec<String> = query
             .unwrap_or("")
@@ -358,13 +386,15 @@ impl Db {
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
         let all = self.with(|c| {
-            let mut st =
-                c.prepare("SELECT id, kind, content, source, created_at, updated_at FROM memories ORDER BY updated_at DESC, id DESC")?;
+            let mut st = c.prepare(
+                "SELECT id, kind, content, source, created_at, updated_at, expires_at FROM memories ORDER BY updated_at DESC, id DESC",
+            )?;
             let rows = st.query_map([], memory_from)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })?;
         Ok(all
             .into_iter()
+            .filter(|m| m.expires_at.as_deref().is_none_or(|e| e > now.as_str()))
             .filter(|m| kind.as_ref().is_none_or(|k| &m.kind == k))
             .filter(|m| {
                 let text = format!("{} {}", m.kind, m.content).to_lowercase();
@@ -724,7 +754,12 @@ impl Db {
         if !memories.is_empty() {
             out.push_str("Lo que recuerdas de tu humano (memoria local):\n");
             for m in &memories {
-                out.push_str(&format!("- [#{} {}] {}\n", m.id, m.kind, m.content));
+                let temp = m
+                    .expires_at
+                    .as_deref()
+                    .map(|e| format!(", temporal hasta {}", &e[..10]))
+                    .unwrap_or_default();
+                out.push_str(&format!("- [#{} {}{temp}] {}\n", m.id, m.kind, m.content));
             }
         }
         out.push_str(&format!(
@@ -763,6 +798,24 @@ mod tests {
         assert!(d.memory_delete(m.id).unwrap());
         assert!(!d.memory_delete(m.id).unwrap());
         assert_eq!(d.memory_clear().unwrap(), 1);
+    }
+
+    #[test]
+    fn temporary_memories_expire() {
+        let d = db();
+        let t = d
+            .memory_add_temporary("dato", "Mañana tengo examen de cálculo", "canela", 2)
+            .unwrap();
+        assert!(t.expires_at.is_some());
+        d.memory_add("proyecto", "Página web", "usuario").unwrap();
+        assert_eq!(d.memory_list(None, None, 10).unwrap().len(), 2);
+        // Simula que ya caducó.
+        d.memory_set_expiry(t.id, Some("2000-01-01 00:00:00")).unwrap();
+        assert_eq!(d.memory_list(None, None, 10).unwrap().len(), 1, "los caducados no se muestran");
+        assert_eq!(d.memory_purge_expired().unwrap(), 1);
+        // Hacer permanente
+        let p = d.memory_add_temporary("dato", "Algo", "usuario", 1).unwrap();
+        assert!(d.memory_set_expiry(p.id, None).unwrap().expires_at.is_none());
     }
 
     #[test]

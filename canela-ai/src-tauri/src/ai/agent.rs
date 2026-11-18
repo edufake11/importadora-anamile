@@ -155,6 +155,7 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     let defs = if env.tools.is_some() { tools::definitions() } else { vec![] };
     let mut transcript: Vec<Value> = Vec::new();
     let mut tainted = false;
+    let mut usage = super::pricing::Usage::default();
     let mut last_model = None;
 
     for step in 0..MAX_STEPS {
@@ -165,11 +166,14 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         let outcome = match run_turn(provider, &model, req, parser, emit_ref).await {
             Ok(o) => o,
             Err(message) => {
-                emit(StreamEvent::Error { message });
+                emit(StreamEvent::Error {
+                    message: super::pricing::redact_secrets(&message),
+                });
                 return;
             }
         };
         last_model = outcome.model.clone().or(last_model);
+        usage.add(&outcome.usage);
         if let Some(a) = &outcome.assistant {
             transcript.push(a.clone());
         }
@@ -182,6 +186,8 @@ pub async fn run(env: AgentEnv, emit: Emit) {
                     notice: outcome.notice,
                     provider,
                     transcript,
+                    usage,
+                    cost_usd: super::pricing::price(provider, &model).map(|p| super::pricing::cost(p, &usage)),
                 });
                 return;
             }
@@ -200,6 +206,8 @@ pub async fn run(env: AgentEnv, emit: Emit) {
                 notice: Some("Me detuve tras varios pasos seguidos para no excederme. Dime si quieres que continúe.".into()),
                 provider,
                 transcript,
+                usage,
+                cost_usd: super::pricing::price(provider, &model).map(|p| super::pricing::cost(p, &usage)),
             });
             return;
         }

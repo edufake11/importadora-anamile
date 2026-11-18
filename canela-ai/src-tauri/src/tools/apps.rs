@@ -245,6 +245,19 @@ pub fn browser_path(browser: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Ruta de Visual Studio Code (instalación por usuario o para todos).
+pub fn vscode_path() -> Option<PathBuf> {
+    let candidates = [
+        ("LOCALAPPDATA", r"Programs\Microsoft VS Code\Code.exe"),
+        ("ProgramFiles", r"Microsoft VS Code\Code.exe"),
+        ("ProgramFiles(x86)", r"Microsoft VS Code\Code.exe"),
+    ];
+    candidates
+        .iter()
+        .filter_map(|(var, rel)| std::env::var(var).ok().map(|b| PathBuf::from(b).join(rel)))
+        .find(|p| p.exists())
+}
+
 pub fn open_url(url: &str, browser: Option<&str>) -> Result<String, String> {
     if let Some(path) = browser.and_then(browser_path) {
         Command::new(&path)

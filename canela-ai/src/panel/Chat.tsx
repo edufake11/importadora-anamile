@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
   data,
+  formatUsd,
   imageUrl,
   onJobFinished,
   onJobsChanged,
@@ -17,13 +18,17 @@ import {
 import {
   type Attachment,
   bubbleSnippet,
+  COMPACT_AT_CHARS,
+  compactWith,
   composeUserText,
+  conversationCost,
   type Conversation,
   conversationTitle,
   newId,
   type PendingConfirm,
   toWire,
   type UiMessage,
+  wireSize,
 } from './chatModel';
 import { CaptureSheet } from './CaptureSheet';
 import { ClipIcon, MicIcon, ScreenIcon, SendIcon, StopIcon } from './icons';
@@ -174,7 +179,19 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
       images: images.length ? images : undefined,
     };
     const reply: UiMessage = { id: newId(), role: 'assistant', text: '', status: 'streaming', thinking: true, provider: settings.provider, tools: [], confirms: [] };
-    const wire = toWire([...messagesRef.current, user]);
+    // Conversaciones muy largas: resume lo antiguo para no gastar de más.
+    let base = messagesRef.current;
+    if (wireSize([...base, user]) > COMPACT_AT_CHARS && base.length > 8) {
+      setBusyId(reply.id);
+      try {
+        const summary = await api.summarize(toWire(base.slice(0, -6)), conv.userName);
+        base = compactWith(base, summary, newId());
+        setMessages(base);
+      } catch {
+        /* si falla el resumen, se envía completo */
+      }
+    }
+    const wire = toWire([...base, user]);
     setMessages((prev) => [...prev, user, reply]);
     setInput('');
     setAttachments([]);
@@ -252,6 +269,8 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             notice: ev.notice ?? undefined,
             provider: ev.provider,
             transcript: ev.transcript,
+            usage: ev.usage,
+            costUsd: ev.costUsd,
           }));
           if (speech) speech.end();
           void sendMood(
@@ -349,7 +368,10 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   return (
     <div className="chat">
       <div className="chat-bar">
-        <span>{providerName}</span>
+        <span>
+          {providerName}
+          {conversationCost(messages) !== null && <span className="cost"> · conversación ≈ {formatUsd(conversationCost(messages)!)}</span>}
+        </span>
         <div className="chat-bar-actions">
           {activeJobs.length > 0 && (
             <button className="text-button busy" onClick={() => setShowJobs(!showJobs)}>
@@ -439,8 +461,19 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           </div>
         )}
         {messages.map((m) => (
+          m.summary ? (
+            <details key={m.id} className="summary-note">
+              <summary>Resumí la parte anterior de la conversación para ahorrar espacio</summary>
+              <p className="md-text">{m.text.replace('[Resumen de nuestra conversación anterior]\n', '')}</p>
+            </details>
+          ) : (
           <div key={m.id} className={`msg ${m.role} ${m.status} ${m.job ? 'job-msg' : ''}`}>
-            {m.role === 'assistant' && <div className="msg-author">Canela</div>}
+            {m.role === 'assistant' && (
+              <div className="msg-author">
+                Canela
+                {typeof m.costUsd === 'number' && <span className="cost" title={m.usage ? `${m.usage.input + m.usage.cacheRead + m.usage.cacheWrite} tokens de entrada · ${m.usage.output} de salida` : ''}> · ≈ {formatUsd(m.costUsd)}</span>}
+              </div>
+            )}
             {m.attachments && m.attachments.length > 0 && <div className="msg-files">Adjunto: {m.attachments.join(', ')}</div>}
             {m.images && m.images.length > 0 && (
               <div className="msg-images">
@@ -478,6 +511,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             )}
             {m.notice && <div className={`notice ${m.status === 'error' ? 'err' : ''}`}>{m.notice}</div>}
           </div>
+          )
         ))}
       </div>
 

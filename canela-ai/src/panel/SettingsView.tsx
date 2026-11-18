@@ -1,6 +1,6 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, data, type KeyStatus, type ProviderId, type Settings } from '../lib/ipc';
+import { api, data, type KeyStatus, type ModelInfo, type ProviderId, type Settings } from '../lib/ipc';
 import { MemoryManager } from './MemoryManager';
 import { VoiceSettings } from './VoiceSettings';
 
@@ -79,6 +79,51 @@ function KeyField({ provider, label, present, onChanged }: { provider: ProviderI
   );
 }
 
+/** Comprueba el modelo guardado: capacidades y precio aproximado. */
+function ModelCheck({ dirty }: { dirty: boolean }) {
+  const [info, setInfo] = useState<ModelInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const yes = (v: boolean | null, label: string) => (v === null ? null : <span className={v ? '' : 'no'}>{label}</span>);
+  return (
+    <div className="field">
+      <button
+        className="btn"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          void api
+            .modelInfo()
+            .then(setInfo)
+            .finally(() => setBusy(false));
+        }}
+      >
+        {busy ? 'Comprobando…' : 'Comprobar modelo'}
+      </button>
+      {dirty && <small>Guarda los cambios antes de comprobar.</small>}
+      {info && (
+        <>
+          <div className="model-info">
+            {info.exists === false && <span className="no">No disponible</span>}
+            {yes(info.supportsImages, 'Imágenes')}
+            {yes(info.supportsThinking, 'Razonamiento')}
+            {yes(info.supportsEffort, 'Nivel de razonamiento')}
+            {info.contextTokens && <span>Contexto {Math.round(info.contextTokens / 1000)} mil tokens</span>}
+            {info.price && (
+              <span>
+                ≈ {info.price.input} / {info.price.output} US$ por millón (entrada / salida)
+              </span>
+            )}
+            {!info.price && <span>Precio desconocido</span>}
+          </div>
+          <small>
+            {info.source === 'api' ? 'Comprobado en vivo con la API.' : 'Valores conocidos (sin comprobar en vivo).'} {info.note ?? ''} Los precios son aproximados.
+          </small>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Toggle({ checked, onChange, children }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode }) {
   return (
     <label className="check">
@@ -144,6 +189,7 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
 
         <details className="advanced">
           <summary>Opciones avanzadas</summary>
+          <ModelCheck dirty={form.anthropicModel !== settings.anthropicModel || form.openaiModel !== settings.openaiModel || form.provider !== settings.provider} />
           {isClaude ? (
             <>
               <label className="field">

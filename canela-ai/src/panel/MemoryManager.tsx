@@ -46,9 +46,18 @@ function MemoryRow({ m, onError }: { m: Memory; onError: (e: string) => void }) 
         <div className="memory-kind">
           {kindLabel(m.kind)}
           {m.source === 'canela' ? ' · guardado por Canela' : ''}
+          {m.expiresAt ? ` · temporal hasta ${m.expiresAt.slice(0, 10)}` : ''}
         </div>
         <div className="memory-text">{m.content}</div>
       </div>
+      <button
+        className="icon-btn"
+        title={m.expiresAt ? 'Hacer permanente' : 'Hacer temporal (7 días)'}
+        aria-label={m.expiresAt ? 'Hacer permanente' : 'Hacer temporal'}
+        onClick={() => void data.memorySetTemporary(m.id, m.expiresAt ? null : 7).catch((e) => onError(String(e)))}
+      >
+        {m.expiresAt ? '∞' : '⏱'}
+      </button>
       <button className="icon-btn" title="Editar" aria-label="Editar" onClick={() => setEditing(true)}>
         ✎
       </button>

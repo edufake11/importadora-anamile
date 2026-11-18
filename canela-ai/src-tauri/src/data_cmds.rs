@@ -53,6 +53,19 @@ pub fn memory_delete(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res
     Ok(ok)
 }
 
+/// Hace un recuerdo temporal (días) o permanente (None).
+#[tauri::command]
+pub fn memory_set_temporary(app: AppHandle, state: State<'_, AppState>, id: i64, days: Option<i64>) -> Result<Memory, String> {
+    let until = days.map(|d| {
+        (chrono::Local::now() + chrono::Duration::days(d.clamp(1, 365)))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    });
+    let m = state.db.memory_set_expiry(id, until.as_deref())?;
+    notify(&app, "memory");
+    Ok(m)
+}
+
 #[tauri::command]
 pub fn memory_clear(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
     let n = state.db.memory_clear()?;

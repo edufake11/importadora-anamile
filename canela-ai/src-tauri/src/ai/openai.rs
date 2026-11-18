@@ -35,7 +35,7 @@ pub fn native_messages(history: &[ChatMessage]) -> Vec<Value> {
 pub fn build_body(model: &str, system: &str, messages: &[Value], tools: &[ToolDef]) -> Value {
     let mut msgs = vec![json!({ "role": "system", "content": system })];
     msgs.extend(messages.iter().cloned());
-    let mut body = json!({ "model": model, "stream": true, "messages": msgs });
+    let mut body = json!({ "model": model, "stream": true, "stream_options": { "include_usage": true }, "messages": msgs });
     if !tools.is_empty() {
         body["tools"] = Value::Array(
             tools
@@ -116,6 +116,7 @@ pub struct OpenAiStream {
     started: bool,
     text: String,
     calls: Vec<PartialCall>,
+    usage: super::pricing::Usage,
 }
 
 impl OpenAiStream {
@@ -158,6 +159,7 @@ impl OpenAiStream {
             stop_reason: self.finish_reason.clone(),
             model: self.model.clone(),
             notice,
+            usage: self.usage,
         }
     }
 }
@@ -174,6 +176,17 @@ impl ProviderStream for OpenAiStream {
             return vec![ParseOut::Failed(format!("Error de OpenAI: {msg}"))];
         }
         let mut out = Vec::new();
+        if data["usage"].is_object() {
+            let u = &data["usage"];
+            let cached = u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+            let prompt = u["prompt_tokens"].as_u64().unwrap_or(0);
+            self.usage = super::pricing::Usage {
+                input: prompt.saturating_sub(cached),
+                output: u["completion_tokens"].as_u64().unwrap_or(0),
+                cache_read: cached,
+                cache_write: 0,
+            };
+        }
         if !self.started {
             if let Some(m) = data["model"].as_str() {
                 self.started = true;

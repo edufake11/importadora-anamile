@@ -120,6 +120,13 @@ enum Action {
     Remember {
         kind: String,
         content: String,
+        /// Memoria temporal: días hasta olvidarlo.
+        days: Option<i64>,
+    },
+    OpenWith {
+        app: &'static str,
+        exe: PathBuf,
+        path: PathBuf,
     },
     SearchMemory {
         query: Option<String>,
@@ -196,7 +203,9 @@ pub fn definitions() -> Vec<ToolDef> {
             schema: obj(
                 json!({
                     "tipo": { "type": "string", "enum": ["proyecto", "preferencia", "horario", "aplicacion", "persona", "dato", "otro"] },
-                    "contenido": { "type": "string", "description": "Frase breve y autocontenida, p. ej. «Está desarrollando una página web para la importadora»." }
+                    "contenido": { "type": "string", "description": "Frase breve y autocontenida, p. ej. «Está desarrollando una página web para la importadora»." },
+                    "temporal": { "type": "boolean", "description": "true para datos de corto plazo (p. ej. «mañana tengo examen»): se olvidan solos." },
+                    "dias": { "type": "integer", "minimum": 1, "maximum": 365, "description": "Días que dura un recuerdo temporal (por defecto 7)." }
                 }),
                 &["tipo", "contenido"],
             ),
@@ -323,6 +332,14 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "abrir_ruta",
             description: "Abre una carpeta en el Explorador o un documento con su programa predeterminado. No abre programas ni scripts.",
             schema: obj(json!({ "ruta": { "type": "string" } }), &["ruta"]),
+        },
+        ToolDef {
+            name: "abrir_con",
+            description: "Abre una carpeta o archivo de las carpetas autorizadas con una aplicación concreta: «vscode» (Visual Studio Code, ideal para proyectos), «explorador» o «bloc_de_notas».",
+            schema: obj(
+                json!({ "aplicacion": { "type": "string", "enum": ["vscode", "explorador", "bloc_de_notas"] }, "ruta": { "type": "string" } }),
+                &["aplicacion", "ruta"],
+            ),
         },
         ToolDef {
             name: "crear_carpeta",
@@ -491,7 +508,13 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                 return Err(format!("No guardo información sensible ({why}). Por seguridad no lo recordaré."));
             }
             let kind = normalize_kind(&s(input, "tipo").unwrap_or_default());
-            p(format!("Recordar: {content}"), Permission::Auto, Action::Remember { kind, content })
+            let temporal = input.get("temporal").and_then(Value::as_bool).unwrap_or(false) || input.get("dias").is_some();
+            let days = temporal.then(|| input.get("dias").and_then(Value::as_i64).unwrap_or(7).clamp(1, 365));
+            let label = match days {
+                Some(d) => format!("Recordar por {d} días: {content}"),
+                None => format!("Recordar: {content}"),
+            };
+            p(label, Permission::Auto, Action::Remember { kind, content, days })
         }
         "buscar_recuerdos" => p(
             "Buscar en mi memoria".into(),
@@ -715,6 +738,37 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             };
             p(label, perm, Action::OpenPath(path))
         }
+        "abrir_con" => {
+            let path = ctx.scope.existing(&req(input, "ruta")?)?;
+            let (app, exe) = match req(input, "aplicacion")?.as_str() {
+                "vscode" => (
+                    "Visual Studio Code",
+                    apps::vscode_path().ok_or("No encontré Visual Studio Code instalado.")?,
+                ),
+                "explorador" => ("el Explorador", PathBuf::from("explorer.exe")),
+                "bloc_de_notas" => {
+                    if !path.is_file() {
+                        return Err("El Bloc de notas abre archivos, no carpetas.".into());
+                    }
+                    ("el Bloc de notas", PathBuf::from("notepad.exe"))
+                }
+                other => {
+                    return Err(format!(
+                        "Aplicación no permitida: «{other}» (usa vscode, explorador o bloc_de_notas)."
+                    ))
+                }
+            };
+            if path.is_file() && files::is_blocked(&path) {
+                return Err("Por seguridad no abro programas ni scripts.".into());
+            }
+            let label = format!("Abrir {} en {app}", short(&path));
+            let perm = if ctx.settings.auto_open_apps {
+                Permission::Auto
+            } else {
+                confirm(label.clone(), display(&path), None)
+            };
+            p(label, perm, Action::OpenWith { app, exe, path })
+        }
         "crear_carpeta" => {
             let path = ctx.scope.target(&req(input, "ruta")?)?;
             if path.exists() {
@@ -904,11 +958,17 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
                 "Empecé a preparar el índice en segundo plano (trabajo {id}). Avisaré al terminar."
             ))
         }
-        Action::Remember { kind, content } => {
-            let m = db.memory_add(&kind, &content, "canela")?;
+        Action::Remember { kind, content, days } => {
+            let m = match days {
+                Some(d) => db.memory_add_temporary(&kind, &content, "canela", d)?,
+                None => db.memory_add(&kind, &content, "canela")?,
+            };
             db.log("memoria", &format!("Canela recordó: {}", m.content));
             (ctx.notify)("memory");
-            Ok(format!("Guardado en memoria como #{} ({}).", m.id, m.kind))
+            Ok(match &m.expires_at {
+                Some(e) => format!("Guardado en memoria temporal como #{} ({}), hasta {}.", m.id, m.kind, &e[..10]),
+                None => format!("Guardado en memoria como #{} ({}).", m.id, m.kind),
+            })
         }
         Action::SearchMemory { query, kind } => {
             let items = db.memory_list(kind.as_deref(), query.as_deref(), 40)?;
@@ -1057,6 +1117,14 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
             apps::open_with_shell(&display(&path)).map_err(|e| format!("No pude abrirlo: {e}"))?;
             db.log("archivo", &format!("Abrió {}", display(&path)));
             Ok(format!("Abrí {}.", display(&path)))
+        }
+        Action::OpenWith { app, exe, path } => {
+            std::process::Command::new(&exe)
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("No pude abrir {app}: {e}"))?;
+            db.log("aplicación", &format!("Abrió {} en {app}", display(&path)));
+            Ok(format!("Abrí {} en {app}.", display(&path)))
         }
         Action::CreateDir(path) => {
             std::fs::create_dir_all(&path).map_err(|e| format!("No pude crear la carpeta: {e}"))?;

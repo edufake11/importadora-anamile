@@ -7,6 +7,7 @@ mod db;
 mod docs;
 mod fullscreen;
 mod jobs;
+mod model_cmds;
 mod reminders;
 mod secrets;
 mod settings;
@@ -156,6 +157,12 @@ pub fn run() {
                     let _ = job_app.emit("job-finished", info);
                 }
             });
+            // Olvida los recuerdos temporales que ya caducaron.
+            if let Ok(n) = db.memory_purge_expired() {
+                if n > 0 {
+                    db.log("memoria", &format!("Olvidé {n} recuerdos temporales caducados"));
+                }
+            }
             app.manage(AppState::new(config_dir, data_dir, std::sync::Arc::new(db), jobs, known_dirs));
             build_tray(app.handle())?;
             spawn_fullscreen_watch(app.handle().clone());
@@ -204,6 +211,9 @@ pub fn run() {
             vision_cmds::screen_finalize,
             vision_cmds::screen_discard,
             vision_cmds::prepare_attachment,
+            model_cmds::model_info,
+            model_cmds::summarize_conversation,
+            data_cmds::memory_set_temporary,
             data_cmds::memory_list,
             data_cmds::memory_add,
             data_cmds::memory_update,

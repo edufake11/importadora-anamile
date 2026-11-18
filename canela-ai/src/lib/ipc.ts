@@ -65,9 +65,39 @@ export type StreamEvent =
   | { type: 'toolStart'; callId: string; name: string; label: string }
   | { type: 'toolEnd'; callId: string; ok: boolean; summary: string }
   | { type: 'confirmRequest'; confirmId: string; title: string; details: string; diff: string | null; image: string | null }
-  | { type: 'done'; stopReason: string | null; model: string | null; notice: string | null; provider: ProviderId; transcript: unknown[] }
+  | {
+      type: 'done';
+      stopReason: string | null;
+      model: string | null;
+      notice: string | null;
+      provider: ProviderId;
+      transcript: unknown[];
+      usage: Usage;
+      costUsd: number | null;
+    }
   | { type: 'error'; message: string }
   | { type: 'cancelled' };
+
+export interface Usage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface ModelInfo {
+  provider: string;
+  model: string;
+  exists: boolean | null;
+  supportsImages: boolean | null;
+  supportsThinking: boolean | null;
+  supportsEffort: boolean | null;
+  contextTokens: number | null;
+  maxOutput: number | null;
+  price: { input: number; output: number; cacheRead: number } | null;
+  source: 'api' | 'tabla';
+  note: string | null;
+}
 
 export interface JobInfo {
   id: string;
@@ -93,6 +123,8 @@ export const api = {
   jobsList: () => invoke<JobInfo[]>('jobs_list'),
   jobCancel: (id: string) => invoke<boolean>('job_cancel', { id }),
   allowedFolders: () => invoke<string[]>('allowed_folders'),
+  modelInfo: () => invoke<ModelInfo>('model_info'),
+  summarize: (messages: WireMessage[], userName: string) => invoke<string>('summarize_conversation', { messages, userName }),
   prepareAttachment: (path: string) =>
     invoke<{ name: string; kind: 'text' | 'image'; text: string | null; image: ImageData | null; note: string | null }>('prepare_attachment', { path }),
 
@@ -140,6 +172,8 @@ export interface Memory {
   source: string;
   createdAt: string;
   updatedAt: string;
+  /** Recuerdo temporal: se olvida solo después de esta fecha. */
+  expiresAt: string | null;
 }
 
 export interface Task {
@@ -197,6 +231,7 @@ export const data = {
   memoryUpdate: (id: number, kind: string, content: string) => invoke<Memory>('memory_update', { id, kind, content }),
   memoryDelete: (id: number) => invoke<boolean>('memory_delete', { id }),
   memoryClear: () => invoke<number>('memory_clear'),
+  memorySetTemporary: (id: number, days: number | null) => invoke<Memory>('memory_set_temporary', { id, days }),
   taskList: (filter: TaskFilter) => invoke<Task[]>('task_list', { filter }),
   taskAdd: (input: TaskInput) => invoke<Task>('task_add', { input }),
   taskUpdate: (id: number, input: TaskInput) => invoke<Task>('task_update', { id, input }),
@@ -269,3 +304,9 @@ export const screen = {
 };
 
 export const imageUrl = (i: ImageData) => `data:${i.mediaType};base64,${i.data}`;
+
+/** "≈ 0,0042 US$" */
+export function formatUsd(v: number): string {
+  if (v > 0 && v < 0.0001) return '< 0,0001 US$';
+  return `${v.toLocaleString('es', { minimumFractionDigits: v < 1 ? 4 : 2, maximumFractionDigits: v < 1 ? 4 : 2 })} US$`;
+}

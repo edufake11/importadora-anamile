@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bubbleSnippet, composeUserText, conversationTitle, isTextFile, toWire, type UiMessage } from './chatModel';
+import { bubbleSnippet, compactWith, composeUserText, conversationCost, conversationTitle, isTextFile, KEEP_RECENT, toWire, type UiMessage } from './chatModel';
 import { splitSegments } from './markdown';
 
 describe('historial del chat', () => {
@@ -61,5 +61,30 @@ describe('markdown seguro', () => {
   it('un bloque sin cerrar (streaming) se muestra como código', () => {
     const s = splitSegments('```py\nprint(1)');
     expect(s).toEqual([{ kind: 'code', lang: 'py', code: 'print(1)' }]);
+  });
+});
+
+describe('conversaciones largas', () => {
+  it('resume lo antiguo y deja lo reciente sólo con texto', () => {
+    const msgs: UiMessage[] = Array.from({ length: 20 }, (_, i) => ({
+      id: String(i),
+      role: i % 2 ? 'assistant' : 'user',
+      text: `m${i}`,
+      status: 'done',
+      provider: 'anthropic',
+      transcript: i % 2 ? [{ role: 'assistant', content: [{ type: 'thinking', signature: 's' }] }] : undefined,
+    }));
+    const c = compactWith(msgs, 'Hablamos de React.', 'sum');
+    expect(c).toHaveLength(KEEP_RECENT + 1);
+    expect(c[0].summary).toBe(true);
+    expect(c[0].text).toContain('Hablamos de React.');
+    const wire = toWire(c);
+    expect(wire.every((w) => !w.transcript)).toBe(true);
+    expect(wire[wire.length - 1].text).toBe('m19');
+  });
+
+  it('suma el costo de la conversación', () => {
+    expect(conversationCost([{ id: '1', role: 'assistant', text: '', status: 'done', costUsd: 0.01 }, { id: '2', role: 'assistant', text: '', status: 'done', costUsd: 0.02 }])).toBeCloseTo(0.03);
+    expect(conversationCost([])).toBeNull();
   });
 });

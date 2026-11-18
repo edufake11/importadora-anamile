@@ -201,6 +201,7 @@ pub struct AnthropicStream {
     stop_reason: Option<String>,
     model: Option<String>,
     notice: Option<String>,
+    usage: super::pricing::Usage,
 }
 
 impl AnthropicStream {
@@ -256,6 +257,7 @@ impl AnthropicStream {
             stop_reason: self.stop_reason.clone(),
             model: self.model.clone(),
             notice,
+            usage: self.usage,
         }
     }
 }
@@ -270,6 +272,11 @@ impl ProviderStream for AnthropicStream {
             "message_start" => {
                 let model = data["message"]["model"].as_str().unwrap_or_default().to_string();
                 self.model = Some(model.clone());
+                let u = &data["message"]["usage"];
+                self.usage.input = u["input_tokens"].as_u64().unwrap_or(0);
+                self.usage.cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                self.usage.cache_write = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                self.usage.output = u["output_tokens"].as_u64().unwrap_or(0);
                 vec![ParseOut::Event(StreamEvent::Started { model })]
             }
             "content_block_start" => {
@@ -350,6 +357,9 @@ impl ProviderStream for AnthropicStream {
             "message_delta" => {
                 if let Some(r) = data["delta"]["stop_reason"].as_str() {
                     self.stop_reason = Some(r.to_string());
+                }
+                if let Some(o) = data["usage"]["output_tokens"].as_u64() {
+                    self.usage.output = o;
                 }
                 vec![]
             }
