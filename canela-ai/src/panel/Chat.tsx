@@ -24,7 +24,10 @@ import {
   toWire,
   type UiMessage,
 } from './chatModel';
+import { ClipIcon, MicIcon, SendIcon, StopIcon } from './icons';
 import { Markdown } from './markdown';
+import { useVoice } from './useVoice';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface Props {
   settings: Settings;
@@ -91,7 +94,9 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const listenTimer = useRef<number>(undefined);
+  const sendRef = useRef<(text?: string, spoken?: boolean) => Promise<void>>(async () => undefined);
   messagesRef.current = messages;
+  const voiceCtl = useVoice(settings, (text) => void sendRef.current(text, true));
 
   const hasKey = settings.provider === 'anthropic' ? keys.anthropic : keys.openai;
   const providerName = settings.provider === 'anthropic' ? 'Claude' : 'ChatGPT';
@@ -145,7 +150,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
     return convRef.current;
   }
 
-  async function send(textOverride?: string) {
+  async function send(textOverride?: string, spoken = false) {
     const text = composeUserText(textOverride ?? input, attachments);
     if (!text || busyId) return;
     if (!hasKey) {
@@ -168,6 +173,8 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
 
     let acc = '';
     let lastBubble = 0;
+    // Lectura en voz alta mientras llega la respuesta (si corresponde).
+    const speech = voiceCtl.speechStream(spoken);
     const finish = (f: (m: UiMessage) => UiMessage) => {
       setMessages((prev) => {
         const next = prev.map((m) => (m.id === reply.id ? f(m) : m));
@@ -187,6 +194,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           break;
         case 'delta': {
           acc += ev.text;
+          speech?.feed(ev.text);
           patch(reply.id, (m) => ({ ...m, text: m.text + ev.text, thinking: false }));
           const now = Date.now();
           if (acc.trim() && now - lastBubble > 700) {
@@ -215,6 +223,12 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             confirms: [...(m.confirms ?? []), { confirmId: ev.confirmId, title: ev.title, details: ev.details, diff: ev.diff, state: 'waiting' }],
           }));
           void sendMood({ mood: 'listen', bubble: 'Necesito tu permiso para continuar 🐾' });
+          // Si hablaste con el panel cerrado, lo abre para que puedas responder.
+          void getCurrentWindow()
+            .isVisible()
+            .then((visible) => {
+              if (!visible) void api.showPanel();
+            });
           break;
         case 'done':
           finish((m) => ({
@@ -227,9 +241,15 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             provider: ev.provider,
             transcript: ev.transcript,
           }));
-          void sendMood({ mood: ev.stopReason === 'refusal' ? 'sad' : 'happy', bubble: acc.trim() ? bubbleSnippet(acc) : (ev.notice ?? undefined) });
+          if (speech) speech.end();
+          void sendMood(
+            speech
+              ? { mood: 'talk', bubble: acc.trim() ? bubbleSnippet(acc) : undefined }
+              : { mood: ev.stopReason === 'refusal' ? 'sad' : 'happy', bubble: acc.trim() ? bubbleSnippet(acc) : (ev.notice ?? undefined) },
+          );
           break;
         case 'error':
+          voiceCtl.stopSpeaking();
           finish((m) => ({ ...m, status: 'error', thinking: false, notice: ev.message }));
           void sendMood({ mood: 'sad', bubble: 'Ups… algo salió mal. Mira el panel 🐾' });
           break;
@@ -255,8 +275,10 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   }
 
   async function stop() {
+    voiceCtl.stopSpeaking();
     await cancelRef.current?.();
   }
+  sendRef.current = send;
 
   async function newConversation() {
     if (busyId) await stop();
@@ -449,6 +471,37 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
       )}
       {fileError && <div className="notice err slim">{fileError}</div>}
 
+      {(voiceCtl.phase !== 'idle' || voiceCtl.message) && (
+        <div className={`voice-status ${voiceCtl.phase}`}>
+          {voiceCtl.phase === 'listening' && (
+            <>
+              <span className="rec-dot" />
+              Escuchando… habla y haz una pausa para terminar
+              <span className="level">
+                <span style={{ width: `${Math.min(100, voiceCtl.level * 900)}%` }} />
+              </span>
+            </>
+          )}
+          {voiceCtl.phase === 'processing' && 'Entendiendo lo que dijiste…'}
+          {voiceCtl.phase === 'speaking' && (
+            <>
+              Canela está hablando
+              <button className="text-button" onClick={voiceCtl.stopSpeaking}>
+                Callar
+              </button>
+            </>
+          )}
+          {voiceCtl.phase === 'idle' && voiceCtl.message && (
+            <>
+              <span className="voice-msg">{voiceCtl.message}</span>
+              <button className="text-button" onClick={() => voiceCtl.setMessage(null)}>
+                Cerrar
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <form
         className="composer"
         onSubmit={(e) => {
@@ -456,15 +509,15 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           void send();
         }}
       >
-        <button type="button" className="icon" title="Adjuntar archivo de texto o código" aria-label="Adjuntar" onClick={() => fileRef.current?.click()}>
-          +
+        <button type="button" className="icon" title="Adjuntar archivo" aria-label="Adjuntar archivo" onClick={() => fileRef.current?.click()}>
+          <ClipIcon />
         </button>
         <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
         <textarea
           value={input}
-          placeholder={hasKey ? 'Escribe un mensaje…' : 'Configura tu clave en Ajustes'}
+          placeholder={voiceCtl.phase === 'listening' ? 'Te escucho…' : hasKey ? 'Escribe un mensaje…' : 'Configura tu clave en Ajustes'}
           onChange={(e) => onTyping(e.target.value)}
-          onBlur={() => !busyId && void sendMood({ mood: 'idle' })}
+          onBlur={() => !busyId && voiceCtl.phase === 'idle' && void sendMood({ mood: 'idle' })}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -473,13 +526,24 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           }}
           rows={1}
         />
-        {busyId ? (
-          <button type="button" className="stop" onClick={() => void stop()}>
-            Detener
+        <button
+          type="button"
+          className={`icon mic ${voiceCtl.phase}`}
+          title={voiceCtl.phase === 'listening' ? 'Terminar (Ctrl+Alt+V)' : 'Hablar con Canela (Ctrl+Alt+V)'}
+          aria-label="Micrófono"
+          aria-pressed={voiceCtl.phase === 'listening'}
+          onClick={() => void voiceCtl.toggle()}
+          disabled={!hasKey && voiceCtl.phase === 'idle'}
+        >
+          <MicIcon />
+        </button>
+        {busyId || voiceCtl.phase === 'speaking' ? (
+          <button type="button" className="stop" onClick={() => void stop()} title="Detener" aria-label="Detener">
+            <StopIcon />
           </button>
         ) : (
           <button type="submit" className="send" disabled={!input.trim() && attachments.length === 0} title="Enviar (Enter)" aria-label="Enviar">
-            ↑
+            <SendIcon />
           </button>
         )}
       </form>

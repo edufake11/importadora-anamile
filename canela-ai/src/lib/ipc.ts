@@ -21,6 +21,18 @@ export interface Settings {
   autoOpenApps: boolean;
   autoOpenWeb: boolean;
   allowedFolders: string[] | null;
+  voiceConsent: boolean;
+  voiceInputDevice: string | null;
+  voiceOutputDevice: string | null;
+  sttModel: string;
+  ttsEngine: 'local' | 'openai';
+  ttsVoice: string;
+  ttsCloudModel: string;
+  ttsCloudVoice: string;
+  ttsRate: number;
+  ttsVolume: number;
+  speakReplies: 'voice' | 'always' | 'never';
+  wakeWord: boolean;
 }
 
 export interface KeyStatus {
@@ -91,7 +103,7 @@ export const api = {
 
 // ------------------------- Eventos entre ventanas ---------------------------
 
-export type Mood = 'idle' | 'listen' | 'think' | 'talk' | 'happy' | 'sad' | 'celebrate';
+export type Mood = 'idle' | 'listen' | 'think' | 'curious' | 'talk' | 'happy' | 'sad' | 'celebrate';
 
 export interface MoodPayload {
   mood: Mood;
@@ -195,3 +207,31 @@ export const onJobsChanged = (cb: (jobs: JobInfo[]) => void): Promise<UnlistenFn
 
 export const onJobFinished = (cb: (job: JobInfo) => void): Promise<UnlistenFn> =>
   listen<JobInfo>('job-finished', (e) => cb(e.payload));
+
+// ------------------------------------------------------------------ Voz
+
+export interface VoiceStateEvent {
+  state: 'listening' | 'processing' | 'idle' | 'error';
+  level: number | null;
+  message: string | null;
+}
+
+export const voice = {
+  devices: () => invoke<{ inputs: string[]; outputs: string[] }>('voice_devices'),
+  start: () => invoke<void>('voice_start'),
+  stop: () => invoke<boolean>('voice_stop'),
+  cancel: () => invoke<boolean>('voice_cancel'),
+  cloudSpeak: (text: string) => invoke<void>('tts_cloud_speak', { text }),
+  cloudStop: () => invoke<void>('tts_cloud_stop'),
+};
+
+export const onVoiceState = (cb: (e: VoiceStateEvent) => void): Promise<UnlistenFn> =>
+  listen<VoiceStateEvent>('voice-state', (e) => cb(e.payload));
+
+export const onVoiceTranscript = (cb: (text: string) => void): Promise<UnlistenFn> =>
+  listen<{ text: string }>('voice-transcript', (e) => cb(e.payload.text));
+
+export const onVoiceToggle = (cb: () => void): Promise<UnlistenFn> => listen('voice-toggle', () => cb());
+
+export const onTtsState = (cb: (e: { speaking: boolean; error?: string }) => void): Promise<UnlistenFn> =>
+  listen<{ speaking: boolean; error?: string }>('tts-state', (e) => cb(e.payload));

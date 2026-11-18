@@ -57,6 +57,29 @@ pub struct Settings {
     pub auto_open_web: bool,
     /// Carpetas a las que Canela puede acceder. `None` = Documentos, Descargas y Escritorio.
     pub allowed_folders: Option<Vec<String>>,
+    // ------------------------------------------------------------ voz
+    /// Aceptó el aviso: el audio se envía a OpenAI para transcribirlo.
+    pub voice_consent: bool,
+    /// Micrófono (nombre). `None` = el predeterminado de Windows.
+    pub voice_input_device: Option<String>,
+    /// Altavoz para la voz de OpenAI. `None` = el predeterminado.
+    pub voice_output_device: Option<String>,
+    /// Modelo de transcripción de OpenAI.
+    pub stt_model: String,
+    /// "local" (voces de Windows) u "openai".
+    pub tts_engine: String,
+    /// Nombre de la voz de Windows ("" = la primera en español).
+    pub tts_voice: String,
+    pub tts_cloud_model: String,
+    pub tts_cloud_voice: String,
+    /// Velocidad de la voz (0.5 – 2.0).
+    pub tts_rate: f32,
+    /// Volumen (0 – 1).
+    pub tts_volume: f32,
+    /// "voice" (sólo si le hablé), "always" o "never".
+    pub speak_replies: String,
+    /// "Hola, Canela" (preparado; desactivado y aún no disponible).
+    pub wake_word: bool,
 }
 
 impl Default for Settings {
@@ -79,6 +102,18 @@ impl Default for Settings {
             auto_open_apps: true,
             auto_open_web: false,
             allowed_folders: None,
+            voice_consent: false,
+            voice_input_device: None,
+            voice_output_device: None,
+            stt_model: "gpt-transcribe".into(),
+            tts_engine: "local".into(),
+            tts_voice: String::new(),
+            tts_cloud_model: "gpt-4o-mini-tts".into(),
+            tts_cloud_voice: "coral".into(),
+            tts_rate: 1.0,
+            tts_volume: 1.0,
+            speak_replies: "voice".into(),
+            wake_word: false,
         }
     }
 }
@@ -101,6 +136,33 @@ impl Settings {
         self.anthropic_model = self.anthropic_model.trim().to_string();
         self.openai_model = self.openai_model.trim().to_string();
         self.user_name = self.user_name.trim().chars().take(40).collect();
+        self.tts_rate = if self.tts_rate.is_finite() {
+            self.tts_rate.clamp(0.5, 2.0)
+        } else {
+            1.0
+        };
+        self.tts_volume = if self.tts_volume.is_finite() {
+            self.tts_volume.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if !["voice", "always", "never"].contains(&self.speak_replies.as_str()) {
+            self.speak_replies = d.speak_replies.clone();
+        }
+        if !["local", "openai"].contains(&self.tts_engine.as_str()) {
+            self.tts_engine = d.tts_engine.clone();
+        }
+        for (v, def) in [
+            (&mut self.stt_model, &d.stt_model),
+            (&mut self.tts_cloud_model, &d.tts_cloud_model),
+            (&mut self.tts_cloud_voice, &d.tts_cloud_voice),
+        ] {
+            if v.trim().is_empty() {
+                *v = def.clone();
+            }
+        }
+        // "Hola, Canela" todavía no está disponible: siempre desactivado.
+        self.wake_word = false;
         if let Some(folders) = self.allowed_folders.as_mut() {
             folders.retain(|f| !f.trim().is_empty());
             folders.dedup();
@@ -148,6 +210,25 @@ mod tests {
         assert_eq!(s.provider, ProviderId::Anthropic);
         assert_eq!(s.anthropic_model, "claude-opus-5-5");
         assert_eq!(s.pet_scale, 3);
+        assert!(!s.voice_consent, "la voz necesita consentimiento explícito");
+        assert_eq!(s.stt_model, "gpt-transcribe");
+        assert_eq!(s.tts_engine, "local");
+    }
+
+    #[test]
+    fn voice_values_are_clamped() {
+        let s = Settings {
+            tts_rate: 9.0,
+            tts_volume: -1.0,
+            speak_replies: "x".into(),
+            wake_word: true,
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(s.tts_rate, 2.0);
+        assert_eq!(s.tts_volume, 0.0);
+        assert_eq!(s.speak_replies, "voice");
+        assert!(!s.wake_word);
     }
 
     #[test]

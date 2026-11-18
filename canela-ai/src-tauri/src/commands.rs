@@ -33,6 +33,7 @@ pub struct AppState {
     pub confirms: Arc<Confirmations>,
     /// Documentos, Descargas y Escritorio del usuario (alias y carpetas por defecto).
     pub known_dirs: Vec<(String, PathBuf)>,
+    pub voice: crate::voice::VoiceRuntime,
 }
 
 impl AppState {
@@ -59,6 +60,7 @@ impl AppState {
             jobs,
             confirms: Arc::new(Confirmations::default()),
             known_dirs,
+            voice: Default::default(),
         }
     }
 

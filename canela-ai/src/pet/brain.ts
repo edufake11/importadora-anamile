@@ -19,7 +19,7 @@ export type Activity =
   | 'oops'
   | 'dragged';
 
-export type ExternalMood = 'idle' | 'listen' | 'think' | 'talk' | 'happy' | 'sad' | 'celebrate';
+export type ExternalMood = 'idle' | 'listen' | 'think' | 'curious' | 'talk' | 'happy' | 'sad' | 'celebrate';
 
 export interface Point {
   x: number;
@@ -33,6 +33,8 @@ export interface BrainState {
   target: Point | null;
   /** Último contacto del usuario (clic, arrastre, chat). */
   lastInteraction: number;
+  /** Actividad sostenida desde fuera (chat o voz): no expira sola. */
+  external?: boolean;
 }
 
 export type BrainEvent =
@@ -72,7 +74,8 @@ export const DURATIONS: Record<string, [number, number]> = {
 export const SLEEPY_AFTER_MS = 2 * 60_000;
 
 /** Actividades controladas desde fuera (chat) que no expiran solas. */
-const HELD: Activity[] = ['listen', 'think', 'talk', 'dragged'];
+/** Estados de ánimo que se mantienen mientras dure lo que los provoca. */
+const HELD_MOODS: ExternalMood[] = ['listen', 'think', 'curious', 'talk'];
 
 export function initialState(now: number): BrainState {
   return { activity: 'idle', until: now + 4000, target: null, lastInteraction: now };
@@ -80,7 +83,7 @@ export function initialState(now: number): BrainState {
 
 function lasting(activity: Activity, now: number, ctx: BrainContext, lastInteraction: number, target: Point | null = null): BrainState {
   const [a, b] = DURATIONS[activity === 'walk' || activity === 'run' ? 'walkTimeout' : activity] ?? [Infinity, Infinity];
-  const until = HELD.includes(activity) ? Infinity : a + (b - a) * ctx.rng() + now;
+  const until = activity === 'dragged' ? Infinity : a + (b - a) * ctx.rng() + now;
   return { activity, until, target, lastInteraction };
 }
 
@@ -134,7 +137,7 @@ export function step(s: BrainState, e: BrainEvent, ctx: BrainContext): BrainStat
       const touched = { ...s, lastInteraction: e.now };
       if (s.activity === 'dragged') return touched;
       if (s.activity === 'sleep') return lasting('wake', e.now, ctx, e.now);
-      if (HELD.includes(s.activity)) return touched; // no interrumpe una respuesta en curso
+      if (s.external) return touched; // no interrumpe una respuesta o escucha en curso
       if (e.count >= 3) return lasting('celebrate', e.now, ctx, e.now);
       return lasting('happy', e.now, ctx, e.now);
     }
@@ -145,10 +148,13 @@ export function step(s: BrainState, e: BrainEvent, ctx: BrainContext): BrainStat
     case 'mood': {
       if (s.activity === 'dragged') return { ...s, lastInteraction: e.now };
       if (e.mood === 'idle') {
-        return HELD.includes(s.activity) ? lasting('idle', e.now, ctx, e.now) : { ...s, lastInteraction: e.now };
+        return s.external ? lasting('idle', e.now, ctx, e.now) : { ...s, lastInteraction: e.now };
       }
       // Un error primero la sorprende (saltito) y luego la pone triste.
       if (e.mood === 'sad') return lasting('oops', e.now, ctx, e.now);
+      if (HELD_MOODS.includes(e.mood)) {
+        return { activity: e.mood, until: Infinity, target: null, lastInteraction: e.now, external: true };
+      }
       return lasting(e.mood, e.now, ctx, e.now);
     }
     case 'noticed':

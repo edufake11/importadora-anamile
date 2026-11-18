@@ -10,6 +10,7 @@ mod reminders;
 mod secrets;
 mod settings;
 mod tools;
+mod voice;
 mod windows;
 
 use commands::AppState;
@@ -21,6 +22,10 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// Ctrl+Alt+C: mostrar/ocultar a Canela.
 fn shortcut_toggle_pet() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyC)
+}
+/// Ctrl+Alt+V: hablar con Canela (pulsa otra vez para terminar o interrumpirla).
+fn shortcut_voice() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyV)
 }
 /// Ctrl+Alt+Espacio: abrir/cerrar el panel de asistente.
 fn shortcut_toggle_panel() -> Shortcut {
@@ -114,6 +119,9 @@ pub fn run() {
             }
             if shortcut == &shortcut_toggle_pet() {
                 windows::toggle_pet(app);
+            } else if shortcut == &shortcut_voice() {
+                // El panel coordina la conversación por voz (también si está oculto).
+                let _ = app.emit_to(windows::PANEL, "voice-toggle", ());
             } else if shortcut == &shortcut_toggle_panel() {
                 windows::show_pet(app);
                 windows::toggle_panel(app);
@@ -173,7 +181,11 @@ pub fn run() {
             reminders::spawn(app.handle().clone(), at_login);
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
-            for sc in [shortcut_toggle_pet(), shortcut_toggle_panel()] {
+            for sc in [
+                shortcut_toggle_pet(),
+                shortcut_toggle_panel(),
+                shortcut_voice(),
+            ] {
                 if let Err(e) = app.global_shortcut().register(sc) {
                     eprintln!("[canela] no se pudo registrar el atajo {sc:?}: {e}");
                 }
@@ -203,6 +215,12 @@ pub fn run() {
             commands::jobs_list,
             commands::job_cancel,
             commands::allowed_folders,
+            voice::voice_devices,
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_cancel,
+            voice::tts_cloud_speak,
+            voice::tts_cloud_stop,
             data_cmds::memory_list,
             data_cmds::memory_add,
             data_cmds::memory_update,

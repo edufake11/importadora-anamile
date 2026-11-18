@@ -937,3 +937,77 @@ details.fold summary {
   margin: 2px 0 6px;
   overflow-wrap: anywhere;
 }
+
+/* -------------------------------- Voz -------------------------------- */
+.voice-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.voice-msg {
+  flex: 1;
+}
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text);
+  animation: bounce 1s infinite;
+}
+.level {
+  flex: 1;
+  max-width: 120px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+.level span {
+  display: block;
+  height: 100%;
+  background: var(--text);
+  transition: width 0.1s linear;
+}
+.composer .icon {
+  display: grid;
+  place-items: center;
+}
+.composer .send,
+.composer .stop {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  width: 36px;
+}
+.composer .mic.listening {
+  background: var(--invert-bg);
+  color: var(--invert-text);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+  animation: ring 1.2s infinite;
+}
+.composer .mic.processing {
+  color: var(--text);
+  animation: bounce 1s infinite;
+}
+@keyframes ring {
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.08);
+  }
+}
+
+.consent {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.consent p {
+  margin: 0 0 10px;
+}
+.check.disabled {
+  color: var(--muted);
+}

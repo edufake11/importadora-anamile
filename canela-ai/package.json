@@ -1,7 +1,7 @@
 {
   "name": "canela-ai",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CANELA AI — mascota virtual y asistente inteligente de escritorio (Tauri 2 + React)",
   "type": "module",
   "scripts": {

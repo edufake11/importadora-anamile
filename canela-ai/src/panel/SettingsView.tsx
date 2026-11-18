@@ -2,6 +2,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
 import { api, data, type KeyStatus, type ProviderId, type Settings } from '../lib/ipc';
 import { MemoryManager } from './MemoryManager';
+import { VoiceSettings } from './VoiceSettings';
 
 interface Props {
   settings: Settings;
@@ -166,6 +167,8 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
         </details>
       </section>
 
+      <VoiceSettings form={form} set={set} keys={keys} onSaved={onSaved} />
+
       <section>
         <h3>Canela</h3>
         <label className="field">
@@ -249,6 +252,12 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
             <span>Mostrar u ocultar a Canela</span>
             <span>
               <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>C</kbd>
+            </span>
+          </li>
+          <li>
+            <span>Hablar con Canela</span>
+            <span>
+              <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>V</kbd>
             </span>
           </li>
           <li>

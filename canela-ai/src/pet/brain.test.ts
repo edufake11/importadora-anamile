@@ -112,3 +112,27 @@ describe('animaciones nuevas', () => {
     expect(w.until).toBe(1600);
   });
 });
+
+describe('reacciones a la voz', () => {
+  it('escuchar → curiosa (procesando) → hablar → feliz → descanso', () => {
+    let s = step(initialState(0), { type: 'mood', mood: 'listen', now: 0 }, ctx());
+    expect(s.activity).toBe('listen');
+    expect(step(s, { type: 'tick', now: 1e9 }, ctx())).toBe(s); // no se cansa de escuchar
+    s = step(s, { type: 'mood', mood: 'curious', now: 1 }, ctx());
+    expect(s.activity).toBe('curious');
+    expect(s.until).toBe(Infinity); // se mantiene mientras procesa
+    s = step(s, { type: 'mood', mood: 'talk', now: 2 }, ctx());
+    expect(s.activity).toBe('talk');
+    s = step(s, { type: 'mood', mood: 'happy', now: 3 }, ctx());
+    expect(s.activity).toBe('happy');
+    expect(s.until).toBeLessThan(Infinity); // la alegría dura un rato y vuelve a descansar
+  });
+
+  it('idle libera la curiosidad sostenida pero no la autónoma', () => {
+    const held = step(initialState(0), { type: 'mood', mood: 'curious', now: 0 }, ctx());
+    expect(step(held, { type: 'mood', mood: 'idle', now: 1 }, ctx()).activity).toBe('idle');
+    const noticed = step(initialState(0), { type: 'noticed', now: 0 }, ctx());
+    expect(noticed.external).toBeFalsy();
+    expect(step(noticed, { type: 'mood', mood: 'idle', now: 1 }, ctx()).activity).toBe('curious');
+  });
+});

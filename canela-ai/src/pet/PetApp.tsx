@@ -42,7 +42,9 @@ export function PetApp() {
         await ctrl.start();
         cleanups.push(
           await onMood((p) => {
-            ctrl.mood(p.mood, settings.replyBubbles || p.mood === 'sad' ? p.bubble : undefined);
+            // Los avisos de micrófono, permisos y errores se muestran siempre.
+            const always = p.mood === 'sad' || p.mood === 'listen';
+            ctrl.mood(p.mood, settings.replyBubbles || always ? p.bubble : undefined);
             if (p.mood === 'idle' && !p.bubble) setBubble(null);
           }),
           await onSettingsChanged((s) => {
@@ -112,8 +114,11 @@ export function PetApp() {
       )}
 
       {layout && activity === 'listen' && (
-        <div className="listen" style={{ left: layout.headX - 30, top: layout.headY - 18 }}>
-          ♪
+        <div className="listen" style={{ left: layout.headX - 34, top: layout.headY - 20 }} title="Micrófono o atención activa">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#111" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+            <rect x="9" y="3" width="6" height="11" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+          </svg>
         </div>
       )}
 
