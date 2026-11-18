@@ -25,9 +25,9 @@ Mascota virtual y asistente inteligente de escritorio para Windows 11. Canela es
 ┌───────────────┴────────── Ventana "pet" ─────┐  ┌────────┴──── Ventana "panel" ─────┐
 │ React + TS                                    │  │ React + TS (Modo asistente)        │
 │ pet/brain.ts      máquina de estados (pura)   │  │ Chat (streaming, adjuntos, Stop)   │
-│ pet/sprites.ts    motor de spritesheets       │  │ Ajustes (proveedor, modelo, claves)│
-│ pet/controller.ts movimiento, arrastre,       │  │ Acerca de (estado real del proyecto│
-│                   clic-a-través, menú nativo  │  │ y privacidad)                      │
+│ pet/sprites.ts    motor de spritesheets       │  │ Ajustes (proveedor, clave, Canela, │
+│ pet/controller.ts movimiento, arrastre,       │  │ opciones avanzadas y "acerca de")  │
+│                   clic-a-través, menú nativo  │  │ Estilo monocromo                   │
 └───────────────────────────────────────────────┘  └────────────────────────────────────┘
 ```
 
