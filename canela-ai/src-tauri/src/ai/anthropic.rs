@@ -123,8 +123,14 @@ pub fn build_request(
     messages: &[Value],
     tools: &[ToolDef],
 ) -> reqwest::RequestBuilder {
+    // En pruebas y compilaciones de desarrollo se puede redirigir a un servidor
+    // local simulado. Las versiones instalables (release) siempre usan la API real.
+    #[cfg(any(test, debug_assertions))]
+    let url = std::env::var("CANELA_TEST_ANTHROPIC_URL").unwrap_or_else(|_| API_URL.to_string());
+    #[cfg(not(any(test, debug_assertions)))]
+    let url = API_URL;
     let mut req = http
-        .post(API_URL)
+        .post(url)
         .header("x-api-key", api_key)
         .header("anthropic-version", API_VERSION)
         .header("content-type", "application/json");

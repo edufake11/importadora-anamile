@@ -203,3 +203,91 @@ async fn agent_runs_tool_and_continues() {
     assert!(second_body.contains("\"role\":\"tool\""));
     assert!(second_body.contains("Tarea creada"));
 }
+
+/// Agente completo con Claude simulado: pide escribir un archivo (requiere
+/// permiso), el usuario lo rechaza y el archivo NO se crea. Comprueba además
+/// que la segunda petición reenvía el bloque de razonamiento firmado y el
+/// tool_use exactamente como llegaron, seguidos del tool_result.
+#[tokio::test]
+async fn claude_agent_respects_denied_confirmation() {
+    let first = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"FIRMA\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"escribir_archivo\",\"input\":{}}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"ruta\\\": \\\"Descargas/x.md\\\", \\\"contenido\\\": \\\"hola\\\"}\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let second = concat!(
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Entendido, no lo creé.\"}}\n\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let (url, bodies) = serve(vec![("200 OK", first.into()), ("200 OK", second.into())]).await;
+    let root = std::env::temp_dir().join(format!("canela-agent-claude-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let tools = ToolCtx {
+        db: Arc::new(Db::open_in_memory().unwrap()),
+        settings: Settings::default(),
+        scope: Scope::new(vec![root.clone()], vec![("descargas".into(), root.clone())]),
+        backups_dir: root.join("bak"),
+        jobs: None,
+        llm: None,
+        notify: Arc::new(|_| {}),
+    };
+    std::env::set_var("CANELA_TEST_ANTHROPIC_URL", &url);
+    let confirms = Arc::new(Confirmations::default());
+    let env = AgentEnv {
+        http: reqwest::Client::new(),
+        settings: Settings::default(),
+        api_key: "sk-ant-test".into(),
+        system: "s".into(),
+        history: vec![ChatMessage {
+            role: Role::User,
+            text: "crea x.md".into(),
+            provider: None,
+            transcript: None,
+        }],
+        tools: Some(Arc::new(tools)),
+        confirms: confirms.clone(),
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let c2 = confirms.clone();
+    // El "usuario" rechaza en cuanto aparece la tarjeta de permiso.
+    agent::run(
+        env,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest {
+                confirm_id, diff, ..
+            } = &e
+            {
+                assert!(diff.as_deref().unwrap_or("").contains("+hola"));
+                let (c, id) = (c2.clone(), confirm_id.clone());
+                tokio::spawn(async move {
+                    c.resolve(&id, false);
+                });
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    )
+    .await;
+    std::env::remove_var("CANELA_TEST_ANTHROPIC_URL");
+
+    assert!(!root.join("x.md").exists(), "no debe crearse sin permiso");
+    let evs = events.lock().unwrap().clone();
+    assert!(evs.iter().any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, summary, .. } if summary == "No autorizado")));
+    assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
+    let second_body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[1]).unwrap();
+    let msgs = second_body["messages"].as_array().unwrap();
+    assert_eq!(msgs[1]["content"][0]["signature"], "FIRMA");
+    assert_eq!(msgs[1]["content"][1]["id"], "toolu_9");
+    assert_eq!(msgs[2]["content"][0]["tool_use_id"], "toolu_9");
+    assert_eq!(msgs[2]["content"][0]["is_error"], true);
+    let _ = std::fs::remove_dir_all(&root);
+}

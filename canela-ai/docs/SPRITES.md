@@ -5,7 +5,7 @@ El spritesheet incluido (`public/sprites/canela.png`) es **arte provisional** ge
 ## Formato
 
 - **Una fila por animación**, fotogramas de izquierda a derecha, todos del mismo tamaño.
-- Tamaño de fotograma actual: **48 × 40 px** (puedes usar otro, p. ej. 64 × 48; se indica en el JSON).
+- Tamaño de fotograma actual: **48 × 40 px**; hoja de 12 columnas × 16 filas (puedes usar otro, p. ej. 64 × 48; se indica en el JSON).
 - Personaje **mirando a la derecha** (el motor lo espeja para caminar a la izquierda).
 - **Fondo transparente** (PNG RGBA). Sin antialiasing en los bordes: píxeles 100 % opacos o 100 % transparentes (el clic-a-través usa la opacidad).
 - Las patas deben apoyarse en la misma fila en todos los fotogramas (`anchor.y` en el JSON).
@@ -15,21 +15,32 @@ El spritesheet incluido (`public/sprites/canela.png`) es **arte provisional** ge
 
 | Fila | Nombre | Fotogramas | FPS | Bucle | Uso |
 |---|---|---|---|---|---|
-| 0 | `idle` | 4 | 4 | sí | De pie, cola, parpadeo |
-| 1 | `walk` | 4 | 8 | sí | Caminar |
-| 2 | `run` | 4 | 12 | sí | Correr |
-| 3 | `sit` | 2 | 3 | sí | Sentada |
-| 4 | `sleep` | 2 | 1.5 | sí | Dormida (respiración) |
-| 5 | `wake` | 3 | 4 | no | Despertarse (termina sentada) |
-| 6 | `listen` | 2 | 3 | sí | Escuchando (mientras escribes en el chat) |
-| 7 | `talk` | 2 | 6 | sí | Hablando (mientras llega la respuesta) |
-| 8 | `think` | 2 | 2 | sí | Pensando (esperando a la IA) |
-| 9 | `celebrate` | 4 | 8 | sí | Saltar de alegría |
-| 10 | `happy` | 2 | 6 | sí | Feliz (clic, respuesta terminada) |
-| 11 | `sad` | 2 | 2 | sí | Triste (errores) |
-| 12 | `dragged` | 2 | 6 | sí | Colgando mientras la arrastras |
+| 0 | `idle` | 12 | 6 | sí | De pie: la cola se balancea despacio y parpadea |
+| 1 | `walk` | 8 | 12 | sí | Caminar (se espeja para ir a la izquierda) |
+| 2 | `run` | 6 | 14 | sí | Correr (galope) |
+| 3 | `sit` | 8 | 4 | sí | Sentada, barre el suelo con la cola y parpadea |
+| 4 | `lie` | 6 | 3 | sí | Acostada, despierta (descansando) |
+| 5 | `sleep` | 4 | 2 | sí | Dormida, respiración (las «Zzz» las dibuja la interfaz) |
+| 6 | `wake` | 8 | 5 | no | Se despierta, levanta la cabeza, se estira y se sienta |
+| 7 | `listen` | 4 | 3 | sí | Escuchando (mientras escribes en el chat o pide permiso) |
+| 8 | `talk` | 4 | 8 | sí | Hablando (mientras llega la respuesta) |
+| 9 | `think` | 4 | 2 | sí | Pensando (esperando a la IA o usando herramientas) |
+| 10 | `curious` | 6 | 6 | no | Inclina la cabeza con curiosidad (al acercar el cursor) |
+| 11 | `celebrate` | 6 | 10 | sí | Salta de alegría (trabajo terminado, 3 clics) |
+| 12 | `happy` | 6 | 12 | sí | Feliz, mueve la cola rápido (clic, respuesta terminada) |
+| 13 | `oops` | 5 | 8 | no | Sorpresa ante un error: saltito hacia atrás |
+| 14 | `sad` | 4 | 2.5 | sí | Triste (después de un error) |
+| 15 | `dragged` | 4 | 8 | sí | Colgando mientras la arrastras |
 
 Puedes añadir más fotogramas a cualquier animación (sólo cambia `frames` en el JSON) o animaciones nuevas (añádelas al JSON y al tipo `Activity` en `src/pet/brain.ts`).
+
+### Cómo se generan los fotogramas provisionales
+
+`scripts/generate-sprites.mjs` dibuja cada pose con formas y contorno automático:
+
+- **Cola por ángulo** (`tailAt`): el meneo es una oscilación suave entre dos ángulos.
+- **Inclinación de cabeza** por desplazamiento de columnas (no por rotación), para que los audífonos y el ojo sigan nítidos.
+- **Orejas siempre visibles**: el pañuelo se dibuja primero (en el cuello, detrás de la cabeza) y la oreja encima.
 
 ## Flujo recomendado con Aseprite (o LibreSprite, gratuito)
 

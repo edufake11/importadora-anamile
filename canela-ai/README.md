@@ -1,111 +1,110 @@
-# 🐾 CANELA AI — Fase 1 (MVP)
+# 🐾 CANELA AI — v0.2 (Fase 2)
 
-Mascota virtual y asistente inteligente de escritorio para Windows 11. Canela es una perrita salchicha color chocolate, con audífonos violetas y pañuelo morado, que vive en tu escritorio, pasea, duerme, reacciona a tus clics y conversa contigo usando **Claude (Anthropic)** o **ChatGPT (OpenAI)**.
-
-> Estado: **Fase 1 completa**. La memoria persistente, el control de Windows, la voz y la visión de pantalla son las fases 2 y 3 y **todavía no están implementadas** (ver [Limitaciones](#limitaciones-actuales)).
+Canela es una perrita salchicha en pixel art que vive en tu escritorio de Windows 11 y es tu asistente personal: conversa contigo (con Claude o ChatGPT), recuerda lo que le pidas, organiza tus tareas y recordatorios, abre aplicaciones y páginas, y trabaja con tus archivos **sólo en las carpetas que autorices y siempre pidiéndote permiso antes de cambiar algo**.
 
 ---
 
-## Arquitectura
+## Instalar en Windows 11 (sin conocimientos técnicos)
 
-```
-┌──────────────────────────── Proceso Tauri (Rust) ────────────────────────────┐
-│ lib.rs        arranque, bandeja del sistema, atajos globales                  │
-│ windows.rs    ventana "pet" (transparente) y ventana "panel" (asistente)      │
-│ commands.rs   comandos IPC: ajustes, claves, chat (streaming + cancelación)   │
-│ settings.rs   ajustes no secretos → %APPDATA%\com.canela.ai\settings.json     │
-│ secrets.rs    claves API → Administrador de credenciales de Windows           │
-│ ai/           capa de IA desacoplada del proveedor                            │
-│   ├─ mod.rs        trait ProviderStream, StreamEvent, prompt de Canela        │
-│   ├─ sse.rs        parser SSE incremental (UTF-8 seguro)                      │
-│   ├─ anthropic.rs  Messages API (streaming, razonamiento adaptativo, fallback)│
-│   └─ openai.rs     Chat Completions API (streaming)                           │
-└───────────────▲──────────────────────────────────────────▲────────────────────┘
-                │ invoke / Channel<StreamEvent>            │ eventos (emitTo)
-┌───────────────┴────────── Ventana "pet" ─────┐  ┌────────┴──── Ventana "panel" ─────┐
-│ React + TS                                    │  │ React + TS (Modo asistente)        │
-│ pet/brain.ts      máquina de estados (pura)   │  │ Chat (streaming, adjuntos, Stop)   │
-│ pet/sprites.ts    motor de spritesheets       │  │ Ajustes (proveedor, clave, Canela, │
-│ pet/controller.ts movimiento, arrastre,       │  │ opciones avanzadas y "acerca de")  │
-│                   clic-a-través, menú nativo  │  │ Estilo monocromo                   │
-└───────────────────────────────────────────────┘  └────────────────────────────────────┘
-```
+### 1. Descargar el instalador
 
-Decisiones clave:
+1. Entra en <https://github.com/edufake11/importadora-anamile/actions/workflows/canela-windows.yml> (con tu cuenta de GitHub iniciada).
+2. Abre la ejecución más reciente que tenga ✅ verde.
+3. Abajo, en **Artifacts**, descarga **canela-ai-windows-instaladores** (es un .zip).
+4. Descomprímelo. Dentro hay dos archivos; usa el que termina en **`-setup.exe`**.
 
-| Tema | Decisión | Motivo |
-|---|---|---|
-| Escritorio | **Tauri 2** | Instalador de pocos MB y bajo consumo de memoria: usa el WebView2 que ya trae Windows 11 en lugar de empaquetar un navegador (Electron). |
-| Interfaz | **React 19 + TypeScript + Vite** | Mantenible, tipado y rápido de compilar. |
-| Llamadas a la IA | **En Rust**, no en la webview | La clave API nunca llega al JavaScript; la webview sólo recibe texto. |
-| Claves API | **Llavero del SO** (`keyring`) | En Windows: Administrador de credenciales (DPAPI). Nada en archivos ni código. |
-| Streaming | `tauri::ipc::Channel` + SSE | Texto en tiempo real y cancelación (botón *Detener*). |
-| Nuevos modelos | trait `ProviderStream` | Añadir un proveedor = un archivo en `ai/` + una variante en `ProviderId`. |
-| Mascota | Ventana pequeña que **se mueve** (no una capa a pantalla completa) | Menos consumo y no bloquea el escritorio. |
-| Clic a través | Hit-test por píxel cada 50 ms + `setIgnoreCursorEvents` | Las zonas transparentes dejan pasar el ratón a las demás apps. |
-| Animación | Spritesheet PNG + manifiesto JSON + máquina de estados pura | El arte se puede reemplazar sin tocar código. |
-| Diseño | Interfaz **monocroma** (negro, blanco y grises), dos pestañas (Chat · Ajustes), opciones avanzadas plegadas | Lectura clara y sin ruido visual; el color queda reservado a Canela (audífonos y pañuelo). |
-| Permisos | *Capabilities* de Tauri por ventana | Cada ventana sólo tiene las APIs que necesita; CSP estricta. |
+### 2. Instalar
 
-### Detalles de la integración con Claude
+1. Doble clic en `Canela AI_0.2.0_x64-setup.exe`.
+2. Windows mostrará "Windows protegió su PC" porque el instalador aún no tiene firma digital: pulsa **Más información → Ejecutar de todas formas**.
+3. Sigue el asistente (no necesita permisos de administrador). Al terminar, Canela aparece sobre la barra de tareas, abajo a la derecha.
 
-- `POST https://api.anthropic.com/v1/messages` con `anthropic-version: 2026-10-21` (no existe SDK oficial de Anthropic para Rust, así que se usa la API REST documentada).
-- Modelo por defecto: `claude-opus-5-5`, con **razonamiento adaptativo** y `output_config.effort` configurable (por defecto `medium`).
-- **Fallback del servidor activado** (`fallbacks: "default"` + beta `server-side-fallback-2026-07-01`): si los clasificadores de seguridad rechazan una petición legítima, la API reintenta con un modelo de respaldo dentro de la misma llamada. Si alguna vez quieres desactivarlo, elimina `fallbacks` en `ai/anthropic.rs`.
-- Si aun así hay rechazo (`stop_reason: "refusal"`), Canela lo explica en el chat en vez de mostrar una respuesta vacía.
-- Caché de prompt automática y **historial de sólo-anexar**: los bloques de razonamiento firmados se devuelven tal cual en cada turno (requisito de los modelos actuales) y el prompt de sistema no cambia dentro de una conversación.
+### 3. Configurar (una sola vez)
+
+1. **Doble clic sobre Canela** → se abre su panel.
+2. Ve a **Ajustes** → elige **Claude** o **ChatGPT**.
+3. Pega tu clave API y pulsa **Guardar**:
+   - Claude: crea una clave en <https://console.anthropic.com/settings/keys>
+   - ChatGPT: crea una clave en <https://platform.openai.com/api-keys>
+4. (Opcional) Escribe tu nombre, revisa las carpetas en **Permisos** y pulsa **Guardar cambios**.
+
+¡Listo! Escríbele en **Chat**, por ejemplo: «¿Qué tengo que hacer hoy?», «Abre Visual Studio Code» o «Recuerda que estoy desarrollando una página web».
+
+### Cómo se usa
+
+| Quiero… | Haz esto |
+|---|---|
+| Hablar con Canela | Doble clic sobre ella, o `Ctrl + Alt + Espacio` |
+| Esconderla o mostrarla | `Ctrl + Alt + C` |
+| Ver sus opciones (dormir, tamaño, pasear, salir) | Clic derecho sobre ella |
+| Moverla | Arrástrala con el ratón |
+| Que reaccione | Un clic (3 clics rápidos: celebra) |
+| Ver y editar mis tareas | Panel → **Tareas** |
+| Ver o borrar lo que recuerda | Panel → **Ajustes → Memoria → Ver y editar recuerdos** |
+| Cerrarla del todo | Clic derecho → *Salir*, o el icono de Canela junto al reloj |
+
+Cuando Canela necesite hacer algo importante (crear o cambiar un archivo, organizar una carpeta, borrar una tarea o un recuerdo, abrir una página web), te mostrará una **tarjeta con lo que va a hacer** y esperará a que pulses **Permitir** o **No**.
 
 ---
 
-## Estructura de carpetas
+## Qué incluye esta versión
 
-```
-canela-ai/
-├── package.json · vite.config.ts · tsconfig.json · index.html
-├── scripts/
-│   └── generate-sprites.mjs      # genera el spritesheet provisional e iconos
-├── assets/canela-icon.png        # icono fuente 1024×1024
-├── public/sprites/
-│   ├── canela.png                # spritesheet (13 animaciones)
-│   ├── canela.json               # manifiesto de animaciones
-│   └── canela-face.png           # cara para el panel
-├── src/
-│   ├── main.tsx                  # monta PetApp o PanelApp según la ventana
-│   ├── lib/ipc.ts                # comandos y eventos tipados
-│   ├── pet/                      # mascota: brain, sprites, controller, PetApp
-│   ├── panel/                    # asistente: Chat, SettingsView, markdown, chatModel
-│   └── styles/theme.css
-├── src-tauri/
-│   ├── Cargo.toml · build.rs · tauri.conf.json
-│   ├── capabilities/{pet,panel}.json
-│   ├── icons/                    # generados con `tauri icon`
-│   └── src/ (main.rs, lib.rs, windows.rs, commands.rs, settings.rs, secrets.rs, ai/)
-└── docs/SPRITES.md               # cómo crear e integrar el arte final
-```
+**Canela (mascota)**
+- 16 animaciones: caminar (izquierda y derecha), correr, sentarse, acostarse, dormir con «Zzz», despertarse y estirarse, mover la cola de felicidad, parpadear, inclinar la cabeza con curiosidad, reaccionar al clic, escuchar, pensar, hablar, celebrar, sorpresa y tristeza ante errores, y colgar mientras la arrastras.
+- Descansa poco a poco cuando no la usas (sentada → acostada → dormida) y se pone curiosa cuando acercas el cursor.
+- Ligera: dibuja sólo cuando cambia la imagen, se pausa cuando está oculta, opción de *animaciones reducidas* y se oculta sola con juegos o videos en pantalla completa.
+
+**Asistente**
+- Chat con Claude o ChatGPT, respuestas en tiempo real, adjuntar archivos de texto o código.
+- **Memoria** local (SQLite): proyectos, preferencias, horarios, apps favoritas y datos que le pidas recordar. No guarda contraseñas ni datos bancarios.
+- **Tareas**: prioridad, fecha, recordatorio con notificación de Windows, historial de actividad. También desde el chat («agrega estudiar programación a mis pendientes», «marca esa tarea como completada»).
+- **Saludo al iniciar** con tus tareas del día y opción de abrir Canela al encender la computadora.
+- **Computadora**: abrir aplicaciones del menú Inicio, abrir páginas o búsquedas web, listar, buscar y leer archivos, ver documentos recientes, crear carpetas, crear o modificar archivos (con vista previa de cambios y copia de seguridad), organizar Descargas por tipo.
+- **Programación**: leer archivos de tus proyectos, explicar código y errores, proponer cambios que revisas antes de aplicar, y **analizar proyectos en segundo plano** mientras sigues conversando.
+- **Historial de chats** opcional (desactivado por defecto).
+
+## Lo que todavía NO hace
+
+- **Voz** (micrófono y respuestas habladas) y **análisis de pantalla**: diseñados en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), **no implementados**.
+- **Google Calendar, Gmail y GitHub**: diseñados, **no implementados**.
+- No ejecuta comandos de consola ni instala programas (decisión de seguridad).
+- Las acciones en archivos sólo funcionan dentro de las carpetas autorizadas.
+- Adjuntos: sólo texto o código (no PDF, Word ni imágenes todavía).
+- El arte de Canela es provisional (generado por código); se puede reemplazar sin tocar el programa: [docs/SPRITES.md](docs/SPRITES.md).
+- El instalador no está firmado digitalmente y no se actualiza solo.
 
 ---
 
-## Instalación en Windows 11
+## Qué probar cuando llegues a tu PC
 
-### 1. Requisitos (una sola vez)
+1. **Aspecto**: Canela aparece abajo a la derecha, sin fondo ni bordes; puedes hacer clic en el escritorio "a través" del espacio vacío a su alrededor.
+2. **Vida**: pasea, se sienta, se acuesta; tras unos minutos sin tocarla se acuesta y se duerme con «Zzz»; un clic la despierta y se estira; acerca el cursor y verás que inclina la cabeza.
+3. **Atajos y menú**: `Ctrl+Alt+C`, `Ctrl+Alt+Espacio`, clic derecho → Tamaño.
+4. **Chat**: con tu clave, pregunta algo; Canela "piensa" y luego "habla" con una burbuja.
+5. **Tareas**: «agrega estudiar programación para hoy a las 6 pm con recordatorio a las 5:55» → aparece en **Tareas** y a la hora indicada sale una notificación de Windows.
+6. **Memoria**: «recuerda que estoy desarrollando una página web» → luego, en una conversación nueva, «¿qué proyectos tengo?». Revísalo en Ajustes → Memoria.
+7. **Apps**: «abre Visual Studio Code», «abre Chrome y busca información sobre React» (te pedirá permiso para la web).
+8. **Archivos**: «muéstrame mis documentos recientes», «busca mi proyecto de React», «crea una carpeta para mi universidad» (pide permiso), «organiza mis descargas» (muestra el plan y pide permiso).
+9. **Segundo plano**: «analiza mi proyecto <nombre>» y sigue chateando; al terminar aparece el informe y Canela celebra.
+10. **Pantalla completa**: abre un video en pantalla completa: Canela debe ocultarse y volver al salir.
+11. **Inicio con Windows**: activa la opción en Ajustes, reinicia y comprueba el saludo.
 
-Abre **PowerShell** y ejecuta:
+Si algo falla, cuéntame qué hiciste y qué viste (una captura ayuda mucho).
+
+---
+
+## Para desarrolladores
+
+### Requisitos
+- Windows 11 con WebView2 (incluido), [Rust](https://rustup.rs) (`stable-msvc`), Node.js 20+ y "Desktop development with C++" de Visual Studio Build Tools.
 
 ```powershell
-# Herramientas de compilación de C++ (necesarias para Rust en Windows)
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-
-# Rust (toolchain stable-msvc)
 winget install Rustlang.Rustup
-rustup default stable-msvc
-
-# Node.js LTS (20 o superior)
 winget install OpenJS.NodeJS.LTS
 ```
 
-WebView2 ya viene incluido en Windows 11. Cierra y vuelve a abrir PowerShell tras instalar.
-
-### 2. Descargar y ejecutar en modo desarrollo
+### Ejecutar y compilar
 
 ```powershell
 git clone https://github.com/edufake11/importadora-anamile.git
@@ -113,91 +112,35 @@ cd importadora-anamile
 git checkout claude/adoring-hamilton-3ish8u
 cd canela-ai
 npm install
-npm run tauri dev
+npm run tauri dev        # modo desarrollo
+npm run tauri build      # instaladores en src-tauri\target\release\bundle\{nsis,msi}
 ```
 
-La primera compilación de Rust tarda varios minutos; las siguientes son rápidas. Canela aparecerá sobre la barra de tareas, abajo a la derecha.
-
-### 3. Configurar la IA
-
-1. Doble clic sobre Canela (o `Ctrl+Alt+Espacio`) → pestaña **Ajustes**.
-2. Elige **Claude** o **ChatGPT**, pega tu clave de Anthropic (<https://console.anthropic.com/>) u OpenAI (<https://platform.openai.com/api-keys>) y pulsa **Guardar**. Se guarda en el Administrador de credenciales de Windows (puedes verla en *Panel de control → Administrador de credenciales → Credenciales de Windows → `com.canela.ai`*).
-3. Pulsa **Guardar cambios**. El modelo y el nivel de razonamiento están en *Opciones avanzadas*.
-
-### 4. Uso
-
-| Acción | Resultado |
-|---|---|
-| Clic sobre Canela | Reacciona (se pone feliz, dice algo). 3 clics rápidos: celebra. Si duerme: se despierta. |
-| Doble clic | Abre el asistente (Modo asistente). |
-| Arrastrar | La mueves por el escritorio (animación de "colgando"). |
-| Clic derecho | Menú: abrir asistente, dormir/despertar, sentarse, paseo, tamaño, ocultar, salir. |
-| `Ctrl+Alt+C` | Ocultar / mostrar a Canela. |
-| `Ctrl+Alt+Espacio` | Abrir / cerrar el asistente. |
-| Icono en la bandeja | Clic: abrir asistente. Clic derecho: menú. |
-| Cerrar el panel (✕) | Vuelve al **Modo mascota** (sólo Canela). La app sigue en la bandeja. |
-
----
-
-## Generar el instalador
+### Pruebas
 
 ```powershell
-cd canela-ai
-npm run tauri build
+npm run typecheck        # TypeScript estricto
+npm test                 # 30 pruebas de interfaz
+cd src-tauri; cargo test # 54 pruebas de Rust (incluye el agente con Claude y ChatGPT simulados)
 ```
 
-Resultado:
+GitHub Actions (`.github/workflows/canela-windows.yml`) repite todo en Windows y publica los instaladores.
 
-- `src-tauri\target\release\bundle\nsis\Canela AI_0.1.0_x64-setup.exe` — instalador recomendado (por usuario, sin permisos de administrador).
-- `src-tauri\target\release\bundle\msi\Canela AI_0.1.0_x64_es-ES.msi` — para despliegues con MSI (Tauri descarga WiX automáticamente).
+### Estructura
 
-El instalador no está firmado digitalmente, así que Windows SmartScreen mostrará un aviso ("Más información → Ejecutar de todas formas"). Para distribuirlo públicamente conviene un certificado de firma de código.
-
-**Compilación automática en la nube:** el workflow `.github/workflows/canela-windows.yml` ejecuta las pruebas y genera ambos instaladores en un Windows de GitHub cada vez que cambia `canela-ai/`. Descárgalos desde la pestaña *Actions → Canela AI (Windows) → Artifacts*.
-
----
-
-## Pruebas
-
-```powershell
-npm test                          # 21 pruebas de interfaz (máquina de estados, sprites, chat, markdown)
-npm run typecheck                 # TypeScript estricto
-cd src-tauri; cargo test          # 26 pruebas de Rust (SSE, Claude, OpenAI, ajustes, streaming HTTP de extremo a extremo)
+```
+canela-ai/
+├── scripts/generate-sprites.mjs   # genera el spritesheet provisional y los iconos
+├── public/sprites/                # canela.png + canela.json (16 animaciones)
+├── src/                           # interfaz React + TypeScript
+│   ├── pet/                       # mascota: brain (estados), sprites, controller
+│   └── panel/                     # Chat, Tareas, Ajustes, memoria
+├── src-tauri/src/                 # núcleo Rust (ver docs/ARQUITECTURA.md)
+└── docs/                          # ARQUITECTURA.md, SPRITES.md
 ```
 
-Las pruebas de Rust incluyen un servidor HTTP local que imita la API con streaming troceado, errores 401, cortes de conexión y caracteres UTF-8 partidos, así que no necesitan red ni claves.
+Datos locales en Windows: ajustes en `%APPDATA%\com.canela.ai\settings.json`, base de datos y copias de seguridad de archivos en `%APPDATA%\com.canela.ai\` (`canela.db`, `copias\`). Claves API en el Administrador de credenciales (`com.canela.ai`).
 
-**Prueba manual recomendada en Windows 11** (lista de verificación):
+### Integración con Claude
 
-1. Canela aparece sobre la barra de tareas con fondo transparente y sin sombra ni borde.
-2. Puedes hacer clic en el escritorio/ventanas *a través* de las zonas vacías alrededor de Canela.
-3. Pasea sola, se sienta, duerme tras ~2 min sin interacción (con "Z z z"), y se despierta con un clic.
-4. Arrastrarla funciona; el menú de clic derecho funciona; el tamaño cambia desde el menú.
-5. `Ctrl+Alt+C` la oculta/muestra; `Ctrl+Alt+Espacio` abre/cierra el panel.
-6. Con una clave válida, la respuesta aparece en tiempo real; Canela "piensa" (…) y luego "habla" con una burbuja.
-7. *Detener* corta la respuesta; *Nueva conversación* reinicia el contexto.
-8. Una clave inválida muestra "La clave API … no es válida" y Canela se pone triste.
-
----
-
-## Limitaciones actuales
-
-Lo siguiente **no está implementado** en la Fase 1 (Canela lo sabe y lo dice si se lo pides):
-
-- **Memoria persistente**: el contexto se recuerda sólo dentro de la conversación actual; se pierde al cerrar la app o pulsar *Nueva conversación*. (Fase 2: SQLite.)
-- **Control de Windows**: no abre programas, no busca ni organiza archivos, no controla el navegador. (Fase 2, con permisos por herramienta y confirmación para acciones sensibles.)
-- **Voz y visión de pantalla**: no usa micrófono ni capturas. (Fase 3.)
-- **Multitarea**: hay una conversación a la vez (el núcleo ya admite varias respuestas simultáneas con ID y cancelación, base para la Fase 3).
-- **Adjuntos**: sólo archivos de texto/código hasta 300 KB (no PDF, Word ni imágenes todavía).
-- **Arte**: el spritesheet actual es **provisional**, generado por código a partir de la referencia. Ver [docs/SPRITES.md](docs/SPRITES.md) para crear el arte final y sustituirlo sin cambiar código.
-- **Varios monitores**: Canela pasea dentro del monitor donde está; puedes arrastrarla a otro y seguirá allí.
-- **Escritorios virtuales y apps a pantalla completa**: Canela está "siempre encima", pero los juegos en pantalla completa exclusiva pueden ocultarla.
-- **Atajos**: si otra aplicación ya usa `Ctrl+Alt+C` o `Ctrl+Alt+Espacio`, ese atajo no se registra (la app sigue funcionando y lo indica en la consola). Aún no son configurables.
-- **Modelos de OpenAI**: el modelo por defecto es `gpt-5`; cámbialo en Ajustes por cualquier modelo de chat disponible en tu cuenta.
-- **Firma de código y actualizaciones automáticas**: no incluidas.
-- Verificado en este entorno: compilación, pruebas automáticas y ejecución en Linux (WebKitGTK) con capturas de la mascota y el panel. La transparencia real depende del compositor de Windows (DWM) y debe confirmarse con la lista de verificación anterior en tu equipo.
-
-## Próximas fases (resumen)
-
-- **Fase 2 — Inteligencia y productividad**: memoria en SQLite (con pantalla para ver y borrar recuerdos), herramientas de Windows con *tool use* (abrir apps, buscar proyectos, organizar Descargas) bajo un sistema de permisos con confirmación explícita para acciones destructivas o que envían datos fuera, y gestor de tareas.
-- **Fase 3 — Avanzado**: voz en español (pulsar para hablar, indicador visible de micrófono, "Hola, Canela" opcional), análisis de capturas de pantalla bajo petición explícita, multitarea con estado/pausa/cancelación, automatizaciones e integraciones, más animaciones y personalidad.
+`POST /v1/messages` con `anthropic-version: 2026-10-21`; modelo por defecto `claude-opus-5-5` con razonamiento adaptativo y esfuerzo configurable; *fallback* del servidor activado (`fallbacks: "default"`) para que un rechazo de los filtros de seguridad se reintente con un modelo de respaldo; herramientas con `eager_input_streaming` y validación de la entrada antes de ejecutar nada; historial de sólo-anexar con los bloques de razonamiento firmados. Detalles en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md).
