@@ -190,6 +190,14 @@ function bodyStand(L, cx, cy, rx = 12, ry = 5) {
 function head(L, hx, hy, opts = {}) {
   const { eyes = 'open', mouth = 'closed', ear = 'down' } = opts;
 
+  // Pañuelo en el cuello, DETRÁS de la cabeza y de la oreja: nunca tapa las orejas.
+  part(L, (l) => {
+    l.poly([[hx - 7, hy + 4], [hx + 1, hy + 6], [hx - 4, hy + 12]], C.BAN);
+    l.line(hx - 6, hy + 5, hx, hy + 6.5, C.BAN_L, 0);
+    l.set(hx - 4, hy + 8, C.BAN_D);
+    l.set(hx - 4, hy + 7, C.WHITE); // huellita
+  });
+
   // Cráneo + hocico
   part(L, (l) => {
     l.ellipse(hx, hy, 6.8, 6.2, C.FUR);
@@ -271,20 +279,12 @@ function head(L, hx, hy, opts = {}) {
       L.set(ex + 2, ey + 1, C.WHITE);
   }
 
-  // Oreja larga y caída (bajo la almohadilla del audífono)
+  // Oreja larga y caída (encima del pañuelo, bajo la almohadilla del audífono)
   part(L, (l) => {
     if (ear === 'up') l.ellipse(hx - 3, hy + 0.5, 2.4, 3.4, C.FUR_D);
     else if (ear === 'fly') l.ellipse(hx - 7, hy - 0.5, 4, 1.8, C.FUR_D);
     else if (ear === 'droop') l.ellipse(hx - 3, hy + 5, 2.6, 6, C.FUR_D);
     else l.ellipse(hx - 3, hy + 3.5, 3, 5.5, C.FUR_D);
-  });
-
-  // Pañuelo morado bajo la barbilla (delante de la oreja)
-  part(L, (l) => {
-    l.poly([[hx - 5, hy + 5], [hx + 4, hy + 6], [hx - 1, hy + 11]], C.BAN);
-    l.line(hx - 4, hy + 6, hx + 2, hy + 6.5, C.BAN_L, 0);
-    l.set(hx - 1, hy + 9, C.BAN_D);
-    l.set(hx - 1, hy + 8, C.WHITE); // huellita
   });
 
   // Audífonos: diadema + almohadilla

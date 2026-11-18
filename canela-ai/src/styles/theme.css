@@ -1,19 +1,18 @@
+/* Paleta monocroma: negro, blanco y grises. Sin colores de acento en la UI;
+   el color queda reservado a Canela. */
 :root {
-  --bg: #07060d;
-  --bg-2: #0e0b1a;
-  --surface: #151027;
-  --surface-2: #1d1636;
-  --border: #2c2350;
-  --text: #ece8ff;
-  --muted: #9a92c0;
-  --violet: #8b5cf6;
-  --violet-2: #a78bfa;
-  --blue: #38bdf8;
-  --blue-2: #0ea5e9;
-  --danger: #f87171;
-  --ok: #4ade80;
-  --radius: 12px;
-  --glow: 0 0 18px rgba(139, 92, 246, 0.35);
+  --bg: #0b0b0b;
+  --surface: #121212;
+  --surface-2: #1a1a1a;
+  --line: #262626;
+  --line-strong: #3a3a3a;
+  --text: #f2f2f2;
+  --text-2: #b3b3b3;
+  --muted: #7a7a7a;
+  --invert-bg: #f2f2f2;
+  --invert-text: #0b0b0b;
+  --danger: #e5e5e5; /* los errores se marcan con icono y texto, no con color */
+  --radius: 10px;
   color-scheme: dark;
 }
 
@@ -24,7 +23,8 @@ body,
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  font: 14px/1.55 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -39,10 +39,24 @@ textarea {
   color: inherit;
 }
 
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 1px solid var(--text-2);
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2f2654;
+  background: #2e2e2e;
   border-radius: 8px;
 }

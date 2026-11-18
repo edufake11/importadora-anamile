@@ -44,6 +44,7 @@ Decisiones clave:
 | Mascota | Ventana pequeña que **se mueve** (no una capa a pantalla completa) | Menos consumo y no bloquea el escritorio. |
 | Clic a través | Hit-test por píxel cada 50 ms + `setIgnoreCursorEvents` | Las zonas transparentes dejan pasar el ratón a las demás apps. |
 | Animación | Spritesheet PNG + manifiesto JSON + máquina de estados pura | El arte se puede reemplazar sin tocar código. |
+| Diseño | Interfaz **monocroma** (negro, blanco y grises), dos pestañas (Chat · Ajustes), opciones avanzadas plegadas | Lectura clara y sin ruido visual; el color queda reservado a Canela (audífonos y pañuelo). |
 | Permisos | *Capabilities* de Tauri por ventana | Cada ventana sólo tiene las APIs que necesita; CSP estricta. |
 
 ### Detalles de la integración con Claude
@@ -120,8 +121,8 @@ La primera compilación de Rust tarda varios minutos; las siguientes son rápida
 ### 3. Configurar la IA
 
 1. Doble clic sobre Canela (o `Ctrl+Alt+Espacio`) → pestaña **Ajustes**.
-2. Pega tu clave de Anthropic (<https://console.anthropic.com/>) y/o de OpenAI (<https://platform.openai.com/api-keys>) y pulsa **Guardar**. Se guarda en el Administrador de credenciales de Windows (puedes verla en *Panel de control → Administrador de credenciales → Credenciales de Windows → `com.canela.ai`*).
-3. Elige el proveedor, ajusta el modelo si quieres y pulsa **Guardar ajustes**.
+2. Elige **Claude** o **ChatGPT**, pega tu clave de Anthropic (<https://console.anthropic.com/>) u OpenAI (<https://platform.openai.com/api-keys>) y pulsa **Guardar**. Se guarda en el Administrador de credenciales de Windows (puedes verla en *Panel de control → Administrador de credenciales → Credenciales de Windows → `com.canela.ai`*).
+3. Pulsa **Guardar cambios**. El modelo y el nivel de razonamiento están en *Opciones avanzadas*.
 
 ### 4. Uso
 

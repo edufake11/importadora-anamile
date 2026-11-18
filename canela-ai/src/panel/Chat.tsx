@@ -18,11 +18,7 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-const SUGGESTIONS = [
-  'Explícame este error de JavaScript: TypeError: Cannot read properties of undefined',
-  'Ayúdame a organizar mis tareas de hoy',
-  'Revisa este código y dime cómo mejorarlo',
-];
+const SUGGESTIONS = ['Explícame un error de mi código', 'Ayúdame a organizar mi día', 'Resume un texto por mí'];
 
 export function Chat({ settings, keys, onOpenSettings }: Props) {
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -167,19 +163,21 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
 
   return (
     <div className="chat">
-      <div className="chat-toolbar">
-        <span className={`provider-pill ${settings.provider}`}>
-          {providerName} · {settings.provider === 'anthropic' ? settings.anthropicModel : settings.openaiModel}
-        </span>
-        <button className="ghost" onClick={newConversation} disabled={messages.length === 0}>
-          Nueva conversación
-        </button>
+      <div className="chat-bar">
+        <span>{providerName}</span>
+        {messages.length > 0 && (
+          <button className="text-button" onClick={newConversation}>
+            Nueva conversación
+          </button>
+        )}
       </div>
 
       {!hasKey && (
         <div className="banner">
-          Para hablar con {providerName} necesitas tu clave API.
-          <button onClick={onOpenSettings}>Configurar</button>
+          Añade tu clave de {providerName} para empezar.
+          <button className="btn primary" onClick={onOpenSettings}>
+            Configurar
+          </button>
         </div>
       )}
 
@@ -187,8 +185,8 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         {messages.length === 0 && (
           <div className="empty">
             <img src="/sprites/canela-face.png" alt="" className="empty-face" onError={(e) => (e.currentTarget.style.display = 'none')} />
-            <h2>¡Hola{settings.userName ? `, ${settings.userName}` : ''}! Soy Canela 🐾</h2>
-            <p>Puedo ayudarte a programar, explicar errores, analizar textos y organizar tus tareas.</p>
+            <h2>Hola{settings.userName ? `, ${settings.userName}` : ''}. Soy Canela.</h2>
+            <p>¿En qué te ayudo hoy?</p>
             <div className="suggestions">
               {SUGGESTIONS.map((s) => (
                 <button key={s} onClick={() => void send(s)} disabled={!hasKey}>
@@ -200,9 +198,9 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         )}
         {messages.map((m) => (
           <div key={m.id} className={`msg ${m.role} ${m.status}`}>
-            {m.role === 'assistant' && <div className="msg-author">Canela{m.model ? <span> · {m.model}</span> : null}</div>}
+            {m.role === 'assistant' && <div className="msg-author">Canela</div>}
             {m.attachments && m.attachments.length > 0 && (
-              <div className="msg-files">📎 {m.attachments.join(', ')}</div>
+              <div className="msg-files">Adjunto: {m.attachments.join(', ')}</div>
             )}
             <div className="msg-body">
               {m.role === 'user' ? (
@@ -228,7 +226,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         <div className="attachments">
           {attachments.map((a, i) => (
             <span key={i} className="chip">
-              📎 {a.name}
+              {a.name}
               <button onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))} aria-label="Quitar">
                 ×
               </button>
@@ -245,13 +243,13 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           void send();
         }}
       >
-        <button type="button" className="icon" title="Adjuntar archivo de texto" onClick={() => fileRef.current?.click()}>
-          📎
+        <button type="button" className="icon" title="Adjuntar archivo de texto o código" aria-label="Adjuntar" onClick={() => fileRef.current?.click()}>
+          +
         </button>
         <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
         <textarea
           value={input}
-          placeholder={hasKey ? 'Escríbele a Canela…  (Enter envía, Shift+Enter nueva línea)' : 'Configura tu clave API en Ajustes'}
+          placeholder={hasKey ? 'Escribe un mensaje…' : 'Configura tu clave en Ajustes'}
           onChange={(e) => onTyping(e.target.value)}
           onBlur={() => !busyId && void sendMood({ mood: 'idle' })}
           onKeyDown={(e) => {
@@ -260,15 +258,15 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               void send();
             }
           }}
-          rows={2}
+          rows={1}
         />
         {busyId ? (
           <button type="button" className="stop" onClick={() => void stop()}>
             Detener
           </button>
         ) : (
-          <button type="submit" className="send" disabled={!input.trim() && attachments.length === 0}>
-            Enviar
+          <button type="submit" className="send" disabled={!input.trim() && attachments.length === 0} title="Enviar (Enter)" aria-label="Enviar">
+            ↑
           </button>
         )}
       </form>
