@@ -1,0 +1,55 @@
+name: Canela AI (Windows)
+
+on:
+  push:
+    paths:
+      - 'canela-ai/**'
+      - '.github/workflows/canela-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: canela-ai
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: canela-ai/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: canela-ai/src-tauri
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Pruebas de interfaz y tipos
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Pruebas de Rust
+        working-directory: canela-ai/src-tauri
+        run: cargo test
+
+      - name: Generar instaladores (NSIS + MSI)
+        run: npx tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canela-ai-windows-instaladores
+          path: |
+            canela-ai/src-tauri/target/release/bundle/nsis/*.exe
+            canela-ai/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

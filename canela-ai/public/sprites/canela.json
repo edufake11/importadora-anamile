@@ -1,0 +1,93 @@
+{
+  "$comment": "Spritesheet de Canela. Una fila por animación; los fotogramas van de izquierda a derecha. Ver docs/SPRITES.md",
+  "version": 1,
+  "image": "canela.png",
+  "frameWidth": 48,
+  "frameHeight": 40,
+  "facing": "right",
+  "anchor": {
+    "x": 24,
+    "y": 38
+  },
+  "placeholder": true,
+  "animations": {
+    "idle": {
+      "row": 0,
+      "frames": 4,
+      "fps": 4,
+      "loop": true
+    },
+    "walk": {
+      "row": 1,
+      "frames": 4,
+      "fps": 8,
+      "loop": true
+    },
+    "run": {
+      "row": 2,
+      "frames": 4,
+      "fps": 12,
+      "loop": true
+    },
+    "sit": {
+      "row": 3,
+      "frames": 2,
+      "fps": 3,
+      "loop": true
+    },
+    "sleep": {
+      "row": 4,
+      "frames": 2,
+      "fps": 1.5,
+      "loop": true
+    },
+    "wake": {
+      "row": 5,
+      "frames": 3,
+      "fps": 4,
+      "loop": false
+    },
+    "listen": {
+      "row": 6,
+      "frames": 2,
+      "fps": 3,
+      "loop": true
+    },
+    "talk": {
+      "row": 7,
+      "frames": 2,
+      "fps": 6,
+      "loop": true
+    },
+    "think": {
+      "row": 8,
+      "frames": 2,
+      "fps": 2,
+      "loop": true
+    },
+    "celebrate": {
+      "row": 9,
+      "frames": 4,
+      "fps": 8,
+      "loop": true
+    },
+    "happy": {
+      "row": 10,
+      "frames": 2,
+      "fps": 6,
+      "loop": true
+    },
+    "sad": {
+      "row": 11,
+      "frames": 2,
+      "fps": 2,
+      "loop": true
+    },
+    "dragged": {
+      "row": 12,
+      "frames": 2,
+      "fps": 6,
+      "loop": true
+    }
+  }
+}

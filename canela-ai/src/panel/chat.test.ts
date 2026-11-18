@@ -1,0 +1,58 @@
+import { describe, expect, it } from 'vitest';
+import { bubbleSnippet, composeUserText, isTextFile, toWire, type UiMessage } from './chatModel';
+import { splitSegments } from './markdown';
+
+describe('historial del chat', () => {
+  it('envía usuario + respuestas completas y omite errores', () => {
+    const msgs: UiMessage[] = [
+      { id: '1', role: 'user', text: 'hola', status: 'done' },
+      { id: '2', role: 'assistant', text: '¡guau!', status: 'done', anthropicContent: [{ type: 'text', text: '¡guau!' }] },
+      { id: '3', role: 'user', text: '¿y?', status: 'done' },
+      { id: '4', role: 'assistant', text: '', status: 'error', notice: 'x' },
+      { id: '5', role: 'user', text: 'otra vez', status: 'done' },
+    ];
+    const wire = toWire(msgs);
+    expect(wire.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'user']);
+    expect(wire[1].anthropicContent).toEqual([{ type: 'text', text: '¡guau!' }]);
+  });
+
+  it('las respuestas canceladas sólo conservan el texto', () => {
+    const wire = toWire([
+      { id: '1', role: 'user', text: 'hola', status: 'done' },
+      { id: '2', role: 'assistant', text: 'parcial', status: 'cancelled', anthropicContent: [{ type: 'thinking' }] },
+    ]);
+    expect(wire[1]).toEqual({ role: 'assistant', text: 'parcial', anthropicContent: undefined });
+  });
+
+  it('incrusta adjuntos con un delimitador seguro', () => {
+    const t = composeUserText('revisa', [{ name: 'a.md', content: 'tiene ``` dentro' }]);
+    expect(t).toContain('[Archivo adjunto: a.md]');
+    expect(t).toContain('~~~~');
+  });
+
+  it('reconoce archivos de texto', () => {
+    expect(isTextFile('main.rs')).toBe(true);
+    expect(isTextFile('foto.png')).toBe(false);
+  });
+
+  it('acorta la burbuja y oculta el código', () => {
+    expect(bubbleSnippet('Mira:\n```js\nconsole.log(1)\n```\nlisto')).toBe('Mira: [código] listo');
+    expect(bubbleSnippet('a'.repeat(300)).length).toBe(140);
+  });
+});
+
+describe('markdown seguro', () => {
+  it('separa texto y bloques de código', () => {
+    const s = splitSegments('Hola\n```ts\nconst a = 1;\n```\nfin');
+    expect(s).toEqual([
+      { kind: 'text', text: 'Hola\n' },
+      { kind: 'code', lang: 'ts', code: 'const a = 1;' },
+      { kind: 'text', text: '\nfin' },
+    ]);
+  });
+
+  it('un bloque sin cerrar (streaming) se muestra como código', () => {
+    const s = splitSegments('```py\nprint(1)');
+    expect(s).toEqual([{ kind: 'code', lang: 'py', code: 'print(1)' }]);
+  });
+});

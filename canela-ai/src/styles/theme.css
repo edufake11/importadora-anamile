@@ -1,0 +1,48 @@
+:root {
+  --bg: #07060d;
+  --bg-2: #0e0b1a;
+  --surface: #151027;
+  --surface-2: #1d1636;
+  --border: #2c2350;
+  --text: #ece8ff;
+  --muted: #9a92c0;
+  --violet: #8b5cf6;
+  --violet-2: #a78bfa;
+  --blue: #38bdf8;
+  --blue-2: #0ea5e9;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --radius: 12px;
+  --glow: 0 0 18px rgba(139, 92, 246, 0.35);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2f2654;
+  border-radius: 8px;
+}
