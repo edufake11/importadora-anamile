@@ -4,6 +4,7 @@ mod ai;
 mod commands;
 mod data_cmds;
 mod db;
+mod docs;
 mod fullscreen;
 mod jobs;
 mod reminders;
@@ -202,6 +203,7 @@ pub fn run() {
             vision_cmds::screen_capture,
             vision_cmds::screen_finalize,
             vision_cmds::screen_discard,
+            vision_cmds::prepare_attachment,
             data_cmds::memory_list,
             data_cmds::memory_add,
             data_cmds::memory_update,
@@ -219,6 +221,8 @@ pub fn run() {
             data_cmds::conversation_delete,
             data_cmds::conversation_clear,
             data_cmds::conversation_context,
+            data_cmds::doc_index_stats,
+            data_cmds::doc_index_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar Canela AI");

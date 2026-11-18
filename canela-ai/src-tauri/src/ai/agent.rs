@@ -48,18 +48,25 @@ pub struct AgentEnv {
 
 type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 
-async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) -> ToolResult {
-    let fail = |text: String| ToolResult {
-        id: call.id.clone(),
-        text,
-        is_error: true,
-        images: vec![],
+/// Ejecuta una llamada. `tainted` = ya se leyó contenido externo en esta respuesta.
+/// Devuelve el resultado y si trae contenido externo.
+async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, tainted: bool) -> (ToolResult, bool) {
+    let fail = |text: String| {
+        (
+            ToolResult {
+                id: call.id.clone(),
+                text,
+                is_error: true,
+                images: vec![],
+            },
+            false,
+        )
     };
     let input = match &call.input {
         Ok(v) => v.clone(),
         Err(e) => return fail(e.clone()),
     };
-    let prepared = match tools::prepare_async(ctx, &call.name, &input).await {
+    let mut prepared = match tools::prepare_async(ctx, &call.name, &input).await {
         Ok(p) => p,
         Err(e) => {
             emit(StreamEvent::ToolEnd {
@@ -76,6 +83,16 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
         label: prepared.label.clone(),
     });
     let label = prepared.label.clone();
+    // Defensa contra instrucciones escondidas en archivos, documentos o capturas:
+    // si ya se leyó contenido externo, toda acción que cambie algo se confirma.
+    if tainted && matches!(prepared.permission, Permission::Auto) && !tools::is_read_only(&call.name) {
+        prepared.permission = Permission::Confirm {
+            title: label.clone(),
+            details: "Canela lo pidió después de leer un archivo, documento o captura. Confírmalo sólo si tú se lo pediste.".into(),
+            diff: None,
+            image: None,
+        };
+    }
     if let Permission::Confirm {
         title,
         details,
@@ -109,12 +126,15 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
                 ok: true,
                 summary: label,
             });
-            ToolResult {
-                id: call.id.clone(),
-                text: out.text,
-                is_error: false,
-                images: out.images,
-            }
+            (
+                ToolResult {
+                    id: call.id.clone(),
+                    text: out.text,
+                    is_error: false,
+                    images: out.images,
+                },
+                out.untrusted,
+            )
         }
         Err(e) => {
             emit(StreamEvent::ToolEnd {
@@ -134,6 +154,7 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     let base = native_history(provider, &env.history);
     let defs = if env.tools.is_some() { tools::definitions() } else { vec![] };
     let mut transcript: Vec<Value> = Vec::new();
+    let mut tainted = false;
     let mut last_model = None;
 
     for step in 0..MAX_STEPS {
@@ -167,7 +188,9 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         };
         let mut results = Vec::new();
         for call in &outcome.tool_calls {
-            results.push(execute(&env, &ctx, call, &emit).await);
+            let (result, untrusted) = execute(&env, &ctx, call, &emit, tainted).await;
+            tainted |= untrusted;
+            results.push(result);
         }
         transcript.extend(tool_results(provider, &results));
         if step + 1 == MAX_STEPS {

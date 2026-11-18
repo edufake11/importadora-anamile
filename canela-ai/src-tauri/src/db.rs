@@ -236,6 +236,19 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 ";
 
+/// v0.3: índice de documentos (búsqueda de texto completo) y memoria temporal.
+const SCHEMA_V2: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_chunks USING fts5(path UNINDEXED, part UNINDEXED, content, tokenize = 'unicode61 remove_diacritics 2');
+CREATE TABLE IF NOT EXISTS doc_files (
+  path TEXT PRIMARY KEY,
+  mtime INTEGER NOT NULL,
+  size INTEGER NOT NULL,
+  parts INTEGER NOT NULL,
+  indexed_at TEXT NOT NULL
+);
+ALTER TABLE memories ADD COLUMN expires_at TEXT;
+";
+
 fn memory_from(r: &Row) -> rusqlite::Result<Memory> {
     Ok(Memory {
         id: r.get(0)?,
@@ -284,6 +297,10 @@ impl Db {
         if version < 1 {
             conn.execute_batch(SCHEMA_V1).map_err(err)?;
             conn.execute_batch("PRAGMA user_version = 1").map_err(err)?;
+        }
+        if version < 2 {
+            conn.execute_batch(SCHEMA_V2).map_err(err)?;
+            conn.execute_batch("PRAGMA user_version = 2").map_err(err)?;
         }
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -607,6 +624,97 @@ impl Db {
             .collect())
     }
 
+    // ------------------------------------------------- índice de documentos
+
+    /// ¿Hay que (re)indexar este archivo?
+    pub fn doc_needs_index(&self, path: &str, mtime: i64, size: i64) -> DbResult<bool> {
+        let row: Option<(i64, i64)> = self.with(|c| {
+            c.query_row("SELECT mtime, size FROM doc_files WHERE path = ?1", params![path], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()
+        })?;
+        Ok(row != Some((mtime, size)))
+    }
+
+    pub fn doc_index(&self, path: &str, mtime: i64, size: i64, parts: &[String]) -> DbResult<()> {
+        let mut conn = self.conn.lock().map_err(|_| "La base de datos está bloqueada.".to_string())?;
+        let tx = conn.transaction().map_err(err)?;
+        tx.execute("DELETE FROM doc_chunks WHERE path = ?1", params![path]).map_err(err)?;
+        for (i, p) in parts.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO doc_chunks (path, part, content) VALUES (?1, ?2, ?3)",
+                params![path, (i + 1) as i64, p],
+            )
+            .map_err(err)?;
+        }
+        tx.execute(
+            "INSERT INTO doc_files (path, mtime, size, parts, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, parts = excluded.parts, indexed_at = excluded.indexed_at",
+            params![path, mtime, size, parts.len() as i64, now_str()],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)
+    }
+
+    pub fn doc_forget_missing(&self, keep: &std::collections::HashSet<String>, under: &str) -> DbResult<usize> {
+        let paths: Vec<String> = self.with(|c| {
+            let mut st = c.prepare("SELECT path FROM doc_files WHERE path LIKE ?1")?;
+            let rows = st.query_map(params![format!("{under}%")], |r| r.get(0))?;
+            rows.collect()
+        })?;
+        let mut n = 0;
+        for p in paths.into_iter().filter(|p| !keep.contains(p)) {
+            self.with(|c| {
+                c.execute("DELETE FROM doc_chunks WHERE path = ?1", params![p])?;
+                c.execute("DELETE FROM doc_files WHERE path = ?1", params![p])
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    pub fn doc_stats(&self) -> DbResult<(i64, Option<String>)> {
+        self.with(|c| {
+            c.query_row("SELECT COUNT(*), MAX(indexed_at) FROM doc_files", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+        })
+    }
+
+    pub fn doc_clear(&self) -> DbResult<()> {
+        self.with(|c| c.execute_batch("DELETE FROM doc_chunks; DELETE FROM doc_files;"))
+    }
+
+    /// Búsqueda de texto completo. Devuelve (ruta, parte, fragmento).
+    pub fn doc_search(&self, query: &str, under: Option<&str>, limit: usize) -> DbResult<Vec<(String, i64, String)>> {
+        let words: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.chars().count() >= 2)
+            .map(|w| format!("\"{}\"", w.replace('"', "")))
+            .collect();
+        if words.is_empty() {
+            return Ok(vec![]);
+        }
+        let prefix = format!("{}%", under.unwrap_or(""));
+        let run = |q: &str| -> DbResult<Vec<(String, i64, String)>> {
+            self.with(|c| {
+                let mut st = c.prepare(
+                    "SELECT path, part, snippet(doc_chunks, 2, '«', '»', '…', 40) FROM doc_chunks
+                     WHERE doc_chunks MATCH ?1 AND path LIKE ?2 ORDER BY bm25(doc_chunks) LIMIT ?3",
+                )?;
+                let rows = st.query_map(params![q, prefix, limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect()
+            })
+        };
+        // Primero todas las palabras; si no hay resultados, cualquiera de ellas.
+        let all = run(&words.join(" "))?;
+        if !all.is_empty() || words.len() == 1 {
+            return Ok(all);
+        }
+        run(&words.join(" OR "))
+    }
+
     /// Resumen para el prompt de sistema al empezar una conversación.
     pub fn context_summary(&self) -> DbResult<String> {
         let memories = self.memory_list(None, None, 40)?;
@@ -765,6 +873,58 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(found[0].1.contains("hooks"));
         assert!(d.conversation_delete("c1").unwrap());
+    }
+
+    #[test]
+    fn document_index_and_search() {
+        let d = db();
+        d.doc_index(
+            "C:/docs/contrato.pdf",
+            1,
+            10,
+            &[
+                "El contrato de arrendamiento vence en marzo.".into(),
+                "Cláusula de penalización por retraso.".into(),
+            ],
+        )
+        .unwrap();
+        d.doc_index("C:/docs/receta.txt", 1, 10, &["Pastel de chocolate con canela.".into()])
+            .unwrap();
+        let r = d.doc_search("penalizacion retraso", None, 5).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].0.as_str(), r[0].1), ("C:/docs/contrato.pdf", 2));
+        assert!(r[0].2.contains("«"));
+        // Sin acentos ni mayúsculas, y con "cualquiera de las palabras" como respaldo.
+        assert_eq!(d.doc_search("CANELA xyz", None, 5).unwrap()[0].0, "C:/docs/receta.txt");
+        assert!(!d.doc_needs_index("C:/docs/receta.txt", 1, 10).unwrap());
+        assert!(d.doc_needs_index("C:/docs/receta.txt", 2, 10).unwrap());
+        // Reindexar reemplaza; borrar los que ya no existen.
+        d.doc_index("C:/docs/receta.txt", 2, 10, &["Galletas.".into()]).unwrap();
+        assert!(d.doc_search("chocolate", None, 5).unwrap().is_empty());
+        let keep: std::collections::HashSet<String> = ["C:/docs/receta.txt".to_string()].into();
+        assert_eq!(d.doc_forget_missing(&keep, "C:/docs").unwrap(), 1);
+        assert_eq!(d.doc_stats().unwrap().0, 1);
+        assert!(d.doc_search("contrato", Some("D:/otra"), 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn migration_from_v1_keeps_data() {
+        let path = std::env::temp_dir().join(format!("canela-mig-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(SCHEMA_V1).unwrap();
+            c.execute_batch("PRAGMA user_version = 1").unwrap();
+            c.execute(
+                "INSERT INTO memories (kind, content, source, created_at, updated_at) VALUES ('dato','de la v0.2','usuario','x','x')",
+                [],
+            )
+            .unwrap();
+        }
+        let d = Db::open(&path).unwrap();
+        assert_eq!(d.memory_list(None, None, 10).unwrap()[0].content, "de la v0.2");
+        d.doc_index("a", 1, 1, &["hola".into()]).unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

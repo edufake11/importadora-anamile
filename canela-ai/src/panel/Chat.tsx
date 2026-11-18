@@ -1,3 +1,4 @@
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
@@ -19,8 +20,6 @@ import {
   composeUserText,
   type Conversation,
   conversationTitle,
-  isTextFile,
-  MAX_ATTACHMENT_BYTES,
   newId,
   type PendingConfirm,
   toWire,
@@ -98,7 +97,6 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const convRef = useRef<{ id: string; userName: string; context: string } | null>(null);
   const messagesRef = useRef<UiMessage[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const listenTimer = useRef<number>(undefined);
   const sendRef = useRef<(text?: string, spoken?: boolean) => Promise<void>>(async () => undefined);
   messagesRef.current = messages;
@@ -316,23 +314,28 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
     }
   }
 
-  async function addFiles(files: FileList | null) {
+  /** Selector de archivos de Windows: el texto se extrae en tu equipo. */
+  async function pickFiles() {
     setFileError(null);
-    if (!files) return;
-    const next: Attachment[] = [];
-    for (const f of Array.from(files)) {
-      if (!isTextFile(f.name)) {
-        setFileError(`«${f.name}» no es un archivo de texto. Por ahora sólo se admiten archivos de texto o código.`);
-        continue;
+    const picked = await openDialog({
+      multiple: true,
+      title: 'Adjuntar archivos',
+      filters: [
+        { name: 'Documentos, imágenes y código', extensions: ['pdf', 'docx', 'png', 'jpg', 'jpeg', 'webp', 'txt', 'md', 'csv', 'json', 'log', 'js', 'jsx', 'ts', 'tsx', 'py', 'rs', 'java', 'cs', 'cpp', 'c', 'h', 'html', 'css', 'sql', 'yaml', 'yml', 'toml', 'xml'] },
+        { name: 'Todos los archivos', extensions: ['*'] },
+      ],
+    });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    for (const path of paths) {
+      try {
+        const a = await api.prepareAttachment(path);
+        if (a.kind === 'image' && a.image) setImages((prev) => [...prev, a.image!].slice(0, 4));
+        else if (a.text !== null) setAttachments((prev) => [...prev, { name: a.name, content: a.text ?? '' }]);
+        if (a.note) setFileError(a.note);
+      } catch (e) {
+        setFileError(String(e));
       }
-      if (f.size > MAX_ATTACHMENT_BYTES) {
-        setFileError(`«${f.name}» supera los ${MAX_ATTACHMENT_BYTES / 1024} KB.`);
-        continue;
-      }
-      next.push({ name: f.name, content: await f.text() });
     }
-    setAttachments((prev) => [...prev, ...next]);
-    if (fileRef.current) fileRef.current.value = '';
   }
 
   function onTyping(value: string) {
@@ -546,10 +549,9 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           void send();
         }}
       >
-        <button type="button" className="icon" title="Adjuntar archivo" aria-label="Adjuntar archivo" onClick={() => fileRef.current?.click()}>
+        <button type="button" className="icon" title="Adjuntar PDF, Word, imagen o texto" aria-label="Adjuntar archivo" onClick={() => void pickFiles()}>
           <ClipIcon />
         </button>
-        <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
         {settings.visionEnabled && (
           <button type="button" className="icon" title="Compartir una captura de pantalla" aria-label="Compartir captura" onClick={() => setShowCapture(true)}>
             <ScreenIcon />

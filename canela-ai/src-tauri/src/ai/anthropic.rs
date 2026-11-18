@@ -19,6 +19,7 @@ use crate::vision::ImageData;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+#[cfg_attr(test, allow(dead_code))]
 pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const API_VERSION: &str = "2026-10-21";
 pub const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
@@ -125,7 +126,10 @@ pub fn build_request(
 ) -> reqwest::RequestBuilder {
     // En pruebas y compilaciones de desarrollo se puede redirigir a un servidor
     // local simulado. Las versiones instalables (release) siempre usan la API real.
-    #[cfg(any(test, debug_assertions))]
+    // En pruebas nunca se sale a internet: sin servidor simulado, la petición falla.
+    #[cfg(test)]
+    let url = std::env::var("CANELA_TEST_ANTHROPIC_URL").unwrap_or_else(|_| "http://127.0.0.1:9/sin-red".to_string());
+    #[cfg(all(debug_assertions, not(test)))]
     let url = std::env::var("CANELA_TEST_ANTHROPIC_URL").unwrap_or_else(|_| API_URL.to_string());
     #[cfg(not(any(test, debug_assertions)))]
     let url = API_URL;

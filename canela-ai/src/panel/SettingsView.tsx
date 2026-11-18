@@ -92,6 +92,10 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
   const [form, setForm] = useState<Settings>(settings);
   const [saved, setSaved] = useState<string | null>(null);
   const [folders, setFolders] = useState<string[]>([]);
+  const [docStats, setDocStats] = useState<{ files: number; updatedAt: string | null } | null>(null);
+  useEffect(() => {
+    void data.docIndexStats().then(setDocStats).catch(() => undefined);
+  }, []);
   useEffect(() => setForm(settings), [settings]);
   useEffect(() => {
     void api.allowedFolders().then(setFolders);
@@ -219,6 +223,18 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
         >
           Borrar historial de chats
         </button>
+        <p className="muted">
+          Índice de documentos (para buscar dentro de tus archivos, se crea sólo cuando se lo pides a Canela):{' '}
+          {docStats ? `${docStats.files} archivos` : '…'}
+        </p>
+        {docStats && docStats.files > 0 && (
+          <button
+            className="text-button"
+            onClick={() => confirm('¿Borrar el índice de documentos? Tus archivos no se tocan.') && void data.docIndexClear().then(() => setDocStats({ files: 0, updatedAt: null }))}
+          >
+            Borrar índice de documentos
+          </button>
+        )}
       </section>
 
       <section>
@@ -242,6 +258,9 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
         </Toggle>
         <Toggle checked={form.autoOpenWeb} onChange={(v) => set('autoOpenWeb', v)}>
           Abrir páginas web sin preguntar
+        </Toggle>
+        <Toggle checked={form.confirmFileSharing} onChange={(v) => set('confirmFileSharing', v)}>
+          Preguntarme antes de enviar el contenido de mis archivos a la IA
         </Toggle>
         <Toggle checked={form.visionEnabled} onChange={(v) => set('visionEnabled', v)}>
           Permitir capturas de pantalla (siempre con vista previa y tu permiso)

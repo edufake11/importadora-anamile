@@ -34,6 +34,7 @@ export interface Settings {
   speakReplies: 'voice' | 'always' | 'never';
   wakeWord: boolean;
   visionEnabled: boolean;
+  confirmFileSharing: boolean;
 }
 
 export interface ImageData {
@@ -92,6 +93,8 @@ export const api = {
   jobsList: () => invoke<JobInfo[]>('jobs_list'),
   jobCancel: (id: string) => invoke<boolean>('job_cancel', { id }),
   allowedFolders: () => invoke<string[]>('allowed_folders'),
+  prepareAttachment: (path: string) =>
+    invoke<{ name: string; kind: 'text' | 'image'; text: string | null; image: ImageData | null; note: string | null }>('prepare_attachment', { path }),
 
   /** Inicia una respuesta en streaming. Devuelve una función para cancelarla. */
   async chat(
@@ -206,6 +209,8 @@ export const data = {
   conversationDelete: (id: string) => invoke<boolean>('conversation_delete', { id }),
   conversationClear: () => invoke<number>('conversation_clear'),
   conversationContext: () => invoke<string>('conversation_context'),
+  docIndexStats: () => invoke<{ files: number; updatedAt: string | null }>('doc_index_stats'),
+  docIndexClear: () => invoke<void>('doc_index_clear'),
 };
 
 export const onDataChanged = (cb: (kind: string) => void): Promise<UnlistenFn> =>

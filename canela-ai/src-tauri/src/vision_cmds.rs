@@ -124,3 +124,54 @@ pub fn screen_finalize(state: State<'_, AppState>, capture_id: String, crop: Opt
 pub fn screen_discard(state: State<'_, AppState>, capture_id: String) {
     state.captures.lock().unwrap().remove(&capture_id);
 }
+
+// ---------------------------------------------------------------- adjuntos
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentOut {
+    name: String,
+    /// "text" | "image"
+    kind: &'static str,
+    text: Option<String>,
+    image: Option<ImageData>,
+    note: Option<String>,
+}
+
+/// Máximo de caracteres de un documento adjunto directamente al chat.
+const MAX_ATTACH_CHARS: usize = 60_000;
+
+/// Prepara un archivo que TÚ elegiste en el diálogo: extrae el texto (PDF,
+/// Word, texto) o reduce la imagen, todo en tu equipo. Nada se envía hasta
+/// que mandas el mensaje.
+#[tauri::command]
+pub async fn prepare_attachment(path: String) -> Result<AttachmentOut, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = std::path::PathBuf::from(&path);
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "archivo".into());
+        if crate::tools::files::is_blocked(&p) {
+            return Err("Por seguridad no adjunto programas ni scripts.".to_string());
+        }
+        match crate::docs::kind_of(&p) {
+            crate::docs::DocKind::Image => Ok(AttachmentOut { name, kind: "image", text: None, image: Some(vision::load_file(&p)?), note: None }),
+            crate::docs::DocKind::Unsupported => Err(format!("«{name}» no es compatible. Puedes adjuntar texto, código, PDF, Word o imágenes.")),
+            _ => {
+                let doc = crate::docs::extract(&p)?;
+                let total = doc.text.chars().count();
+                let (text, note) = if total > MAX_ATTACH_CHARS {
+                    (
+                        doc.text.chars().take(MAX_ATTACH_CHARS).collect::<String>(),
+                        Some(format!(
+                            "Documento largo: adjunté las primeras {MAX_ATTACH_CHARS} de {total} letras. Para leerlo completo, guárdalo en una carpeta autorizada y pide «lee el documento {name}»."
+                        )),
+                    )
+                } else {
+                    (doc.text, None)
+                };
+                Ok(AttachmentOut { name, kind: "text", text: Some(text), image: None, note })
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

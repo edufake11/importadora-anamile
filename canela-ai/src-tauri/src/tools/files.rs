@@ -210,6 +210,20 @@ fn walk(root: &Path, max_depth: usize, budget: &mut usize, visit: &mut dyn FnMut
     }
 }
 
+/// Archivos (no carpetas) bajo `roots`, como mucho `max_files`.
+pub fn list_files(roots: &[PathBuf], max_depth: usize, max_files: usize) -> Vec<(PathBuf, fs::Metadata)> {
+    let mut out = Vec::new();
+    let mut budget = 80_000;
+    for root in roots {
+        walk(root, max_depth, &mut budget, &mut |p, md, _| {
+            if md.is_file() && out.len() < max_files {
+                out.push((p.to_path_buf(), md.clone()));
+            }
+        });
+    }
+    out
+}
+
 /// Busca por nombre (sin distinguir mayúsculas ni acentos).
 pub fn search(roots: &[PathBuf], query: &str, only: Option<bool>, limit: usize) -> Vec<(PathBuf, bool)> {
     let q = fold(query.trim());

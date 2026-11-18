@@ -160,3 +160,25 @@ pub fn conversation_context(state: State<'_, AppState>) -> Result<String, String
         state.db.context_summary()?
     ))
 }
+
+// ------------------------------------------------------ índice de documentos
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocIndexStats {
+    files: i64,
+    updated_at: Option<String>,
+}
+
+#[tauri::command]
+pub fn doc_index_stats(state: State<'_, AppState>) -> Result<DocIndexStats, String> {
+    let (files, updated_at) = state.db.doc_stats()?;
+    Ok(DocIndexStats { files, updated_at })
+}
+
+#[tauri::command]
+pub fn doc_index_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.db.doc_clear()?;
+    state.db.log("privacidad", "Borraste el índice de documentos");
+    Ok(())
+}

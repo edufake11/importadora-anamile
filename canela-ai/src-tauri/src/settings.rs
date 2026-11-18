@@ -82,6 +82,8 @@ pub struct Settings {
     pub wake_word: bool,
     /// Permite que Canela pida ver la pantalla (siempre con tu permiso).
     pub vision_enabled: bool,
+    /// Pedir permiso antes de enviar a la IA el contenido de tus archivos.
+    pub confirm_file_sharing: bool,
 }
 
 impl Default for Settings {
@@ -117,6 +119,7 @@ impl Default for Settings {
             speak_replies: "voice".into(),
             wake_word: false,
             vision_enabled: true,
+            confirm_file_sharing: true,
         }
     }
 }

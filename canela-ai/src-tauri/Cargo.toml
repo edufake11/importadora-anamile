@@ -30,6 +30,8 @@ cpal = "0.17.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 xcap = "0.9"
 base64 = "0.23.1"
+pdf-extract = { version = "0.12.1", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Llavero del sistema: Administrador de credenciales en Windows.
 [target.'cfg(windows)'.dependencies]
@@ -51,3 +53,10 @@ strip = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+
+# Compilaciones de desarrollo más ligeras en disco (no afecta al instalador).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

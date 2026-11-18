@@ -31,6 +31,10 @@ fn url(default: &str, env: &str) -> String {
         return u;
     }
     let _ = env;
+    // En pruebas nunca se sale a internet.
+    if cfg!(test) {
+        return "http://127.0.0.1:9/sin-red".into();
+    }
     default.to_string()
 }
 
