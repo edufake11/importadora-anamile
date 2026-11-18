@@ -36,14 +36,14 @@ describe('máquina de estados de Canela', () => {
     expect(speedFor(a.activity)).toBe(0);
   });
 
-  it('con mucho tiempo sin interacción tiende a dormir', () => {
+  it('con mucho tiempo sin interacción tiende a descansar', () => {
     const s: BrainState = { ...initialState(0), lastInteraction: 0 };
     const counts: Record<string, number> = {};
     for (let i = 0; i < 100; i++) {
       const n = chooseNext(s, SLEEPY_AFTER_MS + 1, ctx(i / 100));
       counts[n.activity] = (counts[n.activity] ?? 0) + 1;
     }
-    expect(counts.sleep).toBeGreaterThan(30);
+    expect((counts.sleep ?? 0) + (counts.lie ?? 0)).toBeGreaterThan(30);
   });
 
   it('un clic la despierta y luego se sienta', () => {
@@ -75,5 +75,40 @@ describe('máquina de estados de Canela', () => {
     expect(d.activity).toBe('dragged');
     expect(step(d, { type: 'mood', mood: 'talk', now: 1 }, ctx()).activity).toBe('dragged');
     expect(step(d, { type: 'dragEnd', now: 2 }, ctx()).activity).toBe('idle');
+  });
+});
+
+describe('animaciones nuevas', () => {
+  it('un error la sorprende y luego la pone triste', () => {
+    const o = step(initialState(0), { type: 'mood', mood: 'sad', now: 0 }, ctx());
+    expect(o.activity).toBe('oops');
+    const s = step(o, { type: 'tick', now: o.until + 1 }, ctx());
+    expect(s.activity).toBe('sad');
+  });
+
+  it('se pone curiosa si acercas el cursor mientras descansa', () => {
+    expect(step(initialState(0), { type: 'noticed', now: 1 }, ctx()).activity).toBe('curious');
+    const walking = step(initialState(0), { type: 'command', activity: 'walk', now: 0 }, ctx());
+    expect(step(walking, { type: 'noticed', now: 1 }, ctx()).activity).toBe('walk');
+  });
+
+  it('sólo se duerme desde acostada salvo que lleve mucho tiempo sola', () => {
+    for (let r = 0; r < 1; r += 0.01) {
+      const n = chooseNext({ ...initialState(0), activity: 'idle' }, 1000, ctx(r));
+      expect(n.activity).not.toBe('sleep');
+    }
+    const lying: BrainState = { ...initialState(0), activity: 'lie', lastInteraction: 0 };
+    const counts: Record<string, number> = {};
+    for (let i = 0; i < 100; i++) {
+      const n = chooseNext(lying, SLEEPY_AFTER_MS + 1, ctx(i / 100));
+      counts[n.activity] = (counts[n.activity] ?? 0) + 1;
+    }
+    expect(counts.sleep).toBeGreaterThan(40);
+  });
+
+  it('al despertar se estira y termina sentada', () => {
+    const w = step({ ...initialState(0), activity: 'sleep', until: Infinity }, { type: 'click', now: 0, count: 1 }, ctx());
+    expect(w.activity).toBe('wake');
+    expect(w.until).toBe(1600);
   });
 });

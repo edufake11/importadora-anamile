@@ -1,6 +1,7 @@
 // Controlador imperativo de la ventana de Canela: une la máquina de estados,
 // el motor de sprites y las APIs de ventana de Tauri.
 import { CheckMenuItem, Menu, PredefinedMenuItem, Submenu } from '@tauri-apps/api/menu';
+import { listen } from '@tauri-apps/api/event';
 import { cursorPosition, currentMonitor, getCurrentWindow, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window';
 import { api, type Settings } from '../lib/ipc';
 import { type Activity, type BrainContext, type BrainEvent, type BrainState, type ExternalMood, initialState, speedFor, step } from './brain';
@@ -66,7 +67,13 @@ export class PetController {
   private lastDrawKey = '';
   private timers: number[] = [];
   private unlisten: Array<() => void> = [];
-  private raf = 0;
+  private renderTimer: number | undefined;
+  private hitTimer: number | undefined;
+  private moveTimer: number | undefined;
+  /** Ventana oculta (atajo, bandeja o pantalla completa): no se trabaja. */
+  private paused = false;
+  private cursorInside = false;
+  private lastNoticed = 0;
   private disposed = false;
 
   constructor(
@@ -98,23 +105,33 @@ export class PetController {
       }),
     );
 
-    this.timers.push(
-      window.setInterval(() => this.dispatch({ type: 'tick', now: performance.now() }), 120),
-      window.setInterval(() => void this.moveStep(), 33),
-      window.setInterval(() => void this.hitTest(), 50),
-      window.setInterval(() => void this.refreshArea(), 5000),
+    this.unlisten.push(
+      await listen<boolean>('pet-visibility', ({ payload }) => {
+        this.paused = !payload;
+        if (!this.paused) {
+          this.lastDrawKey = '';
+          this.scheduleRender(0);
+          this.scheduleHit(0);
+          this.scheduleMove(0);
+        }
+      }),
     );
-    const loop = () => {
-      this.render();
-      if (!this.disposed) this.raf = requestAnimationFrame(loop);
-    };
-    this.raf = requestAnimationFrame(loop);
+
+    this.timers.push(
+      window.setInterval(() => !this.paused && this.dispatch({ type: 'tick', now: performance.now() }), 150),
+      window.setInterval(() => !this.paused && void this.refreshArea(), 5000),
+    );
+    this.scheduleRender(0);
+    this.scheduleHit(0);
+    this.scheduleMove(0);
     this.ui.say('¡Hola! Soy Canela 🐾 Doble clic para hablar conmigo.', 5000);
   }
 
   dispose() {
     this.disposed = true;
-    cancelAnimationFrame(this.raf);
+    window.clearTimeout(this.renderTimer);
+    window.clearTimeout(this.hitTimer);
+    window.clearTimeout(this.moveTimer);
     this.timers.forEach((t) => clearInterval(t));
     window.clearTimeout(this.dragTimer);
     this.unlisten.forEach((u) => u());
@@ -123,7 +140,11 @@ export class PetController {
   // ------------------------------------------------------------ cerebro
 
   private ctx(): BrainContext {
-    return { rng: Math.random, wander: this.settings.wander, pickTarget: (run) => this.pickTarget(run) };
+    return {
+      rng: Math.random,
+      wander: this.settings.wander && !this.settings.reduceMotion,
+      pickTarget: (run) => this.pickTarget(run),
+    };
   }
 
   dispatch(e: BrainEvent) {
@@ -134,6 +155,8 @@ export class PetController {
         this.anim = this.brain.activity;
         this.animStart = performance.now();
         this.ui.onActivity(this.anim);
+        this.scheduleRender(0);
+        if (speedFor(this.anim) > 0) this.scheduleMove(0);
       }
     }
   }
@@ -146,12 +169,13 @@ export class PetController {
   async updateSettings(s: Settings) {
     const scaleChanged = s.petScale !== this.settings.petScale;
     this.settings = s;
+    this.scheduleRender(0);
     if (scaleChanged) {
       await this.applyScale(s.petScale);
       this.pos.y = Math.min(this.pos.y, this.floorY());
       await this.win.setPosition(new PhysicalPosition(this.pos.x, this.pos.y));
     }
-    if (!s.wander && (this.brain.activity === 'walk' || this.brain.activity === 'run')) {
+    if ((!s.wander || s.reduceMotion) && (this.brain.activity === 'walk' || this.brain.activity === 'run')) {
       this.dispatch({ type: 'command', activity: 'idle', now: performance.now() });
     }
   }
@@ -215,6 +239,17 @@ export class PetController {
     return { x: Math.round(x), y: Math.round(y) };
   }
 
+  /** El movimiento sólo usa un temporizador rápido mientras Canela camina. */
+  private scheduleMove(ms: number) {
+    window.clearTimeout(this.moveTimer);
+    if (this.disposed) return;
+    this.moveTimer = window.setTimeout(async () => {
+      await this.moveStep();
+      const moving = !this.paused && speedFor(this.brain.activity) > 0 && !!this.brain.target;
+      if (moving) this.scheduleMove(33);
+    }, ms);
+  }
+
   private async moveStep() {
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.lastMove) / 1000);
@@ -247,8 +282,32 @@ export class PetController {
 
   // ------------------------------------------------------------ dibujo
 
+  /** Con "animaciones reducidas" Canela se anima a la mitad de velocidad. */
+  private animDef() {
+    const a = this.sheet.anim(this.anim);
+    return this.settings.reduceMotion ? { ...a, fps: a.fps / 2 } : a;
+  }
+
   private currentFrame(now = performance.now()) {
-    return frameIndex(this.sheet.anim(this.anim), this.animStart, now);
+    return frameIndex(this.animDef(), this.animStart, now);
+  }
+
+  /**
+   * Dibuja sólo cuando cambia el fotograma y programa el siguiente cambio,
+   * en lugar de redibujar 60 veces por segundo.
+   */
+  private scheduleRender(ms: number) {
+    window.clearTimeout(this.renderTimer);
+    if (this.disposed || this.paused) return;
+    this.renderTimer = window.setTimeout(() => {
+      this.render();
+      const a = this.animDef();
+      const now = performance.now();
+      const frameMs = 1000 / a.fps;
+      const elapsed = now - this.animStart;
+      const finished = !a.loop && elapsed >= a.frames * frameMs;
+      if (!finished) this.scheduleRender(Math.max(8, frameMs - (elapsed % frameMs)));
+    }, ms);
   }
 
   private render() {
@@ -268,20 +327,44 @@ export class PetController {
    * Consultamos la posición del cursor y sólo aceptamos clics cuando está sobre
    * un píxel opaco de Canela o sobre un elemento marcado con `data-hit`.
    */
-  private async hitTest() {
-    if (this.hitBusy || this.dragging) return;
+  /** Consulta el cursor a menudo sólo cuando está cerca de Canela. */
+  private scheduleHit(ms: number) {
+    window.clearTimeout(this.hitTimer);
+    if (this.disposed || this.paused) return;
+    this.hitTimer = window.setTimeout(async () => {
+      const dist = await this.hitTest();
+      this.scheduleHit(dist < 160 ? 50 : dist < 400 ? 150 : 300);
+    }, ms);
+  }
+
+  /** Devuelve la distancia (px lógicos) del cursor a la ventana. */
+  private async hitTest(): Promise<number> {
+    if (this.hitBusy || this.dragging) return 0;
     this.hitBusy = true;
     try {
       const cur = await cursorPosition();
       const lx = (cur.x - this.pos.x) / this.sf;
       const ly = (cur.y - this.pos.y) / this.sf;
+      const dx = lx < 0 ? -lx : lx > this.layout.width ? lx - this.layout.width : 0;
+      const dy = ly < 0 ? -ly : ly > this.layout.height ? ly - this.layout.height : 0;
+      const dist = Math.hypot(dx, dy);
+      // Si el cursor se acerca a Canela mientras descansa, se pone curiosa.
+      const inside = dist === 0 && ly > BUBBLE_AREA;
+      const now = performance.now();
+      if (inside && !this.cursorInside && now - this.lastNoticed > 30_000) {
+        this.lastNoticed = now;
+        this.dispatch({ type: 'noticed', now });
+      }
+      this.cursorInside = inside;
       const hit = this.isInteractiveAt(lx, ly);
       if (this.ignoring !== !hit) {
         this.ignoring = !hit;
         await this.win.setIgnoreCursorEvents(!hit);
       }
+      return dist;
     } catch {
       /* la ventana puede estar oculta; reintentamos en el próximo ciclo */
+      return 1000;
     } finally {
       this.hitBusy = false;
     }
@@ -343,6 +426,7 @@ export class PetController {
     window.clearTimeout(this.dragTimer);
     this.dragTimer = window.setTimeout(() => {
       this.dragging = false;
+      this.scheduleHit(0);
       this.dispatch({ type: 'dragEnd', now: performance.now() });
       void this.refreshArea();
     }, ms);

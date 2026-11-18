@@ -41,6 +41,22 @@ pub struct Settings {
     pub wander: bool,
     /// Si Canela muestra en una burbuja el inicio de cada respuesta.
     pub reply_bubbles: bool,
+    /// Animaciones a media velocidad y sin pasear (menos CPU).
+    pub reduce_motion: bool,
+    /// Ocultar a Canela mientras hay un juego o app a pantalla completa (Windows).
+    pub hide_in_fullscreen: bool,
+    /// Saludar y mostrar las tareas pendientes al iniciar.
+    pub greet_on_startup: bool,
+    /// Iniciar Canela AI junto con Windows.
+    pub launch_at_startup: bool,
+    /// Guardar el historial de conversaciones en la base de datos local.
+    pub save_conversations: bool,
+    /// Abrir aplicaciones y carpetas sin pedir confirmación.
+    pub auto_open_apps: bool,
+    /// Abrir páginas web sin pedir confirmación.
+    pub auto_open_web: bool,
+    /// Carpetas a las que Canela puede acceder. `None` = Documentos, Descargas y Escritorio.
+    pub allowed_folders: Option<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -55,6 +71,14 @@ impl Default for Settings {
             pet_scale: 3,
             wander: true,
             reply_bubbles: true,
+            reduce_motion: false,
+            hide_in_fullscreen: true,
+            greet_on_startup: true,
+            launch_at_startup: false,
+            save_conversations: false,
+            auto_open_apps: true,
+            auto_open_web: false,
+            allowed_folders: None,
         }
     }
 }
@@ -77,6 +101,11 @@ impl Settings {
         self.anthropic_model = self.anthropic_model.trim().to_string();
         self.openai_model = self.openai_model.trim().to_string();
         self.user_name = self.user_name.trim().chars().take(40).collect();
+        if let Some(folders) = self.allowed_folders.as_mut() {
+            folders.retain(|f| !f.trim().is_empty());
+            folders.dedup();
+            folders.truncate(50);
+        }
         self
     }
 }

@@ -187,8 +187,9 @@ function bodyStand(L, cx, cy, rx = 12, ry = 5) {
  * opts: eyes: open|closed|happy|up|sad|big, mouth: closed|open|tongue,
  *       ear: down|up|fly|droop
  */
-function head(L, hx, hy, opts = {}) {
-  const { eyes = 'open', mouth = 'closed', ear = 'down' } = opts;
+function head(T, hx, hy, opts = {}) {
+  const { eyes = 'open', mouth = 'closed', ear = 'down', tilt = 0 } = opts;
+  const L = new Layer(T.w, T.h);
 
   // Pañuelo en el cuello, DETRÁS de la cabeza y de la oreja: nunca tapa las orejas.
   part(L, (l) => {
@@ -281,7 +282,7 @@ function head(L, hx, hy, opts = {}) {
 
   // Oreja larga y caída (encima del pañuelo, bajo la almohadilla del audífono)
   part(L, (l) => {
-    if (ear === 'up') l.ellipse(hx - 3, hy + 0.5, 2.4, 3.4, C.FUR_D);
+    if (ear === 'up') l.ellipse(hx - 4, hy + 3, 2.8, 4.5, C.FUR_D); // atenta, pero visible
     else if (ear === 'fly') l.ellipse(hx - 7, hy - 0.5, 4, 1.8, C.FUR_D);
     else if (ear === 'droop') l.ellipse(hx - 3, hy + 5, 2.6, 6, C.FUR_D);
     else l.ellipse(hx - 3, hy + 3.5, 3, 5.5, C.FUR_D);
@@ -304,6 +305,38 @@ function head(L, hx, hy, opts = {}) {
     l.set(hx - 4, hy - 1, C.HP_L);
     l.set(hx - 2, hy - 1, C.HP_L);
   });
+  T.over(tilt ? rotated(L, hx, hy + 3, tilt) : L);
+}
+
+/**
+ * Inclina una capa desplazando cada columna en vertical (cizallamiento).
+ * A diferencia de una rotación, no deja huecos ni deforma los detalles:
+ * el pixel art se mantiene nítido. deg < 0 = levanta el hocico.
+ */
+function rotated(src, cx, _cy, deg) {
+  const out = new Layer(src.w, src.h);
+  const k = Math.tan((deg * Math.PI) / 180);
+  for (let y = 0; y < src.h; y++) for (let x = 0; x < src.w; x++) {
+    const c = src.get(x, y - Math.round((x - cx) * k));
+    if (c) out.set(x, y, c);
+  }
+  return out;
+}
+
+/** Cola definida por ángulo (0° = horizontal hacia atrás, 90° = vertical). */
+function tailAt(L, bx, by, ang, len = 9.5, curl = 10) {
+  const pts = [[bx, by]];
+  let a = ang;
+  let x = bx;
+  let y = by;
+  for (let i = 0; i < 3; i++) {
+    const rad = (a * Math.PI) / 180;
+    x -= Math.cos(rad) * (len / 3);
+    y -= Math.sin(rad) * (len / 3);
+    pts.push([x, y]);
+    a += curl;
+  }
+  tail(L, pts);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,49 +344,70 @@ function head(L, hx, hy, opts = {}) {
 // ---------------------------------------------------------------------------
 const G = GROUND;
 
-function poseStand({ legs = [0, 0, 0, 0], lift = [0, 0, 0, 0], tailUp = true, y = 0, eyes, mouth, ear, longLegs = 0 } = {}) {
+function poseStand({ legs = [0, 0, 0, 0], lift = [0, 0, 0, 0], tail: tailAng = 60, y = 0, eyes, mouth, ear, tilt = 0, longLegs = 0, headY = 0 } = {}) {
   const L = new Layer();
   const hipY = G - 6 + y;
   const footY = (i) => G + y - lift[i] + longLegs;
   // patas lejanas
   leg(L, 12 + legs[0], hipY, 11 + legs[0], footY(0), true);
   leg(L, 28 + legs[2], hipY, 29 + legs[2], footY(2), true);
-  tail(L, tailUp
-    ? [[10, G - 11 + y], [7, G - 13 + y], [5, G - 16 + y], [5, G - 19 + y]]
-    : [[10, G - 11 + y], [7, G - 12 + y], [4, G - 13 + y], [2, G - 15 + y]]);
+  tailAt(L, 10, G - 11 + y, tailAng);
   bodyStand(L, 20, G - 10 + y, 13, 5.5);
   // patas cercanas
   leg(L, 15 + legs[1], hipY, 14 + legs[1], footY(1), false);
   leg(L, 31 + legs[3], hipY, 32 + legs[3], footY(3), false);
-  head(L, 35, G - 18 + y, { eyes, mouth, ear });
+  head(L, 35, G - 18 + y + headY, { eyes, mouth, ear, tilt });
   return L;
 }
 
-function poseRun(phase, y = 0) {
+/** Ciclo de caminata de 8 fotogramas (trote diagonal suave). */
+function walkFrame(i, n = 8) {
+  const p = (i / n) * Math.PI * 2;
+  const d = Math.round(1.6 * Math.sin(p));
+  const liftA = Math.cos(p) > 0.35 ? 1 : 0;
+  const liftB = Math.cos(p) < -0.35 ? 1 : 0;
+  return poseStand({
+    legs: [d, -d, -d, d],
+    lift: [liftA, liftB, liftB, liftA],
+    y: Math.abs(Math.sin(p)) < 0.5 ? -1 : 0,
+    tail: 55 + 14 * Math.sin(p * 2),
+  });
+}
+
+const RUN_KEYS = [
+  { back: [[12, 7, -2], [14, 9, -1]], front: [[29, 34, -2], [31, 36, -1]], y: -1 },
+  { back: [[12, 10, 0], [14, 13, 0]], front: [[29, 32, 0], [31, 33, -1]], y: 0 },
+  { back: [[12, 16, -1], [14, 18, 0]], front: [[29, 25, -1], [31, 27, 0]], y: -1 },
+  { back: [[12, 12, 0], [14, 15, -1]], front: [[29, 30, 0], [31, 32, 0]], y: 0 },
+];
+
+function poseRun(t) {
+  // Interpola entre 4 poses clave para obtener un galope más fluido.
+  const k = t * RUN_KEYS.length;
+  const a = RUN_KEYS[Math.floor(k) % RUN_KEYS.length];
+  const b = RUN_KEYS[(Math.floor(k) + 1) % RUN_KEYS.length];
+  const f = k - Math.floor(k);
+  const lerp = (u, v) => u + (v - u) * f;
+  const yy = Math.round(lerp(a.y, b.y));
   const L = new Layer();
-  const hip = G - 7 + y;
-  const f = [
-    { back: [[12, hip, 7, G - 2 + y], [14, hip, 9, G - 1 + y]], front: [[29, hip, 34, G - 2 + y], [31, hip, 36, G - 1 + y]] },
-    { back: [[12, hip, 10, G + y], [14, hip, 13, G + y]], front: [[29, hip, 32, G + y], [31, hip, 33, G - 1 + y]] },
-    { back: [[12, hip, 16, G - 1 + y], [14, hip, 18, G + y]], front: [[29, hip, 25, G - 1 + y], [31, hip, 27, G + y]] },
-    { back: [[12, hip, 12, G + y], [14, hip, 15, G - 1 + y]], front: [[29, hip, 30, G + y], [31, hip, 32, G + y]] },
-  ][phase];
-  leg(L, ...f.back[0], true);
-  leg(L, ...f.front[0], true);
-  tail(L, [[9, G - 12 + y], [5, G - 14 + y], [1, G - 15 + y]]);
-  bodyStand(L, 20, G - 11 + y, 13, 5);
-  leg(L, ...f.back[1], false);
-  leg(L, ...f.front[1], false);
-  head(L, 36, G - 19 + y, { ear: 'fly', mouth: phase % 2 ? 'tongue' : 'open' });
+  const hip = G - 7 + yy;
+  const legOf = (ka, kb, far) => leg(L, ka[0], hip, Math.round(lerp(ka[1], kb[1])), G + Math.round(lerp(ka[2], kb[2])) + yy, far);
+  legOf(a.back[0], b.back[0], true);
+  legOf(a.front[0], b.front[0], true);
+  tailAt(L, 9, G - 12 + yy, 15 + 10 * Math.sin(t * Math.PI * 2), 10, 4);
+  bodyStand(L, 20, G - 11 + yy, 13, 5);
+  legOf(a.back[1], b.back[1], false);
+  legOf(a.front[1], b.front[1], false);
+  head(L, 36, G - 19 + yy, { ear: 'fly', mouth: Math.floor(k) % 2 ? 'tongue' : 'open' });
   return L;
 }
 
-function poseSit({ tailUp = false, eyes, mouth, ear, headY = 0 } = {}) {
+function poseSit({ tail: tailAng = 8, eyes, mouth, ear, headY = 0, tilt = 0 } = {}) {
   const L = new Layer();
   // pata delantera lejana
   leg(L, 27, G - 8, 27, G, true);
-  // cola por el suelo
-  tail(L, tailUp ? [[12, G - 3], [8, G - 5], [5, G - 8]] : [[12, G - 2], [8, G - 1], [3, G - 1]]);
+  // cola apoyada en el suelo, barre de un lado a otro
+  tailAt(L, 12, G - 2, tailAng, 9, -4);
   // cadera + torso inclinado
   part(L, (l) => {
     l.ellipse(17, G - 5, 7.5, 5, C.FUR);
@@ -363,62 +417,125 @@ function poseSit({ tailUp = false, eyes, mouth, ear, headY = 0 } = {}) {
     l.ellipse(13, G - 0.5, 4, 1.2, C.TAN_L); // pata trasera
   });
   leg(L, 30, G - 8, 30, G, false);
-  head(L, 33, G - 20 + headY, { eyes, mouth, ear });
+  head(L, 33, G - 20 + headY, { eyes, mouth, ear, tilt });
   return L;
 }
 
-function poseSleep({ breathe = 0, eyes = 'closed' } = {}) {
+/** Acostada (despierta o dormida). */
+function poseLie({ breathe = 0, eyes = 'open', ear, headUp = true, tail: tailAng = 20, mouth } = {}) {
   const L = new Layer();
-  tail(L, [[9, G - 4], [5, G - 2], [7, G]]);
+  tailAt(L, 9, G - 4, tailAng, 8, -6);
   part(L, (l) => {
     l.ellipse(21, G - 5 - breathe * 0.5, 13, 5 + breathe * 0.5, C.FUR);
     l.ellipse(20, G - 8 - breathe, 9, 1.6, C.FUR_L);
     l.ellipse(37, G, 5, 1.2, C.TAN_L); // patitas delanteras
   });
-  head(L, 35, G - 6, { eyes, ear: 'droop' });
+  if (headUp) head(L, 35, G - 9, { eyes, ear: ear ?? 'down', mouth });
+  else head(L, 35, G - 6, { eyes, ear: ear ?? 'droop' });
+  return L;
+}
+
+/** Estiramiento ("reverencia"): patas delanteras estiradas, cadera arriba. */
+function poseBow({ depth = 1, eyes = 'closed', mouth = 'open', tail: tailAng = 75 } = {}) {
+  const L = new Layer();
+  const d = depth;
+  leg(L, 12, G - 9 - d, 11, G, true);
+  tailAt(L, 10, G - 13 - d, tailAng);
+  part(L, (l) => {
+    for (let t = 0; t <= 1.0001; t += 0.1) l.ellipse(13 + 15 * t, G - 12 - d + (6 + 2 * d) * t, 5, 4.6, C.FUR);
+    l.line(12, G - 16 - d, 24, G - 12, C.FUR_L, 0.6);
+    l.ellipse(27, G - 4 + d * 0.5, 2.4, 2.5, C.TAN); // pecho
+  });
+  leg(L, 15, G - 9 - d, 14, G, false);
+  part(L, (l) => {
+    l.line(27, G - 2, 37, G - 1, C.TAN, 1.1); // patas delanteras estiradas
+    l.ellipse(38.5, G, 2.2, 1.1, C.TAN_L);
+  });
+  head(L, 35, G - 9 + Math.round(d), { eyes, mouth, ear: 'down', tilt: -6 });
   return L;
 }
 
 // ---------------------------------------------------------------------------
 // Animaciones (una fila del spritesheet cada una)
 // ---------------------------------------------------------------------------
+const seq = (n, f) => Array.from({ length: n }, (_, i) => f(i, n));
+const wave = (i, n, a, b) => a + (b - a) * (0.5 - 0.5 * Math.cos((i / n) * Math.PI * 2));
+
 const ANIMATIONS = [
-  ['idle', 4, true, () => [
-    poseStand({ tailUp: true }),
-    poseStand({ tailUp: false }),
-    poseStand({ tailUp: true }),
-    poseStand({ tailUp: true, eyes: 'closed' }),
+  // Reposo: la cola se balancea despacio y parpadea una vez por ciclo.
+  ['idle', 6, true, () => seq(12, (i, n) => poseStand({ tail: wave(i, n, 45, 80), eyes: i === 9 ? 'closed' : 'open' }))],
+  ['walk', 12, true, () => seq(8, (i) => walkFrame(i))],
+  ['run', 14, true, () => seq(6, (i, n) => poseRun(i / n))],
+  ['sit', 4, true, () => seq(8, (i, n) => poseSit({ tail: wave(i, n, 4, 26), eyes: i === 6 ? 'closed' : 'open' }))],
+  ['lie', 3, true, () => seq(6, (i, n) => poseLie({ breathe: i % 3 === 1 ? 1 : 0, tail: wave(i, n, 10, 28), eyes: i === 4 ? 'closed' : 'open' }))],
+  ['sleep', 2, true, () => [0, 0.5, 1, 0.5].map((b) => poseLie({ breathe: b, eyes: 'closed', headUp: false, tail: 14 }))],
+  // Despertarse y estirarse: abre los ojos, levanta la cabeza, se estira y se sienta.
+  ['wake', 5, false, () => [
+    poseLie({ eyes: 'closed', headUp: false }),
+    poseLie({ eyes: 'open', headUp: false }),
+    poseLie({ eyes: 'big', headUp: true }),
+    poseBow({ depth: 0, eyes: 'closed', mouth: 'closed' }),
+    poseBow({ depth: 1, eyes: 'closed', mouth: 'open' }),
+    poseBow({ depth: 2, eyes: 'happy', mouth: 'tongue' }),
+    poseStand({ tail: 70, eyes: 'happy' }),
+    poseSit({ eyes: 'open', tail: 20 }),
   ]],
-  ['walk', 8, true, () => [
-    poseStand({ legs: [-1, 1, -1, 1], tailUp: true }),
-    poseStand({ lift: [0, 1, 0, 1], tailUp: false, y: -1 }),
-    poseStand({ legs: [1, -1, 1, -1], tailUp: true }),
-    poseStand({ lift: [1, 0, 1, 0], tailUp: false, y: -1 }),
+  ['listen', 3, true, () => [
+    poseStand({ ear: 'up', eyes: 'big', tail: 60 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 55, tilt: -5 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 60, tilt: -8 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 55, tilt: -5 }),
   ]],
-  ['run', 12, true, () => [poseRun(0, -1), poseRun(1, 0), poseRun(2, -1), poseRun(3, 0)]],
-  ['sit', 3, true, () => [poseSit({ tailUp: false }), poseSit({ tailUp: true })]],
-  ['sleep', 1.5, true, () => [poseSleep({ breathe: 0 }), poseSleep({ breathe: 1 })]],
-  ['wake', 4, false, () => [poseSleep({ eyes: 'closed' }), poseSleep({ eyes: 'open' }), poseSit({ eyes: 'big' })]],
-  ['listen', 3, true, () => [poseStand({ ear: 'up', eyes: 'big' }), poseStand({ ear: 'down', eyes: 'big', tailUp: false })]],
-  ['talk', 6, true, () => [poseSit({ mouth: 'open' }), poseSit({ mouth: 'closed', tailUp: true })]],
-  ['think', 2, true, () => [poseSit({ eyes: 'up' }), poseSit({ eyes: 'up', tailUp: true })]],
-  ['celebrate', 8, true, () => [
-    poseStand({ y: 2, longLegs: -2, eyes: 'happy', mouth: 'tongue' }),
-    poseStand({ y: -4, longLegs: 2, eyes: 'happy', mouth: 'tongue', ear: 'up' }),
-    poseStand({ y: -6, longLegs: 2, eyes: 'happy', mouth: 'open', ear: 'up', tailUp: false }),
-    poseStand({ y: 0, eyes: 'happy', mouth: 'tongue' }),
+  ['talk', 8, true, () => [
+    poseSit({ mouth: 'open', tail: 10 }),
+    poseSit({ mouth: 'closed', tail: 14 }),
+    poseSit({ mouth: 'open', tail: 18 }),
+    poseSit({ mouth: 'closed', tail: 14, eyes: 'happy' }),
   ]],
-  ['happy', 6, true, () => [
-    poseStand({ eyes: 'happy', mouth: 'tongue', tailUp: true }),
-    poseStand({ eyes: 'happy', mouth: 'tongue', tailUp: false }),
+  ['think', 2, true, () => [
+    poseSit({ eyes: 'up', tail: 8 }),
+    poseSit({ eyes: 'up', tail: 14, tilt: -6 }),
+    poseSit({ eyes: 'up', tail: 20, tilt: -10 }),
+    poseSit({ eyes: 'up', tail: 14, tilt: -6 }),
   ]],
-  ['sad', 2, true, () => [
-    poseSit({ eyes: 'sad', ear: 'droop', headY: 1 }),
-    poseSit({ eyes: 'sad', ear: 'droop', headY: 2 }),
+  // Curiosa: inclina la cabeza y se queda mirando.
+  ['curious', 6, false, () => [
+    poseStand({ ear: 'up', eyes: 'big', tail: 55 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 60, tilt: -6 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 65, tilt: -12 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 70, tilt: -16 }),
+    poseStand({ ear: 'up', eyes: 'open', tail: 65, tilt: -16 }),
+    poseStand({ ear: 'up', eyes: 'big', tail: 70, tilt: -16 }),
   ]],
-  ['dragged', 6, true, () => [
-    poseStand({ y: -3, longLegs: 3, legs: [-1, 1, 1, -1], mouth: 'open', eyes: 'big', ear: 'fly' }),
-    poseStand({ y: -3, longLegs: 3, legs: [1, -1, -1, 1], mouth: 'open', eyes: 'big', ear: 'fly', tailUp: false }),
+  ['celebrate', 10, true, () => [
+    poseStand({ y: 2, longLegs: -2, eyes: 'happy', mouth: 'tongue', tail: 70 }),
+    poseStand({ y: -2, longLegs: 1, eyes: 'happy', mouth: 'tongue', ear: 'up', tail: 85 }),
+    poseStand({ y: -5, longLegs: 2, eyes: 'happy', mouth: 'tongue', ear: 'up', tail: 40 }),
+    poseStand({ y: -6, longLegs: 2, eyes: 'happy', mouth: 'open', ear: 'fly', tail: 85 }),
+    poseStand({ y: -3, longLegs: 1, eyes: 'happy', mouth: 'tongue', ear: 'up', tail: 40 }),
+    poseStand({ y: 0, eyes: 'happy', mouth: 'tongue', tail: 80 }),
+  ]],
+  // Feliz: mueve la cola rápido de lado a lado.
+  ['happy', 12, true, () => seq(6, (i, n) => poseStand({ eyes: 'happy', mouth: 'tongue', tail: wave(i, n, 30, 90) }))],
+  // Sorpresa ante un error: da un saltito hacia atrás con los ojos muy abiertos.
+  ['oops', 8, false, () => [
+    poseStand({ eyes: 'big', mouth: 'open', ear: 'up', tail: 35 }),
+    poseStand({ y: -2, eyes: 'big', mouth: 'open', ear: 'fly', tail: 30, legs: [-1, -1, -1, -1] }),
+    poseStand({ y: -1, eyes: 'big', mouth: 'open', ear: 'up', tail: 30, legs: [-1, -1, -1, -1] }),
+    poseStand({ eyes: 'big', mouth: 'closed', ear: 'up', tail: 30 }),
+    poseStand({ eyes: 'sad', ear: 'droop', tail: 25, headY: 1 }),
+  ]],
+  ['sad', 2.5, true, () => [
+    poseSit({ eyes: 'sad', ear: 'droop', headY: 1, tail: 2 }),
+    poseSit({ eyes: 'sad', ear: 'droop', headY: 2, tail: 4 }),
+    poseSit({ eyes: 'sad', ear: 'droop', headY: 2, tail: 2 }),
+    poseSit({ eyes: 'closed', ear: 'droop', headY: 1, tail: 4 }),
+  ]],
+  ['dragged', 8, true, () => [
+    poseStand({ y: -3, longLegs: 3, legs: [-1, 1, 1, -1], mouth: 'open', eyes: 'big', ear: 'fly', tail: 30 }),
+    poseStand({ y: -3, longLegs: 3, legs: [0, 0, 0, 0], mouth: 'open', eyes: 'big', ear: 'fly', tail: 40 }),
+    poseStand({ y: -3, longLegs: 3, legs: [1, -1, -1, 1], mouth: 'open', eyes: 'big', ear: 'fly', tail: 30 }),
+    poseStand({ y: -3, longLegs: 3, legs: [0, 0, 0, 0], mouth: 'open', eyes: 'big', ear: 'fly', tail: 40 }),
   ]],
 ];
 

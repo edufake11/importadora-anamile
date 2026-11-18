@@ -13,80 +13,98 @@
   "animations": {
     "idle": {
       "row": 0,
-      "frames": 4,
-      "fps": 4,
+      "frames": 12,
+      "fps": 6,
       "loop": true
     },
     "walk": {
       "row": 1,
-      "frames": 4,
-      "fps": 8,
+      "frames": 8,
+      "fps": 12,
       "loop": true
     },
     "run": {
       "row": 2,
-      "frames": 4,
-      "fps": 12,
+      "frames": 6,
+      "fps": 14,
       "loop": true
     },
     "sit": {
       "row": 3,
-      "frames": 2,
+      "frames": 8,
+      "fps": 4,
+      "loop": true
+    },
+    "lie": {
+      "row": 4,
+      "frames": 6,
       "fps": 3,
       "loop": true
     },
     "sleep": {
-      "row": 4,
-      "frames": 2,
-      "fps": 1.5,
+      "row": 5,
+      "frames": 4,
+      "fps": 2,
       "loop": true
     },
     "wake": {
-      "row": 5,
-      "frames": 3,
-      "fps": 4,
+      "row": 6,
+      "frames": 8,
+      "fps": 5,
       "loop": false
     },
     "listen": {
-      "row": 6,
-      "frames": 2,
+      "row": 7,
+      "frames": 4,
       "fps": 3,
       "loop": true
     },
     "talk": {
-      "row": 7,
-      "frames": 2,
-      "fps": 6,
-      "loop": true
-    },
-    "think": {
       "row": 8,
-      "frames": 2,
-      "fps": 2,
-      "loop": true
-    },
-    "celebrate": {
-      "row": 9,
       "frames": 4,
       "fps": 8,
       "loop": true
     },
-    "happy": {
-      "row": 10,
-      "frames": 2,
-      "fps": 6,
-      "loop": true
-    },
-    "sad": {
-      "row": 11,
-      "frames": 2,
+    "think": {
+      "row": 9,
+      "frames": 4,
       "fps": 2,
       "loop": true
     },
-    "dragged": {
-      "row": 12,
-      "frames": 2,
+    "curious": {
+      "row": 10,
+      "frames": 6,
       "fps": 6,
+      "loop": false
+    },
+    "celebrate": {
+      "row": 11,
+      "frames": 6,
+      "fps": 10,
+      "loop": true
+    },
+    "happy": {
+      "row": 12,
+      "frames": 6,
+      "fps": 12,
+      "loop": true
+    },
+    "oops": {
+      "row": 13,
+      "frames": 5,
+      "fps": 8,
+      "loop": false
+    },
+    "sad": {
+      "row": 14,
+      "frames": 4,
+      "fps": 2.5,
+      "loop": true
+    },
+    "dragged": {
+      "row": 15,
+      "frames": 4,
+      "fps": 8,
       "loop": true
     }
   }

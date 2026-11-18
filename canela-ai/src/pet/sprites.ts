@@ -21,7 +21,8 @@ export interface SpriteManifest {
 }
 
 export const REQUIRED_ANIMATIONS = [
-  'idle', 'walk', 'run', 'sit', 'sleep', 'wake', 'listen', 'talk', 'think', 'celebrate', 'happy', 'sad', 'dragged',
+  'idle', 'walk', 'run', 'sit', 'lie', 'sleep', 'wake', 'listen', 'talk', 'think', 'curious', 'celebrate', 'happy', 'oops',
+  'sad', 'dragged',
 ] as const;
 
 /** Valida el manifiesto; devuelve la lista de problemas (vacía si es válido). */

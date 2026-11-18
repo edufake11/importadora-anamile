@@ -179,3 +179,12 @@ body,
   color: #eee;
   font: 12px 'Segoe UI', sans-serif;
 }
+
+.exclaim {
+  position: absolute;
+  pointer-events: none;
+  color: #f5f5f5;
+  font: 800 20px/1 'Segoe UI', sans-serif;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  animation: pop 180ms ease-out;
+}

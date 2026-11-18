@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod fullscreen;
 mod secrets;
 mod settings;
 mod windows;
@@ -9,7 +10,7 @@ mod windows;
 use commands::AppState;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// Ctrl+Alt+C: mostrar/ocultar a Canela.
@@ -69,6 +70,36 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Oculta a Canela mientras otra app está a pantalla completa (juegos, videos)
+/// y la vuelve a mostrar al salir. Consulta ligera cada 1,5 s.
+fn spawn_fullscreen_watch(app: AppHandle) {
+    if !cfg!(windows) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut hidden_by_us = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let enabled = app
+                .state::<AppState>()
+                .current_settings()
+                .hide_in_fullscreen;
+            let fullscreen = enabled && fullscreen::foreground_is_fullscreen();
+            let Some(pet) = app.get_webview_window(windows::PET) else {
+                continue;
+            };
+            if fullscreen && !hidden_by_us && pet.is_visible().unwrap_or(false) {
+                hidden_by_us = pet.hide().is_ok();
+                let _ = app.emit("pet-visibility", false);
+            } else if !fullscreen && hidden_by_us {
+                hidden_by_us = false;
+                let _ = pet.show();
+                let _ = app.emit("pet-visibility", true);
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shortcuts = tauri_plugin_global_shortcut::Builder::new()
@@ -91,6 +122,7 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             app.manage(AppState::new(config_dir));
             build_tray(app.handle())?;
+            spawn_fullscreen_watch(app.handle().clone());
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
             for sc in [shortcut_toggle_pet(), shortcut_toggle_panel()] {

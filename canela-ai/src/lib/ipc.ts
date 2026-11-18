@@ -13,6 +13,14 @@ export interface Settings {
   petScale: number;
   wander: boolean;
   replyBubbles: boolean;
+  reduceMotion: boolean;
+  hideInFullscreen: boolean;
+  greetOnStartup: boolean;
+  launchAtStartup: boolean;
+  saveConversations: boolean;
+  autoOpenApps: boolean;
+  autoOpenWeb: boolean;
+  allowedFolders: string[] | null;
 }
 
 export interface KeyStatus {

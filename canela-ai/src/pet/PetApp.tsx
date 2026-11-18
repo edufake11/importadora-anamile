@@ -105,6 +105,12 @@ export function PetApp() {
         </div>
       )}
 
+      {layout && (activity === 'oops' || activity === 'curious') && (
+        <div className="exclaim" style={{ left: layout.headX + (layout.flip ? -18 : 6), top: layout.headY - 34 }}>
+          {activity === 'oops' ? '!' : '?'}
+        </div>
+      )}
+
       {layout && activity === 'listen' && (
         <div className="listen" style={{ left: layout.headX - 30, top: layout.headY - 18 }}>
           ♪
