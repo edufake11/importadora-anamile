@@ -1,5 +1,7 @@
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type KeyStatus, type ProviderId, type Settings } from '../lib/ipc';
+import { api, data, type KeyStatus, type ProviderId, type Settings } from '../lib/ipc';
+import { MemoryManager } from './MemoryManager';
 
 interface Props {
   settings: Settings;
@@ -76,14 +78,28 @@ function KeyField({ provider, label, present, onChanged }: { provider: ProviderI
   );
 }
 
+function Toggle({ checked, onChange, children }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode }) {
+  return (
+    <label className="check">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      {children}
+    </label>
+  );
+}
+
 export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) {
   const [form, setForm] = useState<Settings>(settings);
   const [saved, setSaved] = useState<string | null>(null);
+  const [folders, setFolders] = useState<string[]>([]);
   useEffect(() => setForm(settings), [settings]);
+  useEffect(() => {
+    void api.allowedFolders().then(setFolders);
+  }, [settings]);
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setForm((f) => ({ ...f, [k]: v }));
   const dirty = JSON.stringify(form) !== JSON.stringify(settings);
   const isClaude = form.provider === 'anthropic';
+  const effectiveFolders = form.allowedFolders ?? folders;
 
   async function save() {
     try {
@@ -94,6 +110,11 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
       setSaved(String(e));
     }
     setTimeout(() => setSaved(null), 2000);
+  }
+
+  async function addFolder() {
+    const picked = await openDialog({ directory: true, multiple: false, title: 'Elige una carpeta para Canela' });
+    if (typeof picked === 'string' && !effectiveFolders.includes(picked)) set('allowedFolders', [...effectiveFolders, picked]);
   }
 
   return (
@@ -155,14 +176,70 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
           <span>Tamaño · {form.petScale}x</span>
           <input type="range" min={1} max={6} value={form.petScale} onChange={(e) => set('petScale', Number(e.target.value))} />
         </label>
-        <label className="check">
-          <input type="checkbox" checked={form.wander} onChange={(e) => set('wander', e.target.checked)} />
+        <Toggle checked={form.wander} onChange={(v) => set('wander', v)}>
           Pasear por el escritorio
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={form.replyBubbles} onChange={(e) => set('replyBubbles', e.target.checked)} />
+        </Toggle>
+        <Toggle checked={form.replyBubbles} onChange={(v) => set('replyBubbles', v)}>
           Mostrar respuestas en burbujas
-        </label>
+        </Toggle>
+        <Toggle checked={form.reduceMotion} onChange={(v) => set('reduceMotion', v)}>
+          Animaciones reducidas (consume menos)
+        </Toggle>
+        <Toggle checked={form.hideInFullscreen} onChange={(v) => set('hideInFullscreen', v)}>
+          Ocultarse con juegos o videos en pantalla completa
+        </Toggle>
+      </section>
+
+      <section>
+        <h3>Al iniciar</h3>
+        <Toggle checked={form.launchAtStartup} onChange={(v) => set('launchAtStartup', v)}>
+          Abrir Canela al encender la computadora
+        </Toggle>
+        <Toggle checked={form.greetOnStartup} onChange={(v) => set('greetOnStartup', v)}>
+          Saludarme y mostrar mis tareas de hoy
+        </Toggle>
+      </section>
+
+      <section>
+        <h3>Memoria</h3>
+        <p className="muted">Canela sólo guarda lo que le pides recordar. Nunca guarda contraseñas ni datos de tarjetas.</p>
+        <details className="advanced">
+          <summary>Ver y editar recuerdos</summary>
+          <MemoryManager />
+        </details>
+        <Toggle checked={form.saveConversations} onChange={(v) => set('saveConversations', v)}>
+          Guardar el historial de chats en este equipo
+        </Toggle>
+        <button
+          className="text-button"
+          onClick={() => confirm('¿Borrar todas las conversaciones guardadas?') && void data.conversationClear()}
+        >
+          Borrar historial de chats
+        </button>
+      </section>
+
+      <section>
+        <h3>Permisos</h3>
+        <p className="muted">Canela sólo puede ver y cambiar archivos dentro de estas carpetas. Siempre te pedirá permiso antes de crear, mover o modificar algo.</p>
+        <ul className="folder-list">
+          {effectiveFolders.map((f) => (
+            <li key={f}>
+              <span title={f}>{f}</span>
+              <button className="icon-btn" aria-label="Quitar carpeta" title="Quitar" onClick={() => set('allowedFolders', effectiveFolders.filter((x) => x !== f))}>
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button className="btn" onClick={() => void addFolder()}>
+          Añadir carpeta
+        </button>
+        <Toggle checked={form.autoOpenApps} onChange={(v) => set('autoOpenApps', v)}>
+          Abrir aplicaciones y carpetas sin preguntar
+        </Toggle>
+        <Toggle checked={form.autoOpenWeb} onChange={(v) => set('autoOpenWeb', v)}>
+          Abrir páginas web sin preguntar
+        </Toggle>
       </section>
 
       <section>
@@ -185,10 +262,10 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
 
       <section>
         <details className="advanced">
-          <summary>Acerca de esta versión (0.1 · Fase 1)</summary>
+          <summary>Acerca de esta versión (0.2 · Fase 2)</summary>
           <ul className="about-list">
-            <li>Disponible: Canela en el escritorio, chat con Claude o ChatGPT, adjuntar archivos de texto.</li>
-            <li>Aún no: memoria entre sesiones, control de Windows, voz y análisis de pantalla.</li>
+            <li>Disponible: chat con Claude o ChatGPT, memoria, tareas y recordatorios, abrir apps y páginas, buscar y organizar archivos en carpetas permitidas.</li>
+            <li>Aún no: voz, análisis de pantalla, Google Calendar, Gmail y GitHub.</li>
             <li>Privacidad: sólo se envía a internet lo que escribes o adjuntas en el chat. Sin telemetría.</li>
           </ul>
         </details>

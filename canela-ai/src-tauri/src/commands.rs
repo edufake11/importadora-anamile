@@ -1,12 +1,17 @@
 //! Comandos invocables desde la interfaz (`invoke(...)`).
 
+use crate::ai::agent::{self, AgentEnv, Confirmations};
 use crate::ai::{self, ChatMessage, Role, StreamEvent};
+use crate::db::Db;
+use crate::jobs::{JobInfo, Jobs};
 use crate::settings::{self, ProviderId, Settings};
+use crate::tools::files::{display, Scope};
+use crate::tools::{LlmAccess, ToolCtx};
 use crate::{secrets, windows};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::async_runtime::JoinHandle;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
@@ -19,13 +24,25 @@ type ActiveChats = HashMap<String, (JoinHandle<()>, Channel<StreamEvent>)>;
 
 pub struct AppState {
     pub config_dir: PathBuf,
+    pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
     pub chats: Mutex<ActiveChats>,
     pub http: reqwest::Client,
+    pub db: Arc<Db>,
+    pub jobs: Arc<Jobs>,
+    pub confirms: Arc<Confirmations>,
+    /// Documentos, Descargas y Escritorio del usuario (alias y carpetas por defecto).
+    pub known_dirs: Vec<(String, PathBuf)>,
 }
 
 impl AppState {
-    pub fn new(config_dir: PathBuf) -> Self {
+    pub fn new(
+        config_dir: PathBuf,
+        data_dir: PathBuf,
+        db: Arc<Db>,
+        jobs: Arc<Jobs>,
+        known_dirs: Vec<(String, PathBuf)>,
+    ) -> Self {
         let settings = settings::load(&config_dir);
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
@@ -34,14 +51,31 @@ impl AppState {
             .expect("cliente HTTP");
         Self {
             config_dir,
+            data_dir,
             settings: Mutex::new(settings),
             chats: Mutex::new(HashMap::new()),
             http,
+            db,
+            jobs,
+            confirms: Arc::new(Confirmations::default()),
+            known_dirs,
         }
     }
 
     pub fn current_settings(&self) -> Settings {
         self.settings.lock().unwrap().clone()
+    }
+
+    /// Carpetas autorizadas efectivas.
+    pub fn allowed_folders(&self) -> Vec<PathBuf> {
+        match self.current_settings().allowed_folders {
+            Some(list) => list.into_iter().map(PathBuf::from).collect(),
+            None => self.known_dirs.iter().map(|(_, p)| p.clone()).collect(),
+        }
+    }
+
+    pub fn scope(&self) -> Scope {
+        Scope::new(self.allowed_folders(), self.known_dirs.clone())
     }
 }
 
@@ -59,6 +93,17 @@ pub fn save_settings(
     settings: Settings,
 ) -> Result<Settings, String> {
     let clean = settings.sanitized();
+    let before = state.current_settings();
+    if clean.launch_at_startup != before.launch_at_startup {
+        use tauri_plugin_autostart::ManagerExt;
+        let launcher = app.autolaunch();
+        let r = if clean.launch_at_startup {
+            launcher.enable()
+        } else {
+            launcher.disable()
+        };
+        r.map_err(|e| format!("No pude cambiar el inicio automático con Windows: {e}"))?;
+    }
     settings::save(&state.config_dir, &clean)?;
     *state.settings.lock().unwrap() = clean.clone();
     let _ = app.emit("settings-changed", &clean);
@@ -73,6 +118,13 @@ pub struct KeyStatus {
 
 #[tauri::command]
 pub async fn api_key_status() -> KeyStatus {
+    #[cfg(debug_assertions)]
+    if std::env::var("CANELA_DEV_API_KEY").is_ok() {
+        return KeyStatus {
+            anthropic: true,
+            openai: true,
+        };
+    }
     // El llavero puede bloquear brevemente: fuera del hilo principal.
     tauri::async_runtime::spawn_blocking(|| KeyStatus {
         anthropic: secrets::has_key(ProviderId::Anthropic),
@@ -101,12 +153,15 @@ pub async fn delete_api_key(provider: ProviderId) -> Result<(), String> {
 
 // ------------------------------- Chat --------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn chat_send(
+    app: AppHandle,
     state: State<'_, AppState>,
     request_id: String,
     messages: Vec<ChatMessage>,
     user_name: Option<String>,
+    context: Option<String>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     if messages.last().map(|m| m.role) != Some(Role::User) {
@@ -119,42 +174,65 @@ pub async fn chat_send(
 
     let settings = state.current_settings();
     let provider = settings.provider;
-    let key = tauri::async_runtime::spawn_blocking(move || secrets::get_key(provider))
-        .await
-        .map_err(|e| e.to_string())??
-        .ok_or_else(|| {
-            let name = if provider == ProviderId::Anthropic {
-                "Claude (Anthropic)"
-            } else {
-                "ChatGPT (OpenAI)"
-            };
-            format!("Falta la clave API de {name}. Agrégala en Ajustes.")
-        })?;
+    // Sólo en desarrollo: clave simulada para probar con un servidor local.
+    #[cfg(debug_assertions)]
+    let dev_key = std::env::var("CANELA_DEV_API_KEY").ok();
+    #[cfg(not(debug_assertions))]
+    let dev_key: Option<String> = None;
+    let key = match dev_key {
+        Some(k) => k,
+        None => tauri::async_runtime::spawn_blocking(move || secrets::get_key(provider))
+            .await
+            .map_err(|e| e.to_string())??
+            .ok_or_else(|| {
+                let name = if provider == ProviderId::Anthropic {
+                    "Claude (Anthropic)"
+                } else {
+                    "ChatGPT (OpenAI)"
+                };
+                format!("Falta la clave API de {name}. Agrégala en Ajustes.")
+            })?,
+    };
 
     let user_name = user_name.unwrap_or_else(|| settings.user_name.clone());
-    let (request, parser, model) =
-        ai::start_chat(&state.http, &settings, &key, &user_name, &messages);
-    drop(key);
+    let system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
+    let notify_app = app.clone();
+    let tools = ToolCtx {
+        db: state.db.clone(),
+        settings: settings.clone(),
+        scope: state.scope(),
+        backups_dir: state.data_dir.join("copias"),
+        jobs: Some(state.jobs.clone()),
+        llm: Some(LlmAccess {
+            http: state.http.clone(),
+            settings: settings.clone(),
+            api_key: key.clone(),
+        }),
+        notify: Arc::new(move |kind| crate::data_cmds::notify(&notify_app, kind)),
+    };
+    let env = AgentEnv {
+        http: state.http.clone(),
+        settings,
+        api_key: key,
+        system,
+        history: messages,
+        tools: Some(Arc::new(tools)),
+        confirms: state.confirms.clone(),
+    };
 
     let channel = on_event.clone();
     let handle = tauri::async_runtime::spawn(async move {
-        ai::run_stream(provider, model, request, parser, move |ev| {
-            let _ = channel.send(ev);
-        })
+        agent::run(
+            env,
+            Arc::new(move |ev| {
+                let _ = channel.send(ev);
+            }),
+        )
         .await;
     });
-    state
-        .chats
-        .lock()
-        .unwrap()
-        .insert(request_id, (handle, on_event));
-
-    // Limpieza de tareas ya terminadas.
-    state
-        .chats
-        .lock()
-        .unwrap()
-        .retain(|_, (h, _)| !h.inner().is_finished());
+    let mut chats = state.chats.lock().unwrap();
+    chats.retain(|_, (h, _)| !h.inner().is_finished());
+    chats.insert(request_id, (handle, on_event));
     Ok(())
 }
 
@@ -167,6 +245,31 @@ pub fn chat_cancel(state: State<'_, AppState>, request_id: String) -> bool {
     } else {
         false
     }
+}
+
+/// Respuesta del usuario a una tarjeta de permiso.
+#[tauri::command]
+pub fn confirm_action(state: State<'_, AppState>, confirm_id: String, approved: bool) -> bool {
+    state.confirms.resolve(&confirm_id, approved)
+}
+
+// ------------------------------ Trabajos -----------------------------------
+
+#[tauri::command]
+pub fn jobs_list(state: State<'_, AppState>) -> Vec<JobInfo> {
+    state.jobs.list()
+}
+
+#[tauri::command]
+pub fn job_cancel(state: State<'_, AppState>, id: String) -> bool {
+    state.jobs.cancel(&id)
+}
+
+// ------------------------------ Carpetas -----------------------------------
+
+#[tauri::command]
+pub fn allowed_folders(state: State<'_, AppState>) -> Vec<String> {
+    state.allowed_folders().iter().map(|p| display(p)).collect()
 }
 
 // ----------------------------- Ventanas ------------------------------------

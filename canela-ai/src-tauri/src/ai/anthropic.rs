@@ -7,13 +7,18 @@
 //! - Caché de prompt automática (`cache_control` de nivel superior).
 //! - Fallback del servidor ante rechazos de clasificadores de seguridad
 //!   (`fallbacks: "default"`) en los modelos que lo admiten.
-//! - Los bloques de contenido del asistente (incluidos los de razonamiento con
-//!   su firma) se devuelven a la interfaz y se reenvían SIN modificar en los
-//!   siguientes turnos: el historial es de sólo-anexar.
+//! - Herramientas con `eager_input_streaming`: la entrada se valida aquí
+//!   (JSON completo) y en `tools::prepare` (esquema) antes de ejecutar nada.
+//! - Historial de sólo-anexar: los mensajes del asistente (razonamiento
+//!   firmado incluido) y los resultados de herramientas se reenvían tal cual.
 
-use super::{ChatMessage, ProviderStream, Role, StreamEvent};
+use super::{
+    ChatMessage, ParseOut, ProviderStream, Role, StreamEvent, ToolCall, ToolDef, TurnOutcome,
+};
 use crate::ai::sse::SseEvent;
+use crate::settings::ProviderId;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const API_VERSION: &str = "2026-10-21";
@@ -48,34 +53,57 @@ pub fn supports_adaptive_thinking(model: &str) -> bool {
     !LEGACY.iter().any(|p| model.starts_with(p))
 }
 
-pub fn build_body(model: &str, effort: &str, system: &str, messages: &[ChatMessage]) -> Value {
-    let msgs: Vec<Value> = messages
-        .iter()
-        .filter_map(|m| match m.role {
-            Role::User => Some(json!({ "role": "user", "content": m.text })),
+pub fn native_messages(history: &[ChatMessage]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for m in history {
+        match m.role {
+            Role::User => out.push(json!({ "role": "user", "content": m.text })),
             Role::Assistant => {
-                if let Some(Value::Array(blocks)) = &m.anthropic_content {
-                    if !blocks.is_empty() {
-                        return Some(json!({ "role": "assistant", "content": blocks }));
+                if m.provider == Some(ProviderId::Anthropic) {
+                    if let Some(t) = m.transcript.as_ref().filter(|t| !t.is_empty()) {
+                        out.extend(t.iter().cloned());
+                        continue;
                     }
                 }
-                if m.text.trim().is_empty() {
-                    None
-                } else {
-                    Some(json!({ "role": "assistant", "content": m.text }))
+                if !m.text.trim().is_empty() {
+                    out.push(json!({ "role": "assistant", "content": m.text }));
                 }
             }
-        })
-        .collect();
+        }
+    }
+    out
+}
 
+pub fn build_body(
+    model: &str,
+    effort: &str,
+    system: &str,
+    messages: &[Value],
+    tools: &[ToolDef],
+) -> Value {
     let mut body = json!({
         "model": model,
         "max_tokens": MAX_TOKENS,
         "stream": true,
         "system": [{ "type": "text", "text": system }],
-        "messages": msgs,
+        "messages": messages,
         "cache_control": { "type": "ephemeral" },
     });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.schema,
+                        "eager_input_streaming": true,
+                    })
+                })
+                .collect(),
+        );
+    }
     if supports_adaptive_thinking(model) {
         body["thinking"] = json!({ "type": "adaptive" });
         body["output_config"] = json!({ "effort": effort });
@@ -92,7 +120,8 @@ pub fn build_request(
     model: &str,
     effort: &str,
     system: &str,
-    messages: &[ChatMessage],
+    messages: &[Value],
+    tools: &[ToolDef],
 ) -> reqwest::RequestBuilder {
     let mut req = http
         .post(API_URL)
@@ -102,16 +131,25 @@ pub fn build_request(
     if supports_fallbacks(model) {
         req = req.header("anthropic-beta", FALLBACK_BETA);
     }
-    req.json(&build_body(model, effort, system, messages))
+    req.json(&build_body(model, effort, system, messages, tools))
+}
+
+/// Un único mensaje de usuario con todos los resultados de herramientas.
+pub fn tool_results_message(results: &[(String, String, bool)]) -> Vec<Value> {
+    let blocks: Vec<Value> = results
+        .iter()
+        .map(|(id, text, is_error)| json!({ "type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error }))
+        .collect();
+    vec![json!({ "role": "user", "content": blocks })]
 }
 
 /// Prepara los bloques del asistente para reenviarlos en el siguiente turno.
 /// - Tras un fallback a mitad de respuesta, se omiten los bloques de
 ///   razonamiento/herramienta anteriores al último bloque `fallback`.
 /// - Se descartan bloques de razonamiento incompletos (sin firma) y textos vacíos.
-pub fn sanitize_for_replay(blocks: &[Value]) -> Option<Value> {
+pub fn sanitize_for_replay(blocks: &[Value]) -> Vec<Value> {
     let last_fallback = blocks.iter().rposition(|b| b["type"] == "fallback");
-    let kept: Vec<Value> = blocks
+    blocks
         .iter()
         .enumerate()
         .filter(|(i, b)| {
@@ -136,18 +174,14 @@ pub fn sanitize_for_replay(blocks: &[Value]) -> Option<Value> {
             }
         })
         .map(|(_, b)| b.clone())
-        .collect();
-    if kept.iter().any(|b| b["type"] == "text") {
-        Some(Value::Array(kept))
-    } else {
-        None
-    }
+        .collect()
 }
 
 #[derive(Default)]
 pub struct AnthropicStream {
     blocks: Vec<Value>,
     partial_json: Vec<String>,
+    bad_input: HashMap<usize, String>,
     stop_reason: Option<String>,
     model: Option<String>,
     notice: Option<String>,
@@ -164,10 +198,60 @@ impl AnthropicStream {
             self.partial_json.push(String::new());
         }
     }
+
+    fn outcome(&mut self) -> TurnOutcome {
+        let refused = self.stop_reason.as_deref() == Some("refusal");
+        let mut notice = self.notice.take();
+        if refused {
+            notice = Some("Claude no pudo continuar con esta solicitud (rechazo por políticas de seguridad). Prueba a reformularla.".into());
+        } else if self.stop_reason.as_deref() == Some("max_tokens") {
+            notice = Some("La respuesta se cortó por alcanzar el límite de longitud.".into());
+        }
+        // Un fallback a mitad de respuesta descarta las herramientas anteriores al cambio.
+        let last_fallback = self.blocks.iter().rposition(|b| b["type"] == "fallback");
+        let tool_calls: Vec<ToolCall> = if refused
+            || self.stop_reason.as_deref() == Some("max_tokens")
+        {
+            vec![]
+        } else {
+            self.blocks
+                .iter()
+                .enumerate()
+                .filter(|(i, b)| b["type"] == "tool_use" && last_fallback.is_none_or(|fb| *i > fb))
+                .map(|(i, b)| ToolCall {
+                    id: b["id"].as_str().unwrap_or_default().to_string(),
+                    name: b["name"].as_str().unwrap_or_default().to_string(),
+                    input: match self.bad_input.get(&i) {
+                        Some(e) => Err(e.clone()),
+                        None => Ok(b["input"].clone()),
+                    },
+                })
+                .collect()
+        };
+        let blocks: Vec<Value> = self
+            .blocks
+            .iter()
+            .filter(|b| !b.is_null())
+            .cloned()
+            .collect();
+        let kept = sanitize_for_replay(&blocks);
+        let assistant = if refused || kept.is_empty() {
+            None
+        } else {
+            Some(json!({ "role": "assistant", "content": kept }))
+        };
+        TurnOutcome {
+            assistant,
+            tool_calls,
+            stop_reason: self.stop_reason.clone(),
+            model: self.model.clone(),
+            notice,
+        }
+    }
 }
 
 impl ProviderStream for AnthropicStream {
-    fn on_event(&mut self, ev: &SseEvent) -> Vec<StreamEvent> {
+    fn on_event(&mut self, ev: &SseEvent) -> Vec<ParseOut> {
         let Ok(data) = serde_json::from_str::<Value>(&ev.data) else {
             return vec![];
         };
@@ -179,15 +263,20 @@ impl ProviderStream for AnthropicStream {
                     .unwrap_or_default()
                     .to_string();
                 self.model = Some(model.clone());
-                vec![StreamEvent::Started { model }]
+                vec![ParseOut::Event(StreamEvent::Started { model })]
             }
             "content_block_start" => {
                 self.slot(index);
-                let block = data["content_block"].clone();
+                let mut block = data["content_block"].clone();
                 let kind = block["type"].as_str().unwrap_or("").to_string();
+                if kind == "tool_use" && block.get("input").is_none() {
+                    block["input"] = json!({});
+                }
                 self.blocks[index] = block.clone();
                 match kind.as_str() {
-                    "thinking" | "redacted_thinking" => vec![StreamEvent::Thinking],
+                    "thinking" | "redacted_thinking" => {
+                        vec![ParseOut::Event(StreamEvent::Thinking)]
+                    }
                     "fallback" => {
                         let to = block["to"]["model"].as_str().unwrap_or("otro modelo");
                         self.model = Some(to.to_string());
@@ -201,7 +290,7 @@ impl ProviderStream for AnthropicStream {
                         if t.is_empty() {
                             vec![]
                         } else {
-                            vec![StreamEvent::Delta { text: t }]
+                            vec![ParseOut::Event(StreamEvent::Delta { text: t })]
                         }
                     }
                     _ => vec![],
@@ -216,9 +305,9 @@ impl ProviderStream for AnthropicStream {
                         let t = delta["text"].as_str().unwrap_or("");
                         let prev = block["text"].as_str().unwrap_or("").to_string();
                         block["text"] = Value::String(prev + t);
-                        vec![StreamEvent::Delta {
+                        vec![ParseOut::Event(StreamEvent::Delta {
                             text: t.to_string(),
-                        }]
+                        })]
                     }
                     "thinking_delta" => {
                         let t = delta["thinking"].as_str().unwrap_or("");
@@ -239,9 +328,16 @@ impl ProviderStream for AnthropicStream {
                 }
             }
             "content_block_stop" => {
-                if index < self.partial_json.len() && !self.partial_json[index].is_empty() {
-                    if let Ok(input) = serde_json::from_str::<Value>(&self.partial_json[index]) {
-                        self.blocks[index]["input"] = input;
+                if index < self.partial_json.len() && self.blocks[index]["type"] == "tool_use" {
+                    let raw = std::mem::take(&mut self.partial_json[index]);
+                    if !raw.trim().is_empty() {
+                        match serde_json::from_str::<Value>(&raw) {
+                            Ok(input) if input.is_object() => self.blocks[index]["input"] = input,
+                            _ => {
+                                // JSON incompleto o inválido: no se ejecuta; se informa al modelo.
+                                self.bad_input.insert(index, "INVALID_JSON: la entrada de la herramienta no es un JSON válido. Vuelve a intentarlo.".into());
+                            }
+                        }
                     }
                 }
                 vec![]
@@ -252,54 +348,25 @@ impl ProviderStream for AnthropicStream {
                 }
                 vec![]
             }
-            "message_stop" => vec![self.done()],
+            "message_stop" => vec![ParseOut::Finished(self.outcome())],
             "error" => {
                 let msg = data["error"]["message"]
                     .as_str()
                     .unwrap_or("error desconocido");
                 let kind = data["error"]["type"].as_str().unwrap_or("");
-                let message = if kind == "overloaded_error" {
+                vec![ParseOut::Failed(if kind == "overloaded_error" {
                     "Claude está saturado en este momento. Inténtalo de nuevo en unos segundos."
                         .to_string()
                 } else {
                     format!("Error de Claude: {msg}")
-                };
-                vec![StreamEvent::Error { message }]
+                })]
             }
             _ => vec![],
         }
     }
 
-    fn finish(&mut self) -> Option<StreamEvent> {
+    fn finish(&mut self) -> Option<TurnOutcome> {
         None
-    }
-}
-
-impl AnthropicStream {
-    fn done(&mut self) -> StreamEvent {
-        let refused = self.stop_reason.as_deref() == Some("refusal");
-        let blocks: Vec<Value> = self
-            .blocks
-            .iter()
-            .filter(|b| !b.is_null())
-            .cloned()
-            .collect();
-        let mut notice = self.notice.take();
-        if refused {
-            notice = Some("Claude no pudo continuar con esta solicitud (rechazo por políticas de seguridad). Prueba a reformularla.".into());
-        } else if self.stop_reason.as_deref() == Some("max_tokens") {
-            notice = Some("La respuesta se cortó por alcanzar el límite de longitud.".into());
-        }
-        StreamEvent::Done {
-            stop_reason: self.stop_reason.clone(),
-            model: self.model.clone(),
-            anthropic_content: if refused {
-                None
-            } else {
-                sanitize_for_replay(&blocks)
-            },
-            notice,
-        }
     }
 }
 
@@ -312,62 +379,84 @@ mod tests {
         ChatMessage {
             role: Role::User,
             text: t.into(),
-            anthropic_content: None,
+            provider: None,
+            transcript: None,
         }
+    }
+
+    fn run(raw: &str) -> (Vec<StreamEvent>, Option<TurnOutcome>) {
+        let mut sse = SseParser::new();
+        let mut st = AnthropicStream::new();
+        let mut events = vec![];
+        for ev in sse.push(raw.as_bytes()) {
+            for o in st.on_event(&ev) {
+                match o {
+                    ParseOut::Event(e) => events.push(e),
+                    ParseOut::Finished(o) => return (events, Some(o)),
+                    ParseOut::Failed(m) => panic!("{m}"),
+                }
+            }
+        }
+        (events, None)
     }
 
     #[test]
     fn body_has_expected_shape() {
-        let body = build_body("claude-opus-5-5", "medium", "Eres Canela", &[user("hola")]);
+        let tools = vec![ToolDef {
+            name: "recordar",
+            description: "d",
+            schema: json!({"type":"object"}),
+        }];
+        let body = build_body(
+            "claude-opus-5-5",
+            "medium",
+            "Eres Canela",
+            &native_messages(&[user("hola")]),
+            &tools,
+        );
         assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["stream"], true);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["messages"][0]["content"], "hola");
+        assert_eq!(body["tools"][0]["name"], "recordar");
+        assert_eq!(body["tools"][0]["eager_input_streaming"], true);
         assert!(body.get("temperature").is_none());
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
     fn legacy_models_skip_adaptive_and_fallbacks() {
-        let body = build_body("claude-haiku-4-5", "low", "s", &[user("x")]);
+        let body = build_body("claude-haiku-4-5", "low", "s", &[], &[]);
         assert!(body.get("thinking").is_none());
-        assert!(body.get("output_config").is_none());
         assert!(body.get("fallbacks").is_none());
+        assert!(body.get("tools").is_none());
     }
 
     #[test]
-    fn assistant_blocks_are_replayed_verbatim() {
-        let blocks = json!([
-            {"type": "thinking", "thinking": "", "signature": "sig123"},
-            {"type": "text", "text": "¡Guau!"}
-        ]);
-        let msgs = vec![
-            user("hola"),
-            ChatMessage {
-                role: Role::Assistant,
-                text: "¡Guau!".into(),
-                anthropic_content: Some(blocks.clone()),
-            },
-            user("¿y ahora?"),
+    fn transcript_is_replayed_verbatim_only_for_same_provider() {
+        let transcript = vec![
+            json!({"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"s"},{"type":"tool_use","id":"t1","name":"x","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}]}),
+            json!({"role":"assistant","content":[{"type":"text","text":"¡Listo!"}]}),
         ];
-        let body = build_body("claude-opus-5-5", "medium", "s", &msgs);
-        assert_eq!(body["messages"][1]["content"], blocks);
-    }
-
-    #[test]
-    fn empty_assistant_turns_are_skipped() {
-        let msgs = vec![
-            user("hola"),
-            ChatMessage {
-                role: Role::Assistant,
-                text: "  ".into(),
-                anthropic_content: None,
-            },
-            user("¿sigues ahí?"),
-        ];
-        let body = build_body("claude-opus-5-5", "medium", "s", &msgs);
-        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        let a = ChatMessage {
+            role: Role::Assistant,
+            text: "¡Listo!".into(),
+            provider: Some(ProviderId::Anthropic),
+            transcript: Some(transcript.clone()),
+        };
+        let msgs = native_messages(&[user("abre algo"), a.clone(), user("gracias")]);
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[1], transcript[0]);
+        // Si la respuesta vino de otro proveedor, sólo se usa el texto.
+        let o = ChatMessage {
+            provider: Some(ProviderId::Openai),
+            ..a
+        };
+        let msgs = native_messages(&[user("abre algo"), o]);
+        assert_eq!(msgs[1], json!({"role":"assistant","content":"¡Listo!"}));
     }
 
     #[test]
@@ -381,18 +470,15 @@ mod tests {
             json!({"type": "text", "text": "final"}),
             json!({"type": "text", "text": ""}),
         ];
-        let out = sanitize_for_replay(&blocks).unwrap();
-        let types: Vec<&str> = out
-            .as_array()
-            .unwrap()
+        let types: Vec<String> = sanitize_for_replay(&blocks)
             .iter()
-            .map(|b| b["type"].as_str().unwrap())
+            .map(|b| b["type"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(types, vec!["text", "fallback", "thinking", "text"]);
     }
 
     #[test]
-    fn parses_a_full_stream() {
+    fn parses_text_stream() {
         let raw = concat!(
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n\n",
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
@@ -401,17 +487,10 @@ mod tests {
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"¡Hola, \"}}\n\n",
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"humano!\"}}\n\n",
-            "event: ping\ndata: {\"type\":\"ping\"}\n\n",
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         );
-        let mut sse = SseParser::new();
-        let mut st = AnthropicStream::new();
-        let events: Vec<StreamEvent> = sse
-            .push(raw.as_bytes())
-            .iter()
-            .flat_map(|e| st.on_event(e))
-            .collect();
+        let (events, outcome) = run(raw);
         let text: String = events
             .iter()
             .filter_map(|e| {
@@ -423,59 +502,60 @@ mod tests {
             })
             .collect();
         assert_eq!(text, "¡Hola, humano!");
-        assert!(events.iter().any(|e| matches!(e, StreamEvent::Thinking)));
-        match events.last().unwrap() {
-            StreamEvent::Done {
-                stop_reason,
-                anthropic_content,
-                model,
-                ..
-            } => {
-                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
-                assert_eq!(model.as_deref(), Some("claude-opus-5-5"));
-                let blocks = anthropic_content.as_ref().unwrap();
-                assert_eq!(blocks[0]["signature"], "SIG");
-                assert_eq!(blocks[1]["text"], "¡Hola, humano!");
-            }
-            other => panic!("esperaba Done, llegó {other:?}"),
-        }
+        let o = outcome.unwrap();
+        assert!(o.tool_calls.is_empty());
+        let content = &o.assistant.unwrap()["content"];
+        assert_eq!(content[0]["signature"], "SIG");
+        assert_eq!(content[1]["text"], "¡Hola, humano!");
     }
 
     #[test]
-    fn refusal_is_reported_and_not_replayed() {
-        let mut st = AnthropicStream::new();
-        st.on_event(&SseEvent {
-            event: None,
-            data: r#"{"type":"message_delta","delta":{"stop_reason":"refusal"}}"#.into(),
-        });
-        match st
-            .on_event(&SseEvent {
-                event: None,
-                data: r#"{"type":"message_stop"}"#.into(),
-            })
-            .pop()
-            .unwrap()
-        {
-            StreamEvent::Done {
-                anthropic_content,
-                notice,
-                ..
-            } => {
-                assert!(anthropic_content.is_none());
-                assert!(notice.unwrap().contains("rechazo"));
-            }
-            _ => panic!(),
-        }
+    fn parses_tool_use_with_streamed_input() {
+        let raw = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"abrir_aplicacion\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"nombre\\\": \\\"Visual\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" Studio Code\\\"}\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"x\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\": tru\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let (_, o) = run(raw);
+        let o = o.unwrap();
+        assert_eq!(o.tool_calls.len(), 2);
+        assert_eq!(
+            o.tool_calls[0].input.as_ref().unwrap()["nombre"],
+            "Visual Studio Code"
+        );
+        assert!(o.tool_calls[1]
+            .input
+            .as_ref()
+            .unwrap_err()
+            .starts_with("INVALID_JSON"));
+        // El bloque tool_use se conserva para reenviarlo con su resultado.
+        assert_eq!(o.assistant.unwrap()["content"][0]["id"], "toolu_1");
     }
 
     #[test]
-    fn stream_error_event() {
-        let mut st = AnthropicStream::new();
-        let evs = st.on_event(&SseEvent {
-            event: Some("error".into()),
-            data: r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#
-                .into(),
-        });
-        assert!(matches!(&evs[0], StreamEvent::Error { message } if message.contains("saturado")));
+    fn refusal_is_not_replayed_and_runs_no_tools() {
+        let raw = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"x\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let o = run(raw).1.unwrap();
+        assert!(o.assistant.is_none());
+        assert!(o.tool_calls.is_empty());
+        assert!(o.notice.unwrap().contains("rechazo"));
+    }
+
+    #[test]
+    fn tool_results_shape() {
+        let m = tool_results_message(&[("t1".into(), "hecho".into(), false)]);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[0]["content"][0]["type"], "tool_result");
+        assert_eq!(m[0]["content"][0]["tool_use_id"], "t1");
     }
 }

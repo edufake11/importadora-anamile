@@ -2,12 +2,15 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "panel",
   "description": "Permisos de la ventana del asistente (chat y ajustes).",
-  "windows": ["panel"],
+  "windows": [
+    "panel"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-hide",
-    "core:window:allow-toggle-maximize"
+    "core:window:allow-toggle-maximize",
+    "dialog:allow-open"
   ]
 }

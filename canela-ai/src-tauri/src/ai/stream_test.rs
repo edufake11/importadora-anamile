@@ -1,49 +1,75 @@
-//! Prueba de integración del flujo completo HTTP -> SSE -> StreamEvent
-//! contra un servidor local que imita a la API (sin red ni claves reales).
+//! Pruebas de integración del flujo completo HTTP -> SSE -> agente contra un
+//! servidor local que imita a la API (sin red ni claves reales).
 
+use super::agent::{self, AgentEnv, Confirmations};
 use super::{
-    anthropic::AnthropicStream, openai::OpenAiStream, run_stream, ProviderStream, StreamEvent,
+    anthropic::AnthropicStream, openai::OpenAiStream, run_turn, ChatMessage, ProviderStream, Role,
+    StreamEvent,
 };
-use crate::settings::ProviderId;
+use crate::db::Db;
+use crate::settings::{ProviderId, Settings};
+use crate::tools::{files::Scope, ToolCtx};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Sirve una única respuesta HTTP enviando el cuerpo en trozos pequeños.
-async fn serve_once(status: &'static str, body: &'static str) -> String {
+/// Sirve las respuestas indicadas (una por conexión) en trozos pequeños.
+async fn serve(responses: Vec<(&'static str, String)>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let seen = bodies.clone();
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = vec![0u8; 16 * 1024];
-        let _ = sock.read(&mut buf).await;
-        let head = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-            body.len()
-        );
-        sock.write_all(head.as_bytes()).await.unwrap();
-        for chunk in body.as_bytes().chunks(7) {
-            sock.write_all(chunk).await.unwrap();
-            sock.flush().await.unwrap();
+        for (status, body) in responses {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            // Lee cabeceras + cuerpo (Content-Length)
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                req.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&req).to_string();
+                if let Some(pos) = text.find("\r\n\r\n") {
+                    let len = text
+                        .lines()
+                        .find_map(|l| {
+                            l.to_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if req.len() >= pos + 4 + len {
+                        seen.lock().unwrap().push(text[pos + 4..].to_string());
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let head = format!("HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for chunk in body.as_bytes().chunks(7) {
+                sock.write_all(chunk).await.unwrap();
+                sock.flush().await.unwrap();
+            }
         }
     });
-    format!("http://{addr}/v1/messages")
+    (format!("http://{addr}/v1/messages"), bodies)
 }
 
-async fn collect(
+async fn turn(
     url: String,
     provider: ProviderId,
     parser: Box<dyn ProviderStream>,
-) -> Vec<StreamEvent> {
+) -> (Vec<StreamEvent>, Result<super::TurnOutcome, String>) {
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
     let req = reqwest::Client::new().post(url).body("{}");
-    run_stream(provider, "modelo-x".into(), req, parser, move |e| {
-        sink.lock().unwrap().push(e)
-    })
-    .await;
+    let emit = move |e| sink.lock().unwrap().push(e);
+    let r = run_turn(provider, "modelo-x", req, parser, &emit).await;
     let out = events.lock().unwrap().clone();
-    out
+    (out, r)
 }
 
 #[tokio::test]
@@ -56,8 +82,8 @@ async fn anthropic_stream_end_to_end() {
         "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
         "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     );
-    let url = serve_once("200 OK", body).await;
-    let evs = collect(url, ProviderId::Anthropic, Box::new(AnthropicStream::new())).await;
+    let (url, _) = serve(vec![("200 OK", body.to_string())]).await;
+    let (evs, r) = turn(url, ProviderId::Anthropic, Box::new(AnthropicStream::new())).await;
     let text: String = evs
         .iter()
         .filter_map(|e| {
@@ -69,31 +95,29 @@ async fn anthropic_stream_end_to_end() {
         })
         .collect();
     assert_eq!(text, "¡Guau, ñandú! 🐾");
-    assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
+    assert!(r.unwrap().tool_calls.is_empty());
 }
 
 #[tokio::test]
 async fn http_401_becomes_friendly_error() {
-    let url = serve_once(
+    let (url, _) = serve(vec![(
         "401 Unauthorized",
-        "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
-    )
+        "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}".into(),
+    )])
     .await;
-    let evs = collect(url, ProviderId::Anthropic, Box::new(AnthropicStream::new())).await;
-    match evs.as_slice() {
-        [StreamEvent::Error { message }] => assert!(message.contains("no es válida")),
-        other => panic!("inesperado: {other:?}"),
-    }
+    let (_, r) = turn(url, ProviderId::Anthropic, Box::new(AnthropicStream::new())).await;
+    assert!(r.unwrap_err().contains("no es válida"));
 }
 
 #[tokio::test]
 async fn truncated_stream_reports_error() {
-    let body = "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"Ho\"}}]}\n\n";
-    let url = serve_once("200 OK", body).await;
-    let evs = collect(url, ProviderId::Openai, Box::new(OpenAiStream::new())).await;
-    assert!(
-        matches!(evs.last(), Some(StreamEvent::Error { message }) if message.contains("antes de completar"))
-    );
+    let (url, _) = serve(vec![(
+        "200 OK",
+        "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"Ho\"}}]}\n\n".into(),
+    )])
+    .await;
+    let (_, r) = turn(url, ProviderId::Openai, Box::new(OpenAiStream::new())).await;
+    assert!(r.unwrap_err().contains("antes de completar"));
 }
 
 #[tokio::test]
@@ -101,6 +125,81 @@ async fn connection_refused_is_reported() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     drop(listener);
-    let evs = collect(url, ProviderId::Openai, Box::new(OpenAiStream::new())).await;
-    assert!(matches!(evs.as_slice(), [StreamEvent::Error { .. }]));
+    let (_, r) = turn(url, ProviderId::Openai, Box::new(OpenAiStream::new())).await;
+    assert!(r.is_err());
+}
+
+/// Agente completo con OpenAI simulado: el modelo pide crear una tarea,
+/// la herramienta se ejecuta de verdad en SQLite y el modelo responde.
+#[tokio::test]
+async fn agent_runs_tool_and_continues() {
+    let first = concat!(
+        "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"crear_tarea\",\"arguments\":\"{\\\"titulo\\\": \\\"Estudiar programación\\\"}\"}}]}}]}\n\n",
+        "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let second = concat!(
+        "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"¡Listo! La agregué a tus pendientes.\"}}]}\n\n",
+        "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (url, bodies) = serve(vec![("200 OK", first.into()), ("200 OK", second.into())]).await;
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let root = std::env::temp_dir();
+    let tools = ToolCtx {
+        db: db.clone(),
+        settings: Settings::default(),
+        scope: Scope::new(vec![root.clone()], vec![]),
+        backups_dir: root.join("canela-bak-test"),
+        jobs: None,
+        llm: None,
+        notify: Arc::new(|_| {}),
+    };
+    // Redirige la URL de OpenAI al servidor local mediante un cliente con proxy inverso simple:
+    // construimos el entorno con una URL base distinta usando el ajuste de pruebas.
+    std::env::set_var("CANELA_TEST_OPENAI_URL", &url);
+    let env = AgentEnv {
+        http: reqwest::Client::new(),
+        settings: Settings {
+            provider: ProviderId::Openai,
+            ..Settings::default()
+        },
+        api_key: "sk-test".into(),
+        system: "s".into(),
+        history: vec![ChatMessage {
+            role: Role::User,
+            text: "agrega estudiar programación".into(),
+            provider: None,
+            transcript: None,
+        }],
+        tools: Some(Arc::new(tools)),
+        confirms: Arc::new(Confirmations::default()),
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    agent::run(env, Arc::new(move |e| sink.lock().unwrap().push(e))).await;
+    std::env::remove_var("CANELA_TEST_OPENAI_URL");
+
+    let evs = events.lock().unwrap().clone();
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. })),
+        "{evs:?}"
+    );
+    match evs.last().unwrap() {
+        StreamEvent::Done { transcript, .. } => {
+            // asistente(tool_calls) + tool + asistente(texto)
+            assert_eq!(transcript.len(), 3);
+            assert_eq!(transcript[1]["role"], "tool");
+        }
+        other => panic!("esperaba Done: {other:?}"),
+    }
+    assert_eq!(
+        db.task_list(crate::db::TaskFilter::Pending).unwrap()[0].title,
+        "Estudiar programación"
+    );
+    // La segunda petición incluye el resultado de la herramienta.
+    let second_body = bodies.lock().unwrap()[1].clone();
+    assert!(second_body.contains("\"role\":\"tool\""));
+    assert!(second_body.contains("Tarea creada"));
 }

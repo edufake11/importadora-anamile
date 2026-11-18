@@ -1,12 +1,15 @@
 //! Capa de IA desacoplada del proveedor.
 //!
 //! Para añadir un proveedor nuevo (Gemini, un modelo local, etc.):
-//! 1. Crea `ai/<proveedor>.rs` con `build_request(...)` y un tipo que
-//!    implemente [`ProviderStream`] (traduce eventos SSE a [`StreamEvent`]).
-//! 2. Añade la variante en `settings::ProviderId` y en `start_chat()`.
+//! 1. Crea `ai/<proveedor>.rs` con: conversión del historial a su formato,
+//!    construcción de la petición, mensajes de resultado de herramientas y
+//!    un tipo que implemente [`ProviderStream`].
+//! 2. Añade la variante en `settings::ProviderId` y en las funciones `match`
+//!    de este archivo.
 //!
-//! La interfaz no cambia: siempre recibe el mismo flujo de `StreamEvent`.
+//! La interfaz no cambia: siempre recibe el mismo flujo de [`StreamEvent`].
 
+pub mod agent;
 pub mod anthropic;
 pub mod openai;
 pub mod sse;
@@ -31,10 +34,14 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub text: String,
-    /// Bloques originales de Claude (razonamiento firmado incluido) para
-    /// reenviarlos tal cual. `None` para mensajes del usuario u OpenAI.
+    /// Proveedor que generó esta respuesta (sólo asistente).
     #[serde(default)]
-    pub anthropic_content: Option<Value>,
+    pub provider: Option<ProviderId>,
+    /// Mensajes originales del proveedor de esta respuesta (razonamiento
+    /// firmado, llamadas a herramientas y sus resultados). Se reenvían tal
+    /// cual si el proveedor no cambió; si cambió, se usa sólo `text`.
+    #[serde(default)]
+    pub transcript: Option<Vec<Value>>,
 }
 
 /// Eventos que viajan de Rust a la interfaz por un `tauri::ipc::Channel`.
@@ -53,11 +60,30 @@ pub enum StreamEvent {
     Delta {
         text: String,
     },
+    /// Canela empieza a usar una herramienta.
+    ToolStart {
+        call_id: String,
+        name: String,
+        label: String,
+    },
+    ToolEnd {
+        call_id: String,
+        ok: bool,
+        summary: String,
+    },
+    /// La acción necesita tu permiso: responde con el comando `confirm_action`.
+    ConfirmRequest {
+        confirm_id: String,
+        title: String,
+        details: String,
+        diff: Option<String>,
+    },
     Done {
         stop_reason: Option<String>,
         model: Option<String>,
-        anthropic_content: Option<Value>,
         notice: Option<String>,
+        provider: ProviderId,
+        transcript: Vec<Value>,
     },
     Error {
         message: String,
@@ -65,45 +91,84 @@ pub enum StreamEvent {
     Cancelled,
 }
 
-impl StreamEvent {
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            StreamEvent::Done { .. } | StreamEvent::Error { .. } | StreamEvent::Cancelled
-        )
-    }
+/// Definición de herramienta independiente del proveedor.
+#[derive(Debug, Clone)]
+pub struct ToolDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub schema: Value,
 }
 
-/// Traduce eventos SSE de un proveedor concreto a `StreamEvent`.
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// `Err` si el modelo generó un JSON inválido o incompleto.
+    pub input: Result<Value, String>,
+}
+
+/// Resultado de una vuelta (una petición al modelo).
+#[derive(Debug, Clone)]
+pub struct TurnOutcome {
+    /// Mensaje del asistente en el formato del proveedor (None si no hay nada que reenviar).
+    pub assistant: Option<Value>,
+    pub tool_calls: Vec<ToolCall>,
+    pub stop_reason: Option<String>,
+    pub model: Option<String>,
+    pub notice: Option<String>,
+}
+
+pub enum ParseOut {
+    Event(StreamEvent),
+    Finished(TurnOutcome),
+    Failed(String),
+}
+
+/// Traduce eventos SSE de un proveedor concreto.
 pub trait ProviderStream: Send {
-    fn on_event(&mut self, ev: &sse::SseEvent) -> Vec<StreamEvent>;
+    fn on_event(&mut self, ev: &sse::SseEvent) -> Vec<ParseOut>;
     /// Llamado si la conexión termina sin evento final.
-    fn finish(&mut self) -> Option<StreamEvent>;
+    fn finish(&mut self) -> Option<TurnOutcome>;
 }
 
-/// Personalidad de Canela. Debe ser estable durante una conversación
-/// (cambiarla invalida la caché y el razonamiento preservado de Claude).
-pub fn system_prompt(user_name: &str) -> String {
+/// Personalidad e instrucciones de Canela. Debe ser estable durante una
+/// conversación (cambiarla invalida la caché y el razonamiento preservado),
+/// por eso `context` se calcula una sola vez al empezar la conversación.
+pub fn system_prompt(user_name: &str, context: &str, tools_enabled: bool) -> String {
     let who = if user_name.trim().is_empty() {
         "tu humano".to_string()
     } else {
         user_name.trim().to_string()
+    };
+    let tools = if tools_enabled {
+        "\n\nHerramientas:\n\
+- Tienes herramientas reales para: memoria (recordar, buscar, olvidar), tareas y recordatorios, \
+abrir aplicaciones y páginas web, y archivos dentro de las carpetas que el usuario autorizó \
+(listar, buscar, leer, ver recientes, crear carpetas, escribir archivos, organizar, analizar proyectos).\n\
+- Úsalas cuando el usuario te pida hacer algo; no expliques cómo hacerlo a mano si puedes hacerlo tú.\n\
+- Nunca digas que hiciste algo si la herramienta no confirmó que funcionó. Si falla o el usuario la rechaza, dilo.\n\
+- Las acciones que modifican archivos o envían datos fuera piden permiso al usuario automáticamente: no pidas permiso tú en el texto, sólo usa la herramienta.\n\
+- Memoria: guarda algo sólo cuando el usuario te lo pide (\"recuerda que…\") o cuando es claramente útil y no sensible \
+(proyectos, preferencias, horarios, apps favoritas); cuando lo hagas, menciónalo. Nunca guardes contraseñas, \
+datos bancarios, documentos de identidad ni datos de salud.\n\
+- Fechas: convierte expresiones como \"mañana a las 5\" a AAAA-MM-DD HH:MM usando la fecha actual indicada abajo.\n\
+- Para cambiar un archivo existente, léelo primero y escribe el contenido completo nuevo: el usuario verá los cambios antes de aplicarlos.\n\
+- Para análisis largos de proyectos usa analizar_proyecto: corre en segundo plano y el usuario puede seguir hablando contigo.\n\
+- No puedes ejecutar comandos de consola ni instalar programas; tampoco usar el micrófono ni ver la pantalla (todavía)."
+    } else {
+        "\n\nEn esta respuesta no tienes herramientas: no puedes abrir programas ni tocar archivos. Nunca finjas haber realizado una acción."
     };
     format!(
         "Eres Canela, una perrita salchicha color chocolate con audífonos violetas y un pañuelo morado, \
 que vive en el escritorio de Windows de {who} como mascota virtual y asistente personal.\n\n\
 Personalidad: cálida, curiosa, leal y con buen humor. De vez en cuando sueltas un guiño perruno breve \
 (\"¡guau!\", mover la colita), pero sin exagerar ni interrumpir las respuestas técnicas.\n\n\
-Ayudas con: programación (explicar código y errores, proponer soluciones paso a paso), análisis de textos \
-y documentos que te peguen o adjunten, organización de tareas y proyectos, y preguntas generales.\n\n\
+Ayudas con: programación (explicar código y errores, revisar proyectos, proponer mejoras), análisis de textos \
+y documentos, organización del día (tareas, recordatorios) y preguntas generales.\n\n\
 Reglas:\n\
 - Responde en español salvo que te escriban en otro idioma.\n\
-- Sé concisa por defecto; extiéndete cuando la tarea lo requiera. Usa bloques ``` para código.\n\
-- En esta versión NO puedes ejecutar acciones en la computadora (abrir programas, mover archivos), \
-NI ver la pantalla, NI usar el micrófono, NI recordar conversaciones anteriores a esta. \
-Si te lo piden, dilo con honestidad y da instrucciones para hacerlo manualmente. \
-Nunca finjas haber realizado una acción.\n\
-- Si no sabes algo, dilo."
+- Sé concisa y clara, sin tecnicismos innecesarios; extiéndete cuando la tarea lo requiera. Usa bloques ``` para código.\n\
+- Si no sabes algo, dilo.{tools}\n\n{context}"
     )
 }
 
@@ -134,15 +199,38 @@ pub fn http_error_message(provider: ProviderId, status: u16, body: &str, model: 
     }
 }
 
-/// Construye la petición HTTP y el traductor de eventos según el proveedor.
-pub fn start_chat(
+/// Historial de la interfaz -> mensajes en el formato del proveedor.
+pub fn native_history(provider: ProviderId, history: &[ChatMessage]) -> Vec<Value> {
+    match provider {
+        ProviderId::Anthropic => anthropic::native_messages(history),
+        ProviderId::Openai => openai::native_messages(history),
+    }
+}
+
+/// Mensaje(s) con los resultados de herramientas, en el formato del proveedor.
+pub fn tool_results(provider: ProviderId, results: &[(String, String, bool)]) -> Vec<Value> {
+    match provider {
+        ProviderId::Anthropic => anthropic::tool_results_message(results),
+        ProviderId::Openai => openai::tool_results_messages(results),
+    }
+}
+
+pub fn model_of(settings: &Settings) -> String {
+    match settings.provider {
+        ProviderId::Anthropic => settings.anthropic_model.clone(),
+        ProviderId::Openai => settings.openai_model.clone(),
+    }
+}
+
+/// Construye la petición de una vuelta y su traductor de eventos.
+pub fn build_turn(
     http: &reqwest::Client,
     settings: &Settings,
     api_key: &str,
-    user_name: &str,
-    messages: &[ChatMessage],
-) -> (reqwest::RequestBuilder, Box<dyn ProviderStream>, String) {
-    let system = system_prompt(user_name);
+    system: &str,
+    messages: &[Value],
+    tools: &[ToolDef],
+) -> (reqwest::RequestBuilder, Box<dyn ProviderStream>) {
     match settings.provider {
         ProviderId::Anthropic => (
             anthropic::build_request(
@@ -150,77 +238,68 @@ pub fn start_chat(
                 api_key,
                 &settings.anthropic_model,
                 &settings.anthropic_effort,
-                &system,
+                system,
                 messages,
+                tools,
             ),
             Box::new(anthropic::AnthropicStream::new()),
-            settings.anthropic_model.clone(),
         ),
         ProviderId::Openai => (
-            openai::build_request(http, api_key, &settings.openai_model, &system, messages),
+            openai::build_request(
+                http,
+                api_key,
+                &settings.openai_model,
+                system,
+                messages,
+                tools,
+            ),
             Box::new(openai::OpenAiStream::new()),
-            settings.openai_model.clone(),
         ),
     }
 }
 
-/// Ejecuta la petición y reenvía cada evento mediante `emit` hasta un evento final.
-pub async fn run_stream(
+/// Ejecuta una vuelta: emite Started/Thinking/Delta y devuelve el resultado
+/// (o un mensaje de error claro).
+pub async fn run_turn(
     provider: ProviderId,
-    model: String,
+    model: &str,
     request: reqwest::RequestBuilder,
     mut parser: Box<dyn ProviderStream>,
-    emit: impl Fn(StreamEvent),
-) {
-    let response = match request.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let message = if e.is_timeout() {
-                "La solicitud tardó demasiado. Revisa tu conexión.".to_string()
-            } else if e.is_connect() {
-                "No hay conexión con el servicio de IA. Revisa tu internet o firewall.".to_string()
-            } else {
-                format!("Error de red: {e}")
-            };
-            emit(StreamEvent::Error { message });
-            return;
+    emit: &(dyn Fn(StreamEvent) + Send + Sync),
+) -> Result<TurnOutcome, String> {
+    let response = request.send().await.map_err(|e| {
+        if e.is_timeout() {
+            "La solicitud tardó demasiado. Revisa tu conexión.".to_string()
+        } else if e.is_connect() {
+            "No hay conexión con el servicio de IA. Revisa tu internet o firewall.".to_string()
+        } else {
+            format!("Error de red: {e}")
         }
-    };
+    })?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        emit(StreamEvent::Error {
-            message: http_error_message(provider, status.as_u16(), &body, &model),
-        });
-        return;
+        return Err(http_error_message(provider, status.as_u16(), &body, model));
     }
 
     let mut sse = sse::SseParser::new();
     let mut bytes = response.bytes_stream();
     while let Some(chunk) = bytes.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                emit(StreamEvent::Error {
-                    message: format!("Se interrumpió la conexión: {e}"),
-                });
-                return;
-            }
-        };
+        let chunk = chunk.map_err(|e| format!("Se interrumpió la conexión: {e}"))?;
         for ev in sse.push(&chunk) {
             for out in parser.on_event(&ev) {
-                let terminal = out.is_terminal();
-                emit(out);
-                if terminal {
-                    return;
+                match out {
+                    ParseOut::Event(e) => emit(e),
+                    ParseOut::Finished(o) => return Ok(o),
+                    ParseOut::Failed(m) => return Err(m),
                 }
             }
         }
     }
-    emit(parser.finish().unwrap_or(StreamEvent::Error {
-        message: "La conexión terminó antes de completar la respuesta.".into(),
-    }));
+    parser
+        .finish()
+        .ok_or_else(|| "La conexión terminó antes de completar la respuesta.".into())
 }
 
 #[cfg(test)]
@@ -228,11 +307,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_prompt_mentions_user_and_limits() {
-        let p = system_prompt("Eduardo");
+    fn system_prompt_mentions_user_context_and_tools() {
+        let p = system_prompt("Eduardo", "Fecha: hoy", true);
         assert!(p.contains("Eduardo"));
-        assert!(p.contains("NO puedes ejecutar acciones"));
-        assert!(system_prompt("").contains("tu humano"));
+        assert!(p.contains("Fecha: hoy"));
+        assert!(p.contains("Nunca digas que hiciste algo"));
+        let p = system_prompt("", "", false);
+        assert!(p.contains("tu humano"));
+        assert!(p.contains("no tienes herramientas"));
     }
 
     #[test]
@@ -251,14 +333,13 @@ mod tests {
 
     #[test]
     fn stream_event_serializes_camel_case() {
-        let v = serde_json::to_value(StreamEvent::Done {
-            stop_reason: Some("end_turn".into()),
-            model: None,
-            anthropic_content: None,
-            notice: None,
+        let v = serde_json::to_value(StreamEvent::ToolStart {
+            call_id: "a".into(),
+            name: "x".into(),
+            label: "y".into(),
         })
         .unwrap();
-        assert_eq!(v["type"], "done");
-        assert_eq!(v["stopReason"], "end_turn");
+        assert_eq!(v["type"], "toolStart");
+        assert_eq!(v["callId"], "a");
     }
 }

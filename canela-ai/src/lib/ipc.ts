@@ -32,16 +32,30 @@ export interface KeyStatus {
 export interface WireMessage {
   role: 'user' | 'assistant';
   text: string;
-  anthropicContent?: unknown;
+  provider?: ProviderId;
+  transcript?: unknown[];
 }
 
 export type StreamEvent =
   | { type: 'started'; model: string }
   | { type: 'thinking' }
   | { type: 'delta'; text: string }
-  | { type: 'done'; stopReason: string | null; model: string | null; anthropicContent: unknown | null; notice: string | null }
+  | { type: 'toolStart'; callId: string; name: string; label: string }
+  | { type: 'toolEnd'; callId: string; ok: boolean; summary: string }
+  | { type: 'confirmRequest'; confirmId: string; title: string; details: string; diff: string | null }
+  | { type: 'done'; stopReason: string | null; model: string | null; notice: string | null; provider: ProviderId; transcript: unknown[] }
   | { type: 'error'; message: string }
   | { type: 'cancelled' };
+
+export interface JobInfo {
+  id: string;
+  title: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  progress: string | null;
+  result: string | null;
+  error: string | null;
+  createdAt: string;
+}
 
 export const api = {
   getSettings: () => invoke<Settings>('get_settings'),
@@ -53,17 +67,22 @@ export const api = {
   hidePanel: () => invoke<void>('hide_panel'),
   togglePet: () => invoke<void>('toggle_pet'),
   quit: () => invoke<void>('quit_app'),
+  confirmAction: (confirmId: string, approved: boolean) => invoke<boolean>('confirm_action', { confirmId, approved }),
+  jobsList: () => invoke<JobInfo[]>('jobs_list'),
+  jobCancel: (id: string) => invoke<boolean>('job_cancel', { id }),
+  allowedFolders: () => invoke<string[]>('allowed_folders'),
 
   /** Inicia una respuesta en streaming. Devuelve una función para cancelarla. */
   async chat(
     requestId: string,
     messages: WireMessage[],
     userName: string,
+    context: string,
     onEvent: (ev: StreamEvent) => void,
   ): Promise<() => Promise<void>> {
     const channel = new Channel<StreamEvent>();
     channel.onmessage = onEvent;
-    await invoke('chat_send', { requestId, messages, userName, onEvent: channel });
+    await invoke('chat_send', { requestId, messages, userName, context, onEvent: channel });
     return async () => {
       await invoke('chat_cancel', { requestId });
     };
@@ -87,3 +106,92 @@ export const onMood = (cb: (p: MoodPayload) => void): Promise<UnlistenFn> =>
 
 export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
   listen<Settings>('settings-changed', (e) => cb(e.payload));
+
+// ------------------------------ Datos locales --------------------------------
+
+export interface Memory {
+  id: number;
+  kind: string;
+  content: string;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Task {
+  id: number;
+  title: string;
+  notes: string;
+  priority: number;
+  due: string | null;
+  remindAt: string | null;
+  reminded: boolean;
+  done: boolean;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface TaskInput {
+  title?: string;
+  notes?: string;
+  priority?: number;
+  /** '' quita la fecha */
+  due?: string;
+  /** '' quita el recordatorio */
+  remindAt?: string;
+}
+
+export interface ActivityItem {
+  id: number;
+  at: string;
+  kind: string;
+  summary: string;
+}
+
+export interface ConversationMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TaskFilter = 'today' | 'pending' | 'done' | 'all';
+
+export const MEMORY_KINDS: Array<{ id: string; label: string }> = [
+  { id: 'proyecto', label: 'Proyecto' },
+  { id: 'preferencia', label: 'Preferencia' },
+  { id: 'horario', label: 'Horario' },
+  { id: 'aplicacion', label: 'Aplicación' },
+  { id: 'persona', label: 'Persona' },
+  { id: 'dato', label: 'Dato importante' },
+  { id: 'otro', label: 'Otro' },
+];
+
+export const data = {
+  memoryList: (kind?: string, query?: string) => invoke<Memory[]>('memory_list', { kind: kind || null, query: query || null }),
+  memoryAdd: (kind: string, content: string) => invoke<Memory>('memory_add', { kind, content }),
+  memoryUpdate: (id: number, kind: string, content: string) => invoke<Memory>('memory_update', { id, kind, content }),
+  memoryDelete: (id: number) => invoke<boolean>('memory_delete', { id }),
+  memoryClear: () => invoke<number>('memory_clear'),
+  taskList: (filter: TaskFilter) => invoke<Task[]>('task_list', { filter }),
+  taskAdd: (input: TaskInput) => invoke<Task>('task_add', { input }),
+  taskUpdate: (id: number, input: TaskInput) => invoke<Task>('task_update', { id, input }),
+  taskSetDone: (id: number, done: boolean) => invoke<Task>('task_set_done', { id, done }),
+  taskDelete: (id: number) => invoke<boolean>('task_delete', { id }),
+  activityList: () => invoke<ActivityItem[]>('activity_list'),
+  conversationSave: (id: string, title: string, payload: string) => invoke<void>('conversation_save', { id, title, data: payload }),
+  conversationList: () => invoke<ConversationMeta[]>('conversation_list'),
+  conversationGet: (id: string) => invoke<string | null>('conversation_get', { id }),
+  conversationDelete: (id: string) => invoke<boolean>('conversation_delete', { id }),
+  conversationClear: () => invoke<number>('conversation_clear'),
+  conversationContext: () => invoke<string>('conversation_context'),
+};
+
+export const onDataChanged = (cb: (kind: string) => void): Promise<UnlistenFn> =>
+  listen<{ kind: string }>('data-changed', (e) => cb(e.payload.kind));
+
+export const onJobsChanged = (cb: (jobs: JobInfo[]) => void): Promise<UnlistenFn> =>
+  listen<JobInfo[]>('jobs-changed', (e) => cb(e.payload));
+
+export const onJobFinished = (cb: (job: JobInfo) => void): Promise<UnlistenFn> =>
+  listen<JobInfo>('job-finished', (e) => cb(e.payload));

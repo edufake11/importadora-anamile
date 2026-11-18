@@ -2,9 +2,14 @@
 
 mod ai;
 mod commands;
+mod data_cmds;
+mod db;
 mod fullscreen;
+mod jobs;
+mod reminders;
 mod secrets;
 mod settings;
+mod tools;
 mod windows;
 
 use commands::AppState;
@@ -118,11 +123,54 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(shortcuts)
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
-            app.manage(AppState::new(config_dir));
+            let db_path = app.path().app_data_dir()?.join("canela.db");
+            let db = match db::Db::open(&db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    // Sin base de datos Canela sigue funcionando, pero sin memoria persistente.
+                    eprintln!("[canela] {e}; usando memoria temporal");
+                    db::Db::open_in_memory().expect("SQLite en memoria")
+                }
+            };
+            let data_dir = app.path().app_data_dir()?;
+            let mut known_dirs = Vec::new();
+            for (alias, dir) in [
+                ("documentos", app.path().document_dir()),
+                ("descargas", app.path().download_dir()),
+                ("escritorio", app.path().desktop_dir()),
+            ] {
+                if let Ok(d) = dir {
+                    known_dirs.push((alias.to_string(), d));
+                }
+            }
+            let job_app = app.handle().clone();
+            let jobs = jobs::Jobs::new(move |e| match e {
+                jobs::JobEvent::Changed(list) => {
+                    let _ = job_app.emit("jobs-changed", list);
+                }
+                jobs::JobEvent::Finished(info) => {
+                    let _ = job_app.emit("job-finished", info);
+                }
+            });
+            app.manage(AppState::new(
+                config_dir,
+                data_dir,
+                std::sync::Arc::new(db),
+                jobs,
+                known_dirs,
+            ));
             build_tray(app.handle())?;
             spawn_fullscreen_watch(app.handle().clone());
+            let at_login = std::env::args().any(|a| a == "--autostart");
+            reminders::spawn(app.handle().clone(), at_login);
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
             for sc in [shortcut_toggle_pet(), shortcut_toggle_panel()] {
@@ -151,6 +199,27 @@ pub fn run() {
             commands::hide_panel,
             commands::toggle_pet,
             commands::quit_app,
+            commands::confirm_action,
+            commands::jobs_list,
+            commands::job_cancel,
+            commands::allowed_folders,
+            data_cmds::memory_list,
+            data_cmds::memory_add,
+            data_cmds::memory_update,
+            data_cmds::memory_delete,
+            data_cmds::memory_clear,
+            data_cmds::task_list,
+            data_cmds::task_add,
+            data_cmds::task_update,
+            data_cmds::task_set_done,
+            data_cmds::task_delete,
+            data_cmds::activity_list,
+            data_cmds::conversation_save,
+            data_cmds::conversation_list,
+            data_cmds::conversation_get,
+            data_cmds::conversation_delete,
+            data_cmds::conversation_clear,
+            data_cmds::conversation_context,
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar Canela AI");

@@ -1,27 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { bubbleSnippet, composeUserText, isTextFile, toWire, type UiMessage } from './chatModel';
+import { bubbleSnippet, composeUserText, conversationTitle, isTextFile, toWire, type UiMessage } from './chatModel';
 import { splitSegments } from './markdown';
 
 describe('historial del chat', () => {
-  it('envía usuario + respuestas completas y omite errores', () => {
+  it('envía usuario + respuestas completas con su transcripción y omite errores vacíos', () => {
+    const transcript = [{ role: 'assistant', content: [{ type: 'text', text: '¡guau!' }] }];
     const msgs: UiMessage[] = [
       { id: '1', role: 'user', text: 'hola', status: 'done' },
-      { id: '2', role: 'assistant', text: '¡guau!', status: 'done', anthropicContent: [{ type: 'text', text: '¡guau!' }] },
+      { id: '2', role: 'assistant', text: '¡guau!', status: 'done', provider: 'anthropic', transcript },
       { id: '3', role: 'user', text: '¿y?', status: 'done' },
       { id: '4', role: 'assistant', text: '', status: 'error', notice: 'x' },
       { id: '5', role: 'user', text: 'otra vez', status: 'done' },
     ];
     const wire = toWire(msgs);
     expect(wire.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'user']);
-    expect(wire[1].anthropicContent).toEqual([{ type: 'text', text: '¡guau!' }]);
+    expect(wire[1]).toEqual({ role: 'assistant', text: '¡guau!', provider: 'anthropic', transcript });
   });
 
-  it('las respuestas canceladas sólo conservan el texto', () => {
+  it('las respuestas canceladas o con error sólo conservan el texto', () => {
     const wire = toWire([
       { id: '1', role: 'user', text: 'hola', status: 'done' },
-      { id: '2', role: 'assistant', text: 'parcial', status: 'cancelled', anthropicContent: [{ type: 'thinking' }] },
+      { id: '2', role: 'assistant', text: 'parcial ', status: 'cancelled', transcript: [{}] },
+      { id: '3', role: 'assistant', text: 'análisis listo', status: 'done', job: true },
     ]);
-    expect(wire[1]).toEqual({ role: 'assistant', text: 'parcial', anthropicContent: undefined });
+    expect(wire[1]).toEqual({ role: 'assistant', text: 'parcial' });
+    expect(wire[2]).toEqual({ role: 'assistant', text: 'análisis listo' });
+  });
+
+  it('el título de la conversación es el primer mensaje', () => {
+    expect(conversationTitle([{ id: '1', role: 'user', text: 'Ayúdame con React\n\n[Archivo adjunto: a.ts]', status: 'done' }])).toBe('Ayúdame con React');
   });
 
   it('incrusta adjuntos con un delimitador seguro', () => {

@@ -4,10 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, onSettingsChanged, type KeyStatus, type Settings } from '../lib/ipc';
 import { Chat } from './Chat';
 import { SettingsView } from './SettingsView';
+import { TasksView } from './TasksView';
 import '../styles/theme.css';
 import './panel.css';
 
-type Tab = 'chat' | 'settings';
+type Tab = 'chat' | 'tasks' | 'settings';
 
 export function PanelApp() {
   const [tab, setTab] = useState<Tab>('chat');
@@ -36,6 +37,9 @@ export function PanelApp() {
           <button className={tab === 'chat' ? 'on' : ''} onClick={() => setTab('chat')}>
             Chat
           </button>
+          <button className={tab === 'tasks' ? 'on' : ''} onClick={() => setTab('tasks')}>
+            Tareas
+          </button>
           <button className={tab === 'settings' ? 'on' : ''} onClick={() => setTab('settings')}>
             Ajustes
           </button>
@@ -55,6 +59,7 @@ export function PanelApp() {
         <div style={{ display: tab === 'chat' ? 'contents' : 'none' }}>
           <Chat settings={settings} keys={keys} onOpenSettings={() => setTab('settings')} />
         </div>
+        {tab === 'tasks' && <TasksView />}
         {tab === 'settings' && <SettingsView settings={settings} keys={keys} onSaved={setSettings} onKeysChanged={refreshKeys} />}
       </main>
     </div>
