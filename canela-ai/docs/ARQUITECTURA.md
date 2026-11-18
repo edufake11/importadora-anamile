@@ -1,6 +1,6 @@
-# Arquitectura de CANELA AI (v0.2)
+# Arquitectura de CANELA AI (v0.3)
 
-Este documento describe cómo está construida Canela y cómo se incorporarán las funciones de la Fase 3. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**.
+Este documento describe cómo está construida Canela. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**. La v0.3 se verificó en Linux (Xvfb, micrófono virtual, IA simulada) y en el CI de Windows; falta la prueba en un equipo Windows 11 real.
 
 ## Visión general
 
@@ -11,7 +11,14 @@ Este documento describe cómo está construida Canela y cómo se incorporarán l
 │ fullscreen.rs   [Windows] detecta juegos/videos a pantalla completa → oculta a Canela          │
 │ commands.rs     comandos IPC: ajustes, claves, chat, confirmaciones, trabajos, carpetas        │
 │ data_cmds.rs    comandos de memoria, tareas, actividad y conversaciones                        │
-│ db.rs           SQLite local: memories, tasks, activity, conversations                         │
+│ db.rs           SQLite local (migraciones v1–v3): memories (+caducidad), tasks, activity,     │
+│                 conversations, doc_files + doc_chunks (FTS5), routines                         │
+│ voice/          vad.rs (fin de frase), audio.rs (cpal, remuestreo, reproducción),              │
+│                 mod.rs (grabar → WAV en memoria → transcribir; voz de OpenAI)                  │
+│ vision.rs       capturas (xcap), redimensionado, ventanas sensibles excluidas                  │
+│ vision_cmds.rs  ocultar mascota/panel, capturar, vista previa, recorte, adjuntos               │
+│ docs.rs         texto de PDF (pdf-extract), Word (.docx/zip), partes de 12 000 caracteres      │
+│ model_cmds.rs   capacidades del modelo (API de modelos de Anthropic), resúmenes               │
 │ secrets.rs      claves API en el Administrador de credenciales de Windows                      │
 │ reminders.rs    recordatorios (cada 30 s) + saludo al iniciar                                  │
 │ jobs.rs         cola de trabajos en segundo plano (2 a la vez, cancelables)                    │
@@ -21,6 +28,7 @@ Este documento describe cómo está construida Canela y cómo se incorporarán l
 │   anthropic.rs    Claude: Messages API, razonamiento adaptativo, fallback, herramientas        │
 │   openai.rs       ChatGPT: Chat Completions con funciones                                      │
 │   sse.rs          parser de streaming                                                          │
+│   pricing.rs      uso de tokens → costo aproximado; ocultar claves en mensajes de error        │
 │ tools/          herramientas                                                                   │
 │   mod.rs          definiciones, validación (prepare), permisos y ejecución (run)               │
 │   files.rs        archivos limitados a carpetas autorizadas                                    │
@@ -43,6 +51,8 @@ Este documento describe cómo está construida Canela y cómo se incorporarán l
 3. **El modelo no ejecuta nada directamente.** Pide una herramienta; Rust valida los parámetros, decide el nivel de permiso y sólo entonces actúa.
 4. **Nada se borra sin preguntarte.** No existe herramienta de borrado de archivos ni de comandos de consola.
 5. **Ligera.** Render sólo cuando cambia el fotograma, sondeos adaptativos, pausa cuando Canela está oculta, trabajos pesados fuera del hilo principal.
+6. **Lo que se lee no da órdenes.** Archivos, documentos, imágenes y capturas se devuelven al modelo envueltos en `<<<CONTENIDO EXTERNO …>>>`. A partir de ese momento el turno queda "contaminado": cualquier herramienta que no sea de sólo lectura pasa a pedir confirmación, con el aviso «⚠ Propuesto después de leer contenido externo» (`agent.rs`, prueba `injected_instructions_require_confirmation`).
+7. **Micrófono y pantalla bajo demanda.** Nada graba ni captura en segundo plano; el audio sólo vive en memoria y las capturas se descartan si no las envías.
 
 ## Herramientas y permisos
 
@@ -55,12 +65,20 @@ Este documento describe cómo está construida Canela y cómo se incorporarán l
 | `eliminar_tarea` | Borra una tarea | **Confirmación** |
 | `abrir_aplicacion` | Abre un acceso directo del menú Inicio o una app del sistema | Automático (configurable) |
 | `abrir_web` | Abre una URL http(s) o una búsqueda de Google | **Confirmación** (configurable) |
-| `listar_carpeta` / `buscar_archivos` / `archivos_recientes` / `leer_archivo` | Lectura dentro de carpetas autorizadas | Automático |
+| `listar_carpeta` / `buscar_archivos` / `archivos_recientes` | Nombres de archivos dentro de carpetas autorizadas | Automático |
+| `leer_archivo` | Envía el contenido de un archivo a la IA, como contenido externo | **Confirmación** (por defecto; desactivable en Ajustes) |
 | `abrir_ruta` | Abre carpeta o documento (nunca ejecutables) | Automático (configurable) |
 | `crear_carpeta` | Crea una carpeta | **Confirmación** |
 | `escribir_archivo` | Crea o modifica un archivo; muestra los cambios; guarda copia | **Confirmación** |
 | `organizar_carpeta` | Mueve archivos sueltos a subcarpetas por tipo (no borra) | **Confirmación** con plan |
 | `analizar_proyecto` | Trabajo en segundo plano: estructura + archivos clave → informe | Automático |
+| `leer_documento` | PDF/Word/texto por partes (extraído en tu equipo), como contenido externo | **Confirmación** (por defecto; desactivable en Ajustes) |
+| `ver_imagen` | Envía una imagen de las carpetas autorizadas al modelo | **Confirmación** |
+| `buscar_en_documentos` / `indexar_documentos` | Índice local FTS5 dentro de carpetas autorizadas | Automático |
+| `abrir_con` | Abre ruta con VS Code, Explorador o Bloc de notas | Automático (configurable) |
+| `ver_pantalla` | Captura pedida por el modelo; vista previa en la tarjeta de permiso | **Confirmación** siempre |
+| `ejecutar_plan` / `ejecutar_rutina` | Varios pasos con herramientas existentes (máx. 10) | **Confirmación** del plan completo + re-confirmación de pasos delicados |
+| `guardar_rutina` / `listar_rutinas` | Rutinas con nombre en SQLite | Automático |
 
 Carpetas autorizadas por defecto: Documentos, Descargas y Escritorio (editable en Ajustes › Permisos). Las rutas se resuelven a su forma canónica, así que `..` o accesos directos no permiten salir de ellas.
 
@@ -78,19 +96,42 @@ Para añadir una herramienta: define su esquema en `tools::definitions()`, su va
 - `jobs.rs`: cola con semáforo (2 trabajos simultáneos, 8 activos como máximo), estados `queued/running/done/failed/cancelled`, progreso y cancelación; eventos `jobs-changed` y `job-finished` hacia la interfaz.
 - El chat y las animaciones nunca esperan a un trabajo.
 
-## [DISEÑO] Voz — Fase 3 (no implementada)
+## Voz (v0.3)
 
-- **Pulsar para hablar** (botón y atajo `Ctrl+Alt+V`): el micrófono sólo se abre mientras está activo y se muestra un indicador visible en el panel y en Canela (animación `listen`).
-- **Reconocimiento:** API oficial de transcripción del proveedor elegido (OpenAI) o el reconocimiento de voz de Windows (`Windows.Media.SpeechRecognition`) para modo sin conexión. Captura de audio en Rust con `cpal`.
-- **Respuestas habladas:** voces de Windows (SAPI/`Windows.Media.SpeechSynthesis`) o la API de voz del proveedor; Canela usa la animación `talk` sincronizada.
-- **"Hola, Canela":** detector de palabra clave local y opcional (desactivado por defecto), que sólo escucha esa frase en el equipo y nunca envía audio hasta activarse.
-- Ajustes: micrófono a usar, voz, velocidad.
+- **Pulsar para hablar**: botón 🎙 o `Ctrl+Alt+V` (funciona con el panel cerrado). Requiere aceptar el consentimiento en Ajustes (`voice_consent`) y la clave de OpenAI.
+- **Captura**: `cpal` en un hilo propio → mono → remuestreo a 16 kHz → `vad.rs` (detector por energía con piso de ruido adaptativo: calibra 240 ms, fin de frase tras 900 ms de silencio, abandona a los 8 s sin voz, máximo 45 s). Evento `voice-state` con nivel para el indicador.
+- **Transcripción**: WAV construido en memoria → `POST /v1/audio/transcriptions` (modelo `gpt-transcribe`, idioma `es`). El audio nunca se escribe en disco.
+- **Respuesta hablada**: voces de Windows mediante `speechSynthesis` de WebView2 (gratis, sin red) o `POST /v1/audio/speech` (`gpt-4o-mini-tts`, PCM 24 kHz reproducido con `cpal`). El texto se va diciendo por frases mientras llega; vigilante contra bloqueos; interrumpible.
+- **Canela**: `listen` mientras graba, `curious` al transcribir, `think`, `talk` mientras habla, `sad` si falla.
+- **[DISEÑO] «Hola, Canela»**: detector de palabra clave local (p. ej. openWakeWord, ~40 MB). Desactivado en la interfaz; sólo se implementará con descarga autorizada mostrando el tamaño.
+- **[DISEÑO] Sin conexión**: whisper.cpp con CUDA (modelo *small* ≈ 0,5 GB o *large-v3-turbo* ≈ 1,6 GB) y Piper para voz. Con una RTX 5060 Ti 16 GB la transcripción local sería más rápida que la API, pero exige descargas grandes; no se descargan automáticamente.
 
-## [DISEÑO] Visión de pantalla — Fase 3 (no implementada)
+## Visión de pantalla (v0.3)
 
-- Captura **sólo bajo petición explícita** (botón "Mostrar mi pantalla" o atajo), con vista previa y opción de recortar antes de enviarla.
-- Captura en Rust (`xcap` o Windows Graphics Capture), imagen reducida a los límites del modelo y enviada como contenido de imagen a Claude o ChatGPT.
-- Nunca capturas automáticas ni periódicas.
+- `vision.rs`: `xcap` lista monitores y ventanas (filtra títulos de contraseñas/bancos, `is_sensitive`) y captura un monitor, una ventana o la ventana activa.
+- `vision_cmds.rs`: oculta mascota y panel ~280 ms, captura, restaura; la imagen queda en memoria con un id; la interfaz recibe una vista previa reducida. `screen_finalize` aplica el recorte y la reduce a ≤1568 px / ≤1,15 MP (JPEG 82); `screen_discard` la borra.
+- Envío como bloque `image` (Claude) o `image_url` (OpenAI). Si el modelo no acepta imágenes se avisa antes.
+- Nunca capturas automáticas ni periódicas; `ver_pantalla` (cuando lo pide el modelo) siempre muestra la imagen en la tarjeta de permiso.
+
+## Documentos (v0.3)
+
+- `docs.rs`: texto plano/código ≤5 MB; PDF y Word ≤40 MB. PDF con `pdf-extract` dentro de `catch_unwind`; si hay menos de 5 caracteres reales por página se considera escaneado y se avisa (no hay OCR).
+- Partes de 12 000 caracteres (`leer_documento` con `parte`); los adjuntos del chat se recortan a 60 000 caracteres.
+- Índice FTS5 (`unicode61 remove_diacritics 2`) con fragmentos y `bm25`; sólo se reindexa lo que cambió y se olvida lo que ya no existe. Se borra desde Ajustes.
+
+## Contexto y modelos (v0.3)
+
+- Conversaciones largas (> 350 000 caracteres) se compactan: el modelo resume lo antiguo y se conserva lo reciente.
+- Recuerdos temporales con `expires_at`; se purgan al arrancar.
+- `model_cmds.rs`: `GET /v1/models/{id}` de Anthropic para saber si admite imágenes, razonamiento adaptativo y esfuerzo, y sus límites de tokens; para OpenAI se comprueba que el modelo exista y se usa una tabla.
+- `pricing.rs`: costo aproximado por respuesta (entrada, salida, caché) mostrado en el chat. Los errores de la API se muestran en lenguaje sencillo y pasan por `redact_secrets` para que nunca aparezca una clave.
+
+## Automatizaciones (v0.3)
+
+- `ejecutar_plan {titulo, pasos[]}`: `validate_steps` comprueba que cada herramienta exista, que no sea otra automatización y que tenga sus parámetros obligatorios. Máximo 10 pasos.
+- El usuario ve el plan numerado y lo aprueba una vez. Los pasos de `NEEDS_OWN_CONFIRM` (borrar tarea/recuerdo, escribir archivo, organizar carpeta, capturas, imágenes) se vuelven a confirmar; las demás reglas de permiso (incluida la de contenido externo) siguen aplicando.
+- 120 s por paso, 10 min en total, parada al primer error o rechazo, botón ■ para cancelar; cada plan queda en `activity`.
+- Rutinas: tabla `routines(name, steps)`; `ejecutar_rutina` vuelve a validar los pasos y pasa por la misma aprobación.
 
 ## [DISEÑO] Integraciones — Fase 3 (no implementadas)
 
@@ -98,7 +139,7 @@ Para añadir una herramienta: define su esquema en `tools::definitions()`, su va
 |---|---|
 | GitHub | OAuth (Device Flow) + API REST oficial; herramientas de lectura (repos, issues, PRs) automáticas, escritura con confirmación |
 | Google Calendar / Gmail | OAuth 2.0 con PKCE y redirección a `127.0.0.1`; ámbitos mínimos (sólo lectura al principio); enviar correo siempre con confirmación |
-| OpenAI / Anthropic | Ya integrados (Fases 1–2) |
+| OpenAI / Anthropic | Ya integrados (chat, imágenes, transcripción y voz) |
 
 Los tokens se guardarían en el Administrador de credenciales igual que las claves API, y cada integración tendría su interruptor en Ajustes.
 
