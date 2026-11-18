@@ -55,6 +55,8 @@ pub struct Settings {
     pub auto_open_apps: bool,
     /// Abrir páginas web sin pedir confirmación.
     pub auto_open_web: bool,
+    /// Controlar música y volumen sin pedir confirmación.
+    pub auto_media_control: bool,
     /// Carpetas a las que Canela puede acceder. `None` = Documentos, Descargas y Escritorio.
     pub allowed_folders: Option<Vec<String>>,
     // ------------------------------------------------------------ voz
@@ -105,6 +107,7 @@ impl Default for Settings {
             save_conversations: false,
             auto_open_apps: true,
             auto_open_web: false,
+            auto_media_control: true,
             allowed_folders: None,
             voice_consent: false,
             voice_input_device: None,

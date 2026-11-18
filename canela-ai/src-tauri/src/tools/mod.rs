@@ -62,7 +62,8 @@ pub struct ToolOutput {
 
 /// Herramientas que sólo leen. Tras leer contenido externo, todas las demás
 /// pasan a pedir confirmación (defensa contra instrucciones escondidas).
-pub const READ_ONLY: [&str; 13] = [
+pub const READ_ONLY: [&str; 14] = [
+    "info_sistema",
     "listar_rutinas",
     "buscar_recuerdos",
     "buscar_conversaciones",
@@ -215,6 +216,13 @@ fn plan_permission(title: &str, steps: &[PlanStep]) -> Permission {
 }
 
 enum Action {
+    Media {
+        action: crate::media::MediaAction,
+        steps: u32,
+    },
+    SystemInfo {
+        procs: bool,
+    },
     SendImage(vision::ImageData),
     Plan {
         title: String,
@@ -405,6 +413,22 @@ pub fn definitions() -> Vec<ToolDef> {
                 }),
                 &["texto"],
             ),
+        },
+        ToolDef {
+            name: "controlar_multimedia",
+            description: "Controla la música o el video que suena en Windows (Spotify, YouTube, etc.) con las teclas multimedia: reproducir/pausar, siguiente, anterior, detener, subir o bajar el volumen (cada paso ≈ 2 %, máx. 25) o silenciar.",
+            schema: obj(
+                json!({
+                    "accion": { "type": "string", "enum": crate::media::MediaAction::NAMES },
+                    "pasos": { "type": "integer", "description": "Sólo para volumen: pulsaciones (1–25). 5 ≈ 10 %." }
+                }),
+                &["accion"],
+            ),
+        },
+        ToolDef {
+            name: "info_sistema",
+            description: "Información del equipo: Windows, procesador y su uso, memoria RAM, espacio en discos, batería, tiempo encendido y (opcional) los programas que más memoria usan. Útil para «¿por qué va lenta mi PC?» o «¿cuánto espacio me queda?».",
+            schema: obj(json!({ "procesos": { "type": "boolean", "description": "Incluir los programas que más consumen" } }), &[]),
         },
         ToolDef {
             name: "archivos_recientes",
@@ -823,6 +847,27 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                 Permission::Auto,
                 Action::Search { query, root, only_dirs },
             )
+        }
+        "controlar_multimedia" => {
+            let name = req(input, "accion")?;
+            let action = crate::media::MediaAction::parse(&name).ok_or_else(|| {
+                format!(
+                    "Acción multimedia desconocida: «{name}». Usa: {}.",
+                    crate::media::MediaAction::NAMES.join(", ")
+                )
+            })?;
+            let steps = crate::media::clamp_steps(action, input.get("pasos").and_then(Value::as_i64));
+            let label = action.label(steps);
+            let perm = if ctx.settings.auto_media_control {
+                Permission::Auto
+            } else {
+                confirm(label.clone(), "Canela pulsará la tecla multimedia correspondiente.", None)
+            };
+            p(label, perm, Action::Media { action, steps })
+        }
+        "info_sistema" => {
+            let procs = input.get("procesos").and_then(Value::as_bool).unwrap_or(false);
+            p("Ver el estado del equipo".into(), Permission::Auto, Action::SystemInfo { procs })
         }
         "archivos_recientes" => {
             let limit = input.get("limite").and_then(Value::as_u64).unwrap_or(15).clamp(1, 40) as usize;
@@ -1292,6 +1337,20 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
                 .map(|(p, d)| format!("{}{}", if *d { "[carpeta] " } else { "" }, display(p)))
                 .collect::<Vec<_>>()
                 .join("\n"))
+        }
+        Action::Media { action, steps } => {
+            let keys = crate::media::key_sequence(action, steps);
+            tokio::task::spawn_blocking(move || crate::media::press(&keys))
+                .await
+                .map_err(|e| e.to_string())??;
+            db.log("multimedia", &action.label(steps));
+            Ok(format!("Hecho: {}.", action.label(steps).to_lowercase()))
+        }
+        Action::SystemInfo { procs } => {
+            let snap = tokio::task::spawn_blocking(move || crate::system::snapshot(procs))
+                .await
+                .map_err(|e| e.to_string())??;
+            Ok(crate::system::report(&snap))
         }
         Action::Recent { limit } => {
             let roots = ctx.scope.roots.clone();
@@ -1766,6 +1825,37 @@ mod tests {
         assert!(!is_auto(&w));
         assert!(prepare(&c, "abrir_web", &json!({"url":"file:///C:/"})).is_err());
         assert!(prepare(&c, "herramienta_inventada", &json!({})).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_controls_use_fixed_actions_and_respect_setting() {
+        let root = tmp("media");
+        let mut c = ctx(&root);
+        let m = prepare(&c, "controlar_multimedia", &json!({"accion":"subir_volumen","pasos":100})).unwrap();
+        assert!(is_auto(&m));
+        assert_eq!(m.label, "Subir el volumen (~50 %)");
+        assert!(prepare(&c, "controlar_multimedia", &json!({"accion":"ctrl+alt+supr"})).is_err());
+        assert!(prepare(&c, "controlar_multimedia", &json!({})).is_err());
+        c.settings.auto_media_control = false;
+        assert!(!is_auto(
+            &prepare(&c, "controlar_multimedia", &json!({"accion":"siguiente"})).unwrap()
+        ));
+        // Cambia algo en el equipo: tras leer contenido externo pediría permiso.
+        assert!(!is_read_only("controlar_multimedia"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn system_info_is_read_only_and_reports() {
+        let root = tmp("sysinfo");
+        let c = ctx(&root);
+        assert!(is_read_only("info_sistema"));
+        let p = prepare(&c, "info_sistema", &json!({"procesos": true})).unwrap();
+        assert!(is_auto(&p));
+        let out = run(&c, p).await.unwrap();
+        assert!(out.text.contains("Memoria RAM") && out.text.contains("Procesador"), "{}", out.text);
+        assert!(!out.untrusted);
         let _ = fs::remove_dir_all(&root);
     }
 }

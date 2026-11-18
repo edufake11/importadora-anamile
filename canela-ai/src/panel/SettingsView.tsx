@@ -318,6 +318,9 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
         <Toggle checked={form.autoOpenWeb} onChange={(v) => set('autoOpenWeb', v)}>
           Abrir páginas web sin preguntar
         </Toggle>
+        <Toggle checked={form.autoMediaControl} onChange={(v) => set('autoMediaControl', v)}>
+          Controlar música y volumen sin preguntar
+        </Toggle>
         <Toggle checked={form.confirmFileSharing} onChange={(v) => set('confirmFileSharing', v)}>
           Preguntarme antes de enviar el contenido de mis archivos a la IA
         </Toggle>

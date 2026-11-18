@@ -17,6 +17,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │                 mod.rs (grabar → WAV en memoria → transcribir; voz de OpenAI)                  │
 │ vision.rs       capturas (xcap), redimensionado, ventanas sensibles excluidas                  │
 │ vision_cmds.rs  ocultar mascota/panel, capturar, vista previa, recorte, adjuntos               │
+│ media.rs        teclas multimedia (lista fija) · system.rs  estado del equipo (sysinfo)       │
 │ docs.rs         texto de PDF (pdf-extract), Word (.docx/zip), partes de 12 000 caracteres      │
 │ model_cmds.rs   capacidades del modelo (API de modelos de Anthropic), resúmenes               │
 │ secrets.rs      claves API en el Administrador de credenciales de Windows                      │
@@ -79,6 +80,8 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 | `ver_pantalla` | Captura pedida por el modelo; vista previa en la tarjeta de permiso | **Confirmación** siempre |
 | `ejecutar_plan` / `ejecutar_rutina` | Varios pasos con herramientas existentes (máx. 10) | **Confirmación** del plan completo + re-confirmación de pasos delicados |
 | `guardar_rutina` / `listar_rutinas` | Rutinas con nombre en SQLite | Automático |
+| `controlar_multimedia` | Teclas multimedia fijas (0xAD–0xB3) con `SendInput`; volumen 1–25 pasos | Automático (configurable en Ajustes) |
+| `info_sistema` | `sysinfo`: SO, CPU, RAM, discos (sólo letra de unidad), batería, programas por memoria; sin usuario ni nombre de equipo | Automático (sólo lectura) |
 
 Carpetas autorizadas por defecto: Documentos, Descargas y Escritorio (editable en Ajustes › Permisos). Las rutas se resuelven a su forma canónica, así que `..` o accesos directos no permiten salir de ellas.
 

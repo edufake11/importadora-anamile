@@ -20,6 +20,7 @@ export interface Settings {
   saveConversations: boolean;
   autoOpenApps: boolean;
   autoOpenWeb: boolean;
+  autoMediaControl: boolean;
   allowedFolders: string[] | null;
   voiceConsent: boolean;
   voiceInputDevice: string | null;
