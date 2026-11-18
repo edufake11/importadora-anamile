@@ -246,7 +246,32 @@ export const data = {
   conversationContext: () => invoke<string>('conversation_context'),
   docIndexStats: () => invoke<{ files: number; updatedAt: string | null }>('doc_index_stats'),
   docIndexClear: () => invoke<void>('doc_index_clear'),
+  routineList: () => invoke<Routine[]>('routine_list'),
+  routineDelete: (name: string) => invoke<void>('routine_delete', { name }),
 };
+
+export interface Routine {
+  name: string;
+  /** JSON: [{herramienta, parametros, descripcion}] */
+  steps: string;
+  updatedAt: string;
+}
+
+export interface RoutineStep {
+  herramienta: string;
+  parametros?: Record<string, unknown>;
+  descripcion?: string;
+}
+
+/** Lee los pasos guardados sin fallar si el JSON está dañado. */
+export function routineSteps(r: Routine): RoutineStep[] {
+  try {
+    const v: unknown = JSON.parse(r.steps);
+    return Array.isArray(v) ? (v as RoutineStep[]).filter((x) => x && typeof x.herramienta === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 export const onDataChanged = (cb: (kind: string) => void): Promise<UnlistenFn> =>
   listen<{ kind: string }>('data-changed', (e) => cb(e.payload.kind));

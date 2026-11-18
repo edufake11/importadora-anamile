@@ -382,3 +382,96 @@ async fn injected_instructions_require_confirmation() {
     assert!(bodies.lock().unwrap()[1].contains("CONTENIDO EXTERNO"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Automatización: el plan se aprueba una vez, los pasos normales se
+/// ejecutan solos y el paso delicado (borrar) vuelve a pedir permiso.
+#[tokio::test]
+async fn plan_runs_steps_and_rechecks_destructive_ones() {
+    let _guard = ENV_LOCK.lock().await;
+    let plan = serde_json::json!({
+        "titulo": "Organizar mi día",
+        "pasos": [
+            {"herramienta": "crear_tarea", "parametros": {"titulo": "Estudiar Rust"}, "descripcion": "Crear la tarea"},
+            {"herramienta": "listar_tareas", "parametros": {"filtro": "pendientes"}, "descripcion": "Ver pendientes"},
+            {"herramienta": "eliminar_tarea", "parametros": {"id": 1}, "descripcion": "Borrar la tarea"}
+        ]
+    });
+    let args = serde_json::to_string(&plan.to_string()).unwrap();
+    let first = format!(
+        "data: {{\"model\":\"gpt-5\",\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"p1\",\"function\":{{\"name\":\"ejecutar_plan\",\"arguments\":{args}}}}}]}}}}]}}\n\ndata: {{\"model\":\"gpt-5\",\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
+    );
+    let second = "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"Hecho.\"}}]}\n\ndata: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string();
+    let (url, bodies) = serve(vec![("200 OK", first), ("200 OK", second)]).await;
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let root = std::env::temp_dir();
+    let tools = ToolCtx {
+        db: db.clone(),
+        settings: Settings {
+            provider: ProviderId::Openai,
+            ..Settings::default()
+        },
+        scope: Scope::new(vec![root.clone()], vec![]),
+        backups_dir: root.join("canela-bak-plan"),
+        jobs: None,
+        llm: None,
+        notify: Arc::new(|_| {}),
+        screen: None,
+    };
+    std::env::set_var("CANELA_TEST_OPENAI_URL", &url);
+    let confirms = Arc::new(Confirmations::default());
+    let env = AgentEnv {
+        http: reqwest::Client::new(),
+        settings: Settings {
+            provider: ProviderId::Openai,
+            ..Settings::default()
+        },
+        api_key: "sk-test".into(),
+        system: "s".into(),
+        history: vec![ChatMessage {
+            role: Role::User,
+            text: "organiza mi día".into(),
+            provider: None,
+            transcript: None,
+            images: vec![],
+        }],
+        tools: Some(Arc::new(tools)),
+        confirms: confirms.clone(),
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let c2 = confirms.clone();
+    agent::run(
+        env,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, title, .. } = &e {
+                // Aprueba el plan, rechaza el paso de borrar.
+                let ok = title.starts_with("Plan:");
+                let (c, id) = (c2.clone(), confirm_id.clone());
+                tokio::spawn(async move {
+                    c.resolve(&id, ok);
+                });
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    )
+    .await;
+    std::env::remove_var("CANELA_TEST_OPENAI_URL");
+    let evs = events.lock().unwrap().clone();
+    let confirms_seen: Vec<String> = evs
+        .iter()
+        .filter_map(|e| {
+            if let StreamEvent::ConfirmRequest { title, .. } = e {
+                Some(title.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(confirms_seen.len(), 2, "{confirms_seen:?}");
+    assert!(confirms_seen[1].starts_with("Paso 3"));
+    // La tarea se creó y NO se borró.
+    assert_eq!(db.task_list(crate::db::TaskFilter::Pending).unwrap()[0].title, "Estudiar Rust");
+    let report = bodies.lock().unwrap()[1].clone();
+    assert!(report.contains("2 de 3 pasos completados"), "{report}");
+    assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
+}

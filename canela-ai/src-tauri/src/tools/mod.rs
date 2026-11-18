@@ -62,7 +62,8 @@ pub struct ToolOutput {
 
 /// Herramientas que sólo leen. Tras leer contenido externo, todas las demás
 /// pasan a pedir confirmación (defensa contra instrucciones escondidas).
-pub const READ_ONLY: [&str; 12] = [
+pub const READ_ONLY: [&str; 13] = [
+    "listar_rutinas",
     "buscar_recuerdos",
     "buscar_conversaciones",
     "listar_tareas",
@@ -115,8 +116,115 @@ pub struct Prepared {
     action: Action,
 }
 
+impl Prepared {
+    /// Si es un plan (automatización), lo entrega para que el agente ejecute
+    /// sus pasos uno a uno.
+    pub fn take_plan(&mut self) -> Option<(String, Vec<PlanStep>)> {
+        match std::mem::replace(&mut self.action, Action::ListRoutines) {
+            Action::Plan { title, steps } => Some((title, steps)),
+            other => {
+                self.action = other;
+                None
+            }
+        }
+    }
+}
+
+/// Un paso de una automatización.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct PlanStep {
+    pub herramienta: String,
+    #[serde(default)]
+    pub parametros: Value,
+    #[serde(default)]
+    pub descripcion: String,
+}
+
+pub const MAX_PLAN_STEPS: usize = 10;
+/// Herramientas que no pueden formar parte de un plan.
+const NOT_IN_PLAN: [&str; 4] = ["ejecutar_plan", "ejecutar_rutina", "guardar_rutina", "listar_rutinas"];
+/// Pasos que, aunque el plan esté aprobado, vuelven a pedir confirmación
+/// (borran, modifican archivos o envían imágenes).
+pub const NEEDS_OWN_CONFIRM: [&str; 6] = [
+    "eliminar_tarea",
+    "olvidar",
+    "organizar_carpeta",
+    "escribir_archivo",
+    "ver_pantalla",
+    "ver_imagen",
+];
+
+/// Valida la forma de un plan: herramientas existentes y parámetros obligatorios.
+pub fn validate_steps(steps: &Value) -> Result<Vec<PlanStep>, String> {
+    let list: Vec<PlanStep> =
+        serde_json::from_value(steps.clone()).map_err(|_| "El plan no tiene el formato esperado (lista de pasos).".to_string())?;
+    if list.is_empty() {
+        return Err("El plan no tiene pasos.".into());
+    }
+    if list.len() > MAX_PLAN_STEPS {
+        return Err(format!("Un plan puede tener como máximo {MAX_PLAN_STEPS} pasos."));
+    }
+    let defs = definitions();
+    for (i, st) in list.iter().enumerate() {
+        let n = i + 1;
+        if NOT_IN_PLAN.contains(&st.herramienta.as_str()) {
+            return Err(format!("Paso {n}: «{}» no puede usarse dentro de un plan.", st.herramienta));
+        }
+        let def = defs
+            .iter()
+            .find(|d| d.name == st.herramienta)
+            .ok_or_else(|| format!("Paso {n}: la herramienta «{}» no existe.", st.herramienta))?;
+        if !(st.parametros.is_object() || st.parametros.is_null()) {
+            return Err(format!("Paso {n}: los parámetros deben ser un objeto."));
+        }
+        for r in def.schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if st.parametros.get(r).is_none_or(Value::is_null) {
+                return Err(format!("Paso {n} ({}): falta «{r}».", st.herramienta));
+            }
+        }
+    }
+    Ok(list)
+}
+
+fn plan_permission(title: &str, steps: &[PlanStep]) -> Permission {
+    let lines: Vec<String> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, st)| {
+            let what = if st.descripcion.trim().is_empty() {
+                st.herramienta.replace('_', " ")
+            } else {
+                st.descripcion.trim().to_string()
+            };
+            let note = if NEEDS_OWN_CONFIRM.contains(&st.herramienta.as_str()) {
+                "  (te pediré confirmación aparte)"
+            } else {
+                ""
+            };
+            format!("{}. {what}{note}", i + 1)
+        })
+        .collect();
+    confirm(
+        format!("Plan: {title}"),
+        format!(
+            "Canela hará estos pasos en orden. Puedes detenerlo con Detener.\n{}",
+            lines.join("\n")
+        ),
+        None,
+    )
+}
+
 enum Action {
     SendImage(vision::ImageData),
+    Plan {
+        title: String,
+        steps: Vec<PlanStep>,
+    },
+    SaveRoutine {
+        name: String,
+        steps: String,
+    },
+    ListRoutines,
     Remember {
         kind: String,
         content: String,
@@ -368,6 +476,43 @@ pub fn definitions() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "ejecutar_plan",
+            description: "Automatización: ejecuta varios pasos seguidos con otras herramientas (máx. 10), p. ej. «prepara mi entorno»: abrir VS Code con el proyecto, mostrar tareas y abrir la documentación. El usuario ve el plan completo y lo aprueba una vez. Usa sólo herramientas existentes con sus parámetros.",
+            schema: obj(
+                json!({
+                    "titulo": { "type": "string" },
+                    "pasos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "herramienta": { "type": "string" },
+                                "parametros": { "type": "object" },
+                                "descripcion": { "type": "string", "description": "Qué hace este paso, en palabras sencillas" }
+                            },
+                            "required": ["herramienta", "parametros", "descripcion"]
+                        }
+                    }
+                }),
+                &["titulo", "pasos"],
+            ),
+        },
+        ToolDef {
+            name: "guardar_rutina",
+            description: "Guarda una automatización con nombre para repetirla después (mismo formato de pasos que ejecutar_plan).",
+            schema: obj(json!({ "nombre": { "type": "string" }, "pasos": { "type": "array", "items": { "type": "object" } } }), &["nombre", "pasos"]),
+        },
+        ToolDef {
+            name: "ejecutar_rutina",
+            description: "Ejecuta una rutina guardada por su nombre (el usuario aprueba el plan antes).",
+            schema: obj(json!({ "nombre": { "type": "string" } }), &["nombre"]),
+        },
+        ToolDef {
+            name: "listar_rutinas",
+            description: "Lista las rutinas guardadas.",
+            schema: obj(json!({}), &[]),
+        },
+        ToolDef {
             name: "analizar_proyecto",
             description: "Analiza la estructura y archivos clave de un proyecto de software en SEGUNDO PLANO y luego entrega un informe en el chat. El usuario puede seguir conversando mientras tanto.",
             schema: obj(
@@ -463,8 +608,34 @@ fn fmt_time(t: std::time::SystemTime) -> String {
 
 /// Como `prepare`, pero puede hacer trabajo asíncrono previo (capturas).
 pub async fn prepare_async(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, String> {
-    if name != "ver_pantalla" {
-        return prepare(ctx, name, input);
+    match name {
+        "ejecutar_plan" => {
+            let title = req(input, "titulo")?;
+            let steps = validate_steps(input.get("pasos").unwrap_or(&Value::Null))?;
+            return Ok(Prepared {
+                label: format!("Plan: {title}"),
+                permission: plan_permission(&title, &steps),
+                action: Action::Plan { title, steps },
+            });
+        }
+        "ejecutar_rutina" => {
+            let name = req(input, "nombre")?;
+            let r = ctx.db.routine_get(&name)?.ok_or_else(|| {
+                let names: Vec<String> = ctx.db.routine_list().unwrap_or_default().into_iter().map(|r| r.name).collect();
+                format!(
+                    "No existe la rutina «{name}». Rutinas guardadas: {}",
+                    if names.is_empty() { "ninguna".into() } else { names.join(", ") }
+                )
+            })?;
+            let steps = validate_steps(&serde_json::from_str(&r.steps).map_err(|_| "La rutina guardada está dañada.".to_string())?)?;
+            return Ok(Prepared {
+                label: format!("Rutina: {}", r.name),
+                permission: plan_permission(&r.name, &steps),
+                action: Action::Plan { title: r.name, steps },
+            });
+        }
+        "ver_pantalla" => {}
+        _ => return prepare(ctx, name, input),
     }
     let screen = ctx.screen.clone().ok_or("La captura de pantalla no está disponible ahora.")?;
     if !ctx.settings.vision_enabled {
@@ -850,6 +1021,17 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                 Action::Organize { dir, plan },
             )
         }
+        "guardar_rutina" => {
+            let name = req(input, "nombre")?;
+            let steps = validate_steps(input.get("pasos").unwrap_or(&Value::Null))?;
+            let json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+            p(
+                format!("Guardar la rutina «{name}» ({} pasos)", steps.len()),
+                Permission::Auto,
+                Action::SaveRoutine { name, steps: json },
+            )
+        }
+        "listar_rutinas" => p("Ver tus rutinas".into(), Permission::Auto, Action::ListRoutines),
         "analizar_proyecto" => {
             let dir = ctx.scope.existing(&req(input, "ruta")?)?;
             if !dir.is_dir() {
@@ -900,6 +1082,27 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
     let db = &ctx.db;
     match prepared.action {
         Action::SendImage(_) | Action::ViewImage(_) => Ok(String::new()),
+        Action::Plan { .. } => Err("Los planes los ejecuta el asistente paso a paso.".into()),
+        Action::SaveRoutine { name, steps } => {
+            db.routine_save(&name, &steps)?;
+            db.log("automatización", &format!("Rutina guardada: {name}"));
+            (ctx.notify)("routines");
+            Ok(format!("Rutina «{name}» guardada. Para usarla: «ejecuta la rutina {name}»."))
+        }
+        Action::ListRoutines => {
+            let list = db.routine_list()?;
+            if list.is_empty() {
+                return Ok("No hay rutinas guardadas.".into());
+            }
+            Ok(list
+                .iter()
+                .map(|r| {
+                    let n = serde_json::from_str::<Vec<PlanStep>>(&r.steps).map(|v| v.len()).unwrap_or(0);
+                    format!("- {} ({n} pasos)", r.name)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
         Action::ReadDoc { path, part } => {
             let p2 = path.clone();
             let doc = tokio::task::spawn_blocking(move || crate::docs::extract(&p2))
@@ -1365,6 +1568,72 @@ mod tests {
         assert!(is_auto(
             &prepare(&c2, "leer_documento", &json!({"ruta":"Descargas/informe.docx"})).unwrap()
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn plans_are_validated_and_listed_for_approval() {
+        let root = tmp("plans");
+        let c = ctx(&root);
+        let good = json!({"titulo":"Entorno","pasos":[
+            {"herramienta":"listar_tareas","parametros":{"filtro":"hoy"},"descripcion":"Ver tareas de hoy"},
+            {"herramienta":"abrir_web","parametros":{"url":"https://react.dev"},"descripcion":"Abrir la documentación de React"},
+            {"herramienta":"eliminar_tarea","parametros":{"id":1},"descripcion":"Borrar tarea vieja"}
+        ]});
+        let mut p = prepare_async(&c, "ejecutar_plan", &good).await.unwrap();
+        match &p.permission {
+            Permission::Confirm { title, details, .. } => {
+                assert_eq!(title, "Plan: Entorno");
+                assert!(details.contains("1. Ver tareas de hoy"));
+                assert!(details.contains("3. Borrar tarea vieja  (te pediré confirmación aparte)"));
+            }
+            _ => panic!("un plan siempre se aprueba"),
+        }
+        assert_eq!(p.take_plan().unwrap().1.len(), 3);
+        // Herramienta inventada, parámetro faltante, demasiados pasos o plan anidado: rechazado.
+        assert!(prepare_async(
+            &c,
+            "ejecutar_plan",
+            &json!({"titulo":"x","pasos":[{"herramienta":"ejecutar_comando","parametros":{}}]})
+        )
+        .await
+        .is_err());
+        assert!(prepare_async(
+            &c,
+            "ejecutar_plan",
+            &json!({"titulo":"x","pasos":[{"herramienta":"abrir_aplicacion","parametros":{}}]})
+        )
+        .await
+        .is_err());
+        let many: Vec<Value> = (0..11).map(|_| json!({"herramienta":"listar_tareas","parametros":{}})).collect();
+        assert!(prepare_async(&c, "ejecutar_plan", &json!({"titulo":"x","pasos":many}))
+            .await
+            .is_err());
+        assert!(prepare_async(
+            &c,
+            "ejecutar_plan",
+            &json!({"titulo":"x","pasos":[{"herramienta":"ejecutar_plan","parametros":{"titulo":"y","pasos":[]}}]})
+        )
+        .await
+        .is_err());
+        // Rutinas
+        run(
+            &c,
+            prepare(&c, "guardar_rutina", &json!({"nombre":"Mañana","pasos":good["pasos"]})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(run(&c, prepare(&c, "listar_rutinas", &json!({})).unwrap())
+            .await
+            .unwrap()
+            .text
+            .contains("Mañana (3 pasos)"));
+        let mut r = prepare_async(&c, "ejecutar_rutina", &json!({"nombre":"mañana"})).await.unwrap();
+        assert!(r.take_plan().is_some());
+        match prepare_async(&c, "ejecutar_rutina", &json!({"nombre":"no existe"})).await {
+            Err(e) => assert!(e.contains("Mañana"), "{e}"),
+            Ok(_) => panic!("la rutina no existe"),
+        }
         let _ = fs::remove_dir_all(&root);
     }
 

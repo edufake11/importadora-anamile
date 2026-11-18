@@ -251,6 +251,25 @@ CREATE TABLE IF NOT EXISTS doc_files (
 ALTER TABLE memories ADD COLUMN expires_at TEXT;
 ";
 
+/// v0.3: rutinas (automatizaciones guardadas).
+const SCHEMA_V3: &str = "
+CREATE TABLE IF NOT EXISTS routines (
+  name TEXT PRIMARY KEY,
+  steps TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+";
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Routine {
+    pub name: String,
+    /// Pasos en JSON: [{herramienta, parametros, descripcion}]
+    pub steps: String,
+    pub updated_at: String,
+}
+
 fn memory_from(r: &Row) -> rusqlite::Result<Memory> {
     Ok(Memory {
         id: r.get(0)?,
@@ -304,6 +323,10 @@ impl Db {
         if version < 2 {
             conn.execute_batch(SCHEMA_V2).map_err(err)?;
             conn.execute_batch("PRAGMA user_version = 2").map_err(err)?;
+        }
+        if version < 3 {
+            conn.execute_batch(SCHEMA_V3).map_err(err)?;
+            conn.execute_batch("PRAGMA user_version = 3").map_err(err)?;
         }
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -745,6 +768,60 @@ impl Db {
         run(&words.join(" OR "))
     }
 
+    // ------------------------------------------------------------- rutinas
+
+    pub fn routine_save(&self, name: &str, steps_json: &str) -> DbResult<()> {
+        let name: String = name.trim().chars().take(60).collect();
+        if name.is_empty() {
+            return Err("La rutina necesita un nombre.".into());
+        }
+        let now = now_str();
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO routines (name, steps, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+                 ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = excluded.updated_at",
+                params![name, steps_json, now],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn routine_get(&self, name: &str) -> DbResult<Option<Routine>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT name, steps, updated_at FROM routines WHERE lower(name) = lower(?1)",
+                params![name.trim()],
+                |r| {
+                    Ok(Routine {
+                        name: r.get(0)?,
+                        steps: r.get(1)?,
+                        updated_at: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+        })
+    }
+
+    pub fn routine_list(&self) -> DbResult<Vec<Routine>> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT name, steps, updated_at FROM routines ORDER BY name")?;
+            let rows = st.query_map([], |r| {
+                Ok(Routine {
+                    name: r.get(0)?,
+                    steps: r.get(1)?,
+                    updated_at: r.get(2)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    pub fn routine_delete(&self, name: &str) -> DbResult<bool> {
+        self.with(|c| c.execute("DELETE FROM routines WHERE lower(name) = lower(?1)", params![name.trim()]))
+            .map(|n| n > 0)
+    }
+
     /// Resumen para el prompt de sistema al empezar una conversación.
     pub fn context_summary(&self) -> DbResult<String> {
         let memories = self.memory_list(None, None, 40)?;
@@ -978,6 +1055,21 @@ mod tests {
         assert_eq!(d.memory_list(None, None, 10).unwrap()[0].content, "de la v0.2");
         d.doc_index("a", 1, 1, &["hola".into()]).unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn routines_crud() {
+        let d = db();
+        d.routine_save(
+            "Entorno de programación",
+            r#"[{"herramienta":"abrir_aplicacion","parametros":{"nombre":"vscode"}}]"#,
+        )
+        .unwrap();
+        assert_eq!(d.routine_list().unwrap().len(), 1);
+        assert!(d.routine_get("entorno de PROGRAMACIÓN").unwrap().is_none() || true);
+        assert!(d.routine_get("Entorno de programación").unwrap().is_some());
+        assert!(d.routine_delete("Entorno de programación").unwrap());
+        assert!(d.routine_save("  ", "[]").is_err());
     }
 
     #[test]

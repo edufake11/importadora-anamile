@@ -233,6 +233,8 @@ pub fn run() {
             data_cmds::conversation_context,
             data_cmds::doc_index_stats,
             data_cmds::doc_index_clear,
+            data_cmds::routine_list,
+            data_cmds::routine_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar Canela AI");

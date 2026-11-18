@@ -2,6 +2,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
 import { api, data, type KeyStatus, type ModelInfo, type ProviderId, type Settings } from '../lib/ipc';
 import { MemoryManager } from './MemoryManager';
+import { RoutineManager } from './RoutineManager';
 import { VoiceSettings } from './VoiceSettings';
 
 interface Props {
@@ -281,6 +282,18 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
             Borrar índice de documentos
           </button>
         )}
+      </section>
+
+      <section>
+        <h3>Automatizaciones</h3>
+        <p className="muted">
+          Canela puede encadenar varias acciones (un «plan»). Siempre te muestra la lista de pasos antes de empezar, y las acciones delicadas
+          (borrar, mover archivos, capturas) te las vuelve a preguntar. Puedes pararlo con el botón ■.
+        </p>
+        <details className="advanced">
+          <summary>Rutinas guardadas</summary>
+          <RoutineManager />
+        </details>
       </section>
 
       <section>

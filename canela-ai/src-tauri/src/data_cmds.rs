@@ -2,7 +2,7 @@
 //! Cada cambio emite `data-changed` para que las ventanas se actualicen.
 
 use crate::commands::AppState;
-use crate::db::{Activity, ConversationMeta, Memory, Task, TaskFilter, TaskInput};
+use crate::db::{Activity, ConversationMeta, Memory, Routine, Task, TaskFilter, TaskInput};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -193,5 +193,21 @@ pub fn doc_index_stats(state: State<'_, AppState>) -> Result<DocIndexStats, Stri
 pub fn doc_index_clear(state: State<'_, AppState>) -> Result<(), String> {
     state.db.doc_clear()?;
     state.db.log("privacidad", "Borraste el índice de documentos");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- rutinas
+
+#[tauri::command]
+pub fn routine_list(state: State<'_, AppState>) -> Result<Vec<Routine>, String> {
+    state.db.routine_list()
+}
+
+#[tauri::command]
+pub fn routine_delete(app: AppHandle, state: State<'_, AppState>, name: String) -> Result<(), String> {
+    if state.db.routine_delete(&name)? {
+        state.db.log("automatización", &format!("Borraste la rutina «{}»", name.trim()));
+    }
+    notify(&app, "routines");
     Ok(())
 }
