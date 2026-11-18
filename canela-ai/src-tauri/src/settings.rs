@@ -80,6 +80,8 @@ pub struct Settings {
     pub speak_replies: String,
     /// "Hola, Canela" (preparado; desactivado y aún no disponible).
     pub wake_word: bool,
+    /// Permite que Canela pida ver la pantalla (siempre con tu permiso).
+    pub vision_enabled: bool,
 }
 
 impl Default for Settings {
@@ -114,6 +116,7 @@ impl Default for Settings {
             tts_volume: 1.0,
             speak_replies: "voice".into(),
             wake_word: false,
+            vision_enabled: true,
         }
     }
 }
@@ -190,14 +193,12 @@ pub fn load(config_dir: &Path) -> Settings {
 }
 
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), String> {
-    fs::create_dir_all(config_dir)
-        .map_err(|e| format!("No se pudo crear la carpeta de configuración: {e}"))?;
+    fs::create_dir_all(config_dir).map_err(|e| format!("No se pudo crear la carpeta de configuración: {e}"))?;
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     // Escritura atómica: archivo temporal + rename.
     let tmp = config_dir.join("settings.json.tmp");
     fs::write(&tmp, json).map_err(|e| format!("No se pudo guardar la configuración: {e}"))?;
-    fs::rename(&tmp, settings_path(config_dir))
-        .map_err(|e| format!("No se pudo guardar la configuración: {e}"))
+    fs::rename(&tmp, settings_path(config_dir)).map_err(|e| format!("No se pudo guardar la configuración: {e}"))
 }
 
 #[cfg(test)]

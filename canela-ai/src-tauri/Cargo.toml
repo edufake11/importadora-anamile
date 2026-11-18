@@ -27,6 +27,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 cpal = "0.17.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+xcap = "0.9"
+base64 = "0.23.1"
 
 # Llavero del sistema: Administrador de credenciales en Windows.
 [target.'cfg(windows)'.dependencies]

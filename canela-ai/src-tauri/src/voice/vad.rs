@@ -143,8 +143,7 @@ impl Vad {
             }
             self.buf.push(s);
             if self.buf.len() == self.frame_len {
-                let rms =
-                    (self.buf.iter().map(|x| x * x).sum::<f32>() / self.frame_len as f32).sqrt();
+                let rms = (self.buf.iter().map(|x| x * x).sum::<f32>() / self.frame_len as f32).sqrt();
                 self.buf.clear();
                 if let Some(ev) = self.frame(rms) {
                     if ev != VadEvent::SpeechStarted {

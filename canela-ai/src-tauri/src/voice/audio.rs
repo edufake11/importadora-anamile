@@ -119,12 +119,7 @@ pub enum RecEvent {
 }
 
 /// Bucle de procesamiento independiente del hardware (se prueba sin micrófono).
-pub fn process_audio(
-    rx: mpsc::Receiver<Vec<f32>>,
-    ctrl: Arc<AtomicU8>,
-    cfg: VadConfig,
-    emit: &dyn Fn(RecEvent),
-) {
+pub fn process_audio(rx: mpsc::Receiver<Vec<f32>>, ctrl: Arc<AtomicU8>, cfg: VadConfig, emit: &dyn Fn(RecEvent)) {
     let mut vad = Vad::new(TARGET_RATE, cfg);
     let mut all: Vec<f32> = Vec::new();
     let max_samples = (TARGET_RATE as usize) * (cfg.max_ms as usize / 1000 + 1);
@@ -171,11 +166,7 @@ pub fn process_audio(
 
 /// Graba del micrófono hasta que termines de hablar, pulses detener o canceles.
 /// Bloquea el hilo que la llama: úsala desde `std::thread::spawn`.
-pub fn record(
-    device: Option<String>,
-    ctrl: Arc<AtomicU8>,
-    emit: Arc<dyn Fn(RecEvent) + Send + Sync>,
-) {
+pub fn record(device: Option<String>, ctrl: Arc<AtomicU8>, emit: Arc<dyn Fn(RecEvent) + Send + Sync>) {
     let Some(dev) = find_input(device.as_deref()) else {
         return emit(RecEvent::Error(
             "No encontré ningún micrófono. Conecta uno o elige otro en Ajustes › Voz.".into(),
@@ -189,8 +180,7 @@ pub fn record(
     let rate = config.sample_rate();
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
     let err_emit = emit.clone();
-    let on_err =
-        move |e: cpal::StreamError| err_emit(RecEvent::Error(format!("Error del micrófono: {e}")));
+    let on_err = move |e: cpal::StreamError| err_emit(RecEvent::Error(format!("Error del micrófono: {e}")));
 
     fn mono<T: Copy>(data: &[T], channels: usize, conv: impl Fn(T) -> f32) -> Vec<f32> {
         data.chunks(channels.max(1))
@@ -206,12 +196,7 @@ pub fn record(
     };
     let cfg = config.config();
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => dev.build_input_stream(
-            &cfg,
-            move |d: &[f32], _: &_| send(mono(d, channels, |s| s)),
-            on_err,
-            None,
-        ),
+        cpal::SampleFormat::F32 => dev.build_input_stream(&cfg, move |d: &[f32], _: &_| send(mono(d, channels, |s| s)), on_err, None),
         cpal::SampleFormat::I16 => dev.build_input_stream(
             &cfg,
             move |d: &[i16], _: &_| send(mono(d, channels, |s| s as f32 / 32768.0)),
@@ -230,20 +215,18 @@ pub fn record(
             on_err,
             None,
         ),
-        other => {
-            return emit(RecEvent::Error(format!(
-                "Formato de micrófono no compatible ({other:?})."
-            )))
-        }
+        other => return emit(RecEvent::Error(format!("Formato de micrófono no compatible ({other:?})."))),
     };
     let stream = match stream {
         Ok(s) => s,
-        Err(e) => return emit(RecEvent::Error(format!("No pude abrir el micrófono: {e}. Revisa Configuración de Windows › Privacidad › Micrófono."))),
+        Err(e) => {
+            return emit(RecEvent::Error(format!(
+                "No pude abrir el micrófono: {e}. Revisa Configuración de Windows › Privacidad › Micrófono."
+            )))
+        }
     };
     if let Err(e) = stream.play() {
-        return emit(RecEvent::Error(format!(
-            "No pude iniciar el micrófono: {e}"
-        )));
+        return emit(RecEvent::Error(format!("No pude iniciar el micrófono: {e}")));
     }
     process_audio(rx, ctrl, VadConfig::default(), &*emit);
     drop(stream); // cierra el micrófono en cuanto termina
@@ -252,24 +235,13 @@ pub fn record(
 // ------------------------------------------------------------- reproducción
 
 /// Reproduce PCM 16 bits mono a `rate` Hz. Devuelve al terminar o si `stop` se activa.
-pub fn play_pcm(
-    device: Option<&str>,
-    pcm: &[i16],
-    rate: u32,
-    volume: f32,
-    stop: Arc<AtomicBool>,
-) -> Result<(), String> {
+pub fn play_pcm(device: Option<&str>, pcm: &[i16], rate: u32, volume: f32, stop: Arc<AtomicBool>) -> Result<(), String> {
     let dev = find_output(device).ok_or("No encontré ningún altavoz.")?;
-    let config = dev
-        .default_output_config()
-        .map_err(|e| format!("No pude usar el altavoz: {e}"))?;
+    let config = dev.default_output_config().map_err(|e| format!("No pude usar el altavoz: {e}"))?;
     let channels = config.channels() as usize;
     let out_rate = config.sample_rate();
     let mut samples = Vec::with_capacity(pcm.len() * 2);
-    let input: Vec<f32> = pcm
-        .iter()
-        .map(|s| *s as f32 / 32768.0 * volume.clamp(0.0, 1.0))
-        .collect();
+    let input: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0 * volume.clamp(0.0, 1.0)).collect();
     Resampler::new(rate, out_rate).push(&input, &mut samples);
     let total = samples.len();
     let samples = Arc::new(samples);
@@ -301,9 +273,7 @@ pub fn play_pcm(
         other => return Err(format!("Formato de altavoz no compatible ({other:?}).")),
     }
     .map_err(|e| format!("No pude abrir el altavoz: {e}"))?;
-    stream
-        .play()
-        .map_err(|e| format!("No pude reproducir: {e}"))?;
+    stream.play().map_err(|e| format!("No pude reproducir: {e}"))?;
     while pos.load(Ordering::Relaxed) < total + out_rate as usize / 10 {
         if stop.load(Ordering::SeqCst) {
             break;
@@ -340,9 +310,7 @@ mod tests {
             tx.send(c.to_vec()).unwrap();
         }
         let events = std::sync::Mutex::new(Vec::new());
-        process_audio(rx, ctrl, VadConfig::default(), &|e| {
-            events.lock().unwrap().push(e)
-        });
+        process_audio(rx, ctrl, VadConfig::default(), &|e| events.lock().unwrap().push(e));
         let evs = events.into_inner().unwrap();
         assert!(evs.iter().any(|e| matches!(e, RecEvent::SpeechStarted)));
         match evs.last().unwrap() {
@@ -356,13 +324,8 @@ mod tests {
         let (_tx, rx) = mpsc::channel::<Vec<f32>>();
         let ctrl = Arc::new(AtomicU8::new(CTRL_CANCEL));
         let got = std::sync::Mutex::new(None);
-        process_audio(rx, ctrl, VadConfig::default(), &|e| {
-            *got.lock().unwrap() = Some(e)
-        });
-        assert!(matches!(
-            got.into_inner().unwrap(),
-            Some(RecEvent::Cancelled)
-        ));
+        process_audio(rx, ctrl, VadConfig::default(), &|e| *got.lock().unwrap() = Some(e));
+        assert!(matches!(got.into_inner().unwrap(), Some(RecEvent::Cancelled)));
 
         let (tx, rx) = mpsc::channel::<Vec<f32>>();
         tx.send(vec![0.2; 16_000]).unwrap();
@@ -373,12 +336,7 @@ mod tests {
             c2.store(CTRL_FINISH, Ordering::SeqCst);
         });
         let got = std::sync::Mutex::new(Vec::new());
-        process_audio(rx, ctrl, VadConfig::default(), &|e| {
-            got.lock().unwrap().push(e)
-        });
-        assert!(matches!(
-            got.into_inner().unwrap().last(),
-            Some(RecEvent::Finished(_))
-        ));
+        process_audio(rx, ctrl, VadConfig::default(), &|e| got.lock().unwrap().push(e));
+        assert!(matches!(got.into_inner().unwrap().last(), Some(RecEvent::Finished(_))));
     }
 }

@@ -2,10 +2,7 @@
 //! que solicite (con permiso del usuario cuando corresponde) y repite hasta
 //! que el modelo termine, con un límite de pasos.
 
-use super::{
-    build_turn, model_of, native_history, run_turn, tool_results, ChatMessage, StreamEvent,
-    ToolCall,
-};
+use super::{build_turn, model_of, native_history, run_turn, tool_results, ChatMessage, StreamEvent, ToolCall, ToolResult};
 use crate::settings::Settings;
 use crate::tools::{self, Permission, ToolCtx};
 use serde_json::Value;
@@ -51,12 +48,18 @@ pub struct AgentEnv {
 
 type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 
-async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) -> (String, bool) {
+async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) -> ToolResult {
+    let fail = |text: String| ToolResult {
+        id: call.id.clone(),
+        text,
+        is_error: true,
+        images: vec![],
+    };
     let input = match &call.input {
         Ok(v) => v.clone(),
-        Err(e) => return (e.clone(), true),
+        Err(e) => return fail(e.clone()),
     };
-    let prepared = match tools::prepare(ctx, &call.name, &input) {
+    let prepared = match tools::prepare_async(ctx, &call.name, &input).await {
         Ok(p) => p,
         Err(e) => {
             emit(StreamEvent::ToolEnd {
@@ -64,7 +67,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
                 ok: false,
                 summary: e.clone(),
             });
-            return (e, true);
+            return fail(e);
         }
     };
     emit(StreamEvent::ToolStart {
@@ -77,6 +80,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
         title,
         details,
         diff,
+        image,
     } = &prepared.permission
     {
         let rx = env.confirms.ask(&call.id);
@@ -85,11 +89,9 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
             title: title.clone(),
             details: details.clone(),
             diff: diff.clone(),
+            image: image.clone(),
         });
-        let approved = matches!(
-            tokio::time::timeout(CONFIRM_TIMEOUT, rx).await,
-            Ok(Ok(true))
-        );
+        let approved = matches!(tokio::time::timeout(CONFIRM_TIMEOUT, rx).await, Ok(Ok(true)));
         if !approved {
             ctx.db.log("permiso", &format!("Rechazado: {label}"));
             emit(StreamEvent::ToolEnd {
@@ -97,7 +99,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
                 ok: false,
                 summary: "No autorizado".into(),
             });
-            return ("El usuario NO autorizó esta acción; no se realizó. No la repitas salvo que te lo pida.".into(), true);
+            return fail("El usuario NO autorizó esta acción; no se realizó. No la repitas salvo que te lo pida.".into());
         }
     }
     match tools::run(ctx, prepared).await {
@@ -107,7 +109,12 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
                 ok: true,
                 summary: label,
             });
-            (out, false)
+            ToolResult {
+                id: call.id.clone(),
+                text: out.text,
+                is_error: false,
+                images: out.images,
+            }
         }
         Err(e) => {
             emit(StreamEvent::ToolEnd {
@@ -115,7 +122,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit) ->
                 ok: false,
                 summary: e.clone(),
             });
-            (e, true)
+            fail(e)
         }
     }
 }
@@ -125,25 +132,14 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     let provider = env.settings.provider;
     let model = model_of(&env.settings);
     let base = native_history(provider, &env.history);
-    let defs = if env.tools.is_some() {
-        tools::definitions()
-    } else {
-        vec![]
-    };
+    let defs = if env.tools.is_some() { tools::definitions() } else { vec![] };
     let mut transcript: Vec<Value> = Vec::new();
     let mut last_model = None;
 
     for step in 0..MAX_STEPS {
         let mut messages = base.clone();
         messages.extend(transcript.iter().cloned());
-        let (req, parser) = build_turn(
-            &env.http,
-            &env.settings,
-            &env.api_key,
-            &env.system,
-            &messages,
-            &defs,
-        );
+        let (req, parser) = build_turn(&env.http, &env.settings, &env.api_key, &env.system, &messages, &defs);
         let emit_ref: &(dyn Fn(StreamEvent) + Send + Sync) = &*emit;
         let outcome = match run_turn(provider, &model, req, parser, emit_ref).await {
             Ok(o) => o,
@@ -171,8 +167,7 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         };
         let mut results = Vec::new();
         for call in &outcome.tool_calls {
-            let (text, is_error) = execute(&env, &ctx, call, &emit).await;
-            results.push((call.id.clone(), text, is_error));
+            results.push(execute(&env, &ctx, call, &emit).await);
         }
         transcript.extend(tool_results(provider, &results));
         if step + 1 == MAX_STEPS {
@@ -185,9 +180,7 @@ pub async fn run(env: AgentEnv, emit: Emit) {
             });
             return;
         }
-        emit(StreamEvent::Delta {
-            text: "\n\n".into(),
-        });
+        emit(StreamEvent::Delta { text: "\n\n".into() });
     }
 }
 
@@ -204,9 +197,6 @@ mod tests {
         assert!(!c.resolve("a", true));
         let rx = c.ask("b");
         drop(c);
-        assert!(
-            rx.await.is_err(),
-            "si se cancela la respuesta, la confirmación se descarta"
-        );
+        assert!(rx.await.is_err(), "si se cancela la respuesta, la confirmación se descarta");
     }
 }

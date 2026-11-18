@@ -80,12 +80,7 @@ impl Jobs {
     }
 
     pub fn list(&self) -> Vec<JobInfo> {
-        self.entries
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| e.info.clone())
-            .collect()
+        self.entries.lock().unwrap().iter().map(|e| e.info.clone()).collect()
     }
 
     fn changed(&self) {
@@ -174,13 +169,7 @@ impl Jobs {
                 (me.emit)(JobEvent::Finished(info));
             }
         });
-        if let Some(e) = self
-            .entries
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .find(|e| e.info.id == id)
-        {
+        if let Some(e) = self.entries.lock().unwrap().iter_mut().find(|e| e.info.id == id) {
             e.handle = Some(handle);
         }
         self.changed();
@@ -190,9 +179,10 @@ impl Jobs {
     pub fn cancel(&self, id: &str) -> bool {
         let found = {
             let mut entries = self.entries.lock().unwrap();
-            match entries.iter_mut().find(|e| {
-                e.info.id == id && matches!(e.info.status, JobStatus::Queued | JobStatus::Running)
-            }) {
+            match entries
+                .iter_mut()
+                .find(|e| e.info.id == id && matches!(e.info.status, JobStatus::Queued | JobStatus::Running))
+            {
                 Some(e) => {
                     if let Some(h) = e.handle.take() {
                         h.abort();
@@ -252,16 +242,8 @@ mod tests {
         assert_eq!(finished.lock().unwrap().len(), 4);
         assert!(peak.load(Ordering::SeqCst) <= MAX_RUNNING);
         let list = jobs.list();
-        assert_eq!(
-            list.iter().filter(|i| i.status == JobStatus::Done).count(),
-            3
-        );
-        assert_eq!(
-            list.iter()
-                .filter(|i| i.status == JobStatus::Failed)
-                .count(),
-            1
-        );
+        assert_eq!(list.iter().filter(|i| i.status == JobStatus::Done).count(), 3);
+        assert_eq!(list.iter().filter(|i| i.status == JobStatus::Failed).count(), 1);
     }
 
     #[tokio::test]

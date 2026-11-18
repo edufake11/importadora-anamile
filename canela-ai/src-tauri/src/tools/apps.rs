@@ -75,11 +75,7 @@ fn system_app(key: &str) -> Option<Target> {
         "@notepad" => ("Bloc de notas", "notepad.exe", None),
         "@paint" => ("Paint", "mspaint.exe", None),
         "@terminal" => ("Terminal", "wt.exe", None),
-        "@settings" => (
-            "Configuración de Windows",
-            "explorer.exe",
-            Some("ms-settings:"),
-        ),
+        "@settings" => ("Configuración de Windows", "explorer.exe", Some("ms-settings:")),
         _ => return None,
     };
     Some(Target::System { name, program, arg })
@@ -109,18 +105,12 @@ pub fn score(query: &str, name: &str) -> u32 {
 }
 
 /// Elige el mejor acceso directo; prefiere nombres cortos (evita "Desinstalar X").
-pub fn best_match<'a>(
-    query: &str,
-    names: &'a [(String, PathBuf)],
-) -> Option<&'a (String, PathBuf)> {
+pub fn best_match<'a>(query: &str, names: &'a [(String, PathBuf)]) -> Option<&'a (String, PathBuf)> {
     names
         .iter()
         .filter(|(n, _)| {
             let f = fold(n);
-            !f.contains("uninstall")
-                && !f.contains("desinstalar")
-                && !f.contains("readme")
-                && !f.contains("ayuda")
+            !f.contains("uninstall") && !f.contains("desinstalar") && !f.contains("readme") && !f.contains("ayuda")
         })
         .map(|e| (score(query, &e.0), e))
         .filter(|(s, _)| *s > 0)
@@ -153,10 +143,7 @@ fn collect_shortcuts(dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
         if p.is_dir() && depth < 3 {
             collect_shortcuts(&p, depth + 1, out);
         } else if matches!(
-            p.extension()
-                .and_then(|x| x.to_str())
-                .map(|x| x.to_lowercase())
-                .as_deref(),
+            p.extension().and_then(|x| x.to_str()).map(|x| x.to_lowercase()).as_deref(),
             Some("lnk") | Some("url")
         ) {
             if let Some(stem) = p.file_stem() {
@@ -169,11 +156,7 @@ fn collect_shortcuts(dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
 /// Resuelve el nombre pedido a algo que se pueda abrir.
 pub fn resolve(query: &str, shortcuts: &[(String, PathBuf)]) -> Option<Target> {
     let q = fold(query.trim_start_matches("la ").trim_start_matches("el "));
-    let canonical = ALIASES
-        .iter()
-        .find(|(a, _)| *a == q)
-        .map(|(_, c)| *c)
-        .unwrap_or(q.as_str());
+    let canonical = ALIASES.iter().find(|(a, _)| *a == q).map(|(_, c)| *c).unwrap_or(q.as_str());
     if let Some(t) = system_app(canonical) {
         return Some(t);
     }
@@ -216,9 +199,7 @@ pub fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.as_bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*b as char)
-            }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -243,10 +224,7 @@ pub fn web_target(url: Option<&str>, search: Option<&str>) -> Result<String, Str
         return Ok(full);
     }
     match search.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(q) => Ok(format!(
-            "https://www.google.com/search?q={}",
-            percent_encode(q)
-        )),
+        Some(q) => Ok(format!("https://www.google.com/search?q={}", percent_encode(q))),
         None => Err("Indica una dirección web o qué quieres buscar.".into()),
     }
 }
@@ -273,10 +251,7 @@ pub fn open_url(url: &str, browser: Option<&str>) -> Result<String, String> {
             .arg(url)
             .spawn()
             .map_err(|e| format!("No pude abrir el navegador: {e}"))?;
-        return Ok(path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default());
+        return Ok(path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
     }
     open_with_shell(url).map_err(|e| format!("No pude abrir el navegador: {e}"))?;
     Ok("navegador predeterminado".into())
@@ -303,30 +278,18 @@ mod tests {
     #[test]
     fn resolves_common_names() {
         let s = shortcuts();
-        assert_eq!(
-            resolve("Visual Studio Code", &s).unwrap().label(),
-            "Visual Studio Code"
-        );
+        assert_eq!(resolve("Visual Studio Code", &s).unwrap().label(), "Visual Studio Code");
         assert_eq!(resolve("vscode", &s).unwrap().label(), "Visual Studio Code");
         assert_eq!(resolve("Chrome", &s).unwrap().label(), "Google Chrome");
         assert_eq!(resolve("spotify", &s).unwrap().label(), "Spotify");
-        assert_eq!(
-            resolve("la calculadora", &s).unwrap().label(),
-            "Calculadora"
-        );
-        assert_eq!(
-            resolve("configuración", &s).unwrap().label(),
-            "Configuración de Windows"
-        );
+        assert_eq!(resolve("la calculadora", &s).unwrap().label(), "Calculadora");
+        assert_eq!(resolve("configuración", &s).unwrap().label(), "Configuración de Windows");
         assert!(resolve("photoshop", &s).is_none());
     }
 
     #[test]
     fn web_targets_are_validated() {
-        assert_eq!(
-            web_target(Some("github.com"), None).unwrap(),
-            "https://github.com"
-        );
+        assert_eq!(web_target(Some("github.com"), None).unwrap(), "https://github.com");
         assert_eq!(
             web_target(None, Some("React hooks")).unwrap(),
             "https://www.google.com/search?q=React+hooks"

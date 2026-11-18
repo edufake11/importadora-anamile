@@ -42,15 +42,23 @@ pub struct ChatMessage {
     /// cual si el proveedor no cambió; si cambió, se usa sólo `text`.
     #[serde(default)]
     pub transcript: Option<Vec<Value>>,
+    /// Imágenes adjuntas por el usuario (capturas o archivos) ya autorizadas.
+    #[serde(default)]
+    pub images: Vec<crate::vision::ImageData>,
+}
+
+/// Resultado de una herramienta para devolver al modelo.
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub id: String,
+    pub text: String,
+    pub is_error: bool,
+    pub images: Vec<crate::vision::ImageData>,
 }
 
 /// Eventos que viajan de Rust a la interfaz por un `tauri::ipc::Channel`.
 #[derive(Debug, Clone, Serialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum StreamEvent {
     Started {
         model: String,
@@ -77,6 +85,8 @@ pub enum StreamEvent {
         title: String,
         details: String,
         diff: Option<String>,
+        /// Vista previa (data URL) de una imagen que se enviaría.
+        image: Option<String>,
     },
     Done {
         stop_reason: Option<String>,
@@ -154,7 +164,8 @@ datos bancarios, documentos de identidad ni datos de salud.\n\
 - Fechas: convierte expresiones como \"mañana a las 5\" a AAAA-MM-DD HH:MM usando la fecha actual indicada abajo.\n\
 - Para cambiar un archivo existente, léelo primero y escribe el contenido completo nuevo: el usuario verá los cambios antes de aplicarlos.\n\
 - Para análisis largos de proyectos usa analizar_proyecto: corre en segundo plano y el usuario puede seguir hablando contigo.\n\
-- No puedes ejecutar comandos de consola ni instalar programas; tampoco usar el micrófono ni ver la pantalla (todavía)."
+- Puedes mirar la pantalla con ver_pantalla: el usuario ve la captura y decide si se envía. Algunos mensajes llegan dictados por voz: si notas errores de transcripción, interpreta con sentido común; si vas a responder en voz alta, prefiere frases cortas y naturales.\n\
+- No puedes ejecutar comandos de consola ni instalar programas."
     } else {
         "\n\nEn esta respuesta no tienes herramientas: no puedes abrir programas ni tocar archivos. Nunca finjas haber realizado una acción."
     };
@@ -208,10 +219,41 @@ pub fn native_history(provider: ProviderId, history: &[ChatMessage]) -> Vec<Valu
 }
 
 /// Mensaje(s) con los resultados de herramientas, en el formato del proveedor.
-pub fn tool_results(provider: ProviderId, results: &[(String, String, bool)]) -> Vec<Value> {
+pub fn tool_results(provider: ProviderId, results: &[ToolResult]) -> Vec<Value> {
     match provider {
         ProviderId::Anthropic => anthropic::tool_results_message(results),
         ProviderId::Openai => openai::tool_results_messages(results),
+    }
+}
+
+/// ¿Acepta imágenes este modelo? `None` = desconocido (se intenta).
+pub fn model_supports_images(provider: ProviderId, model: &str) -> Option<bool> {
+    let m = model.to_lowercase();
+    match provider {
+        // Todos los modelos Claude actuales (3 y posteriores) aceptan imágenes.
+        ProviderId::Anthropic => Some(m.starts_with("claude-")),
+        ProviderId::Openai => {
+            if m.starts_with("gpt-3.5")
+                || m == "gpt-4"
+                || m.starts_with("gpt-4-0")
+                || m.contains("instruct")
+                || m.contains("transcribe")
+                || m.contains("tts")
+            {
+                Some(false)
+            } else if m.starts_with("gpt-4o")
+                || m.starts_with("gpt-4.1")
+                || m.starts_with("gpt-5")
+                || m.starts_with("o1")
+                || m.starts_with("o3")
+                || m.starts_with("o4")
+                || m.starts_with("chatgpt-4o")
+            {
+                Some(true)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -245,14 +287,7 @@ pub fn build_turn(
             Box::new(anthropic::AnthropicStream::new()),
         ),
         ProviderId::Openai => (
-            openai::build_request(
-                http,
-                api_key,
-                &settings.openai_model,
-                system,
-                messages,
-                tools,
-            ),
+            openai::build_request(http, api_key, &settings.openai_model, system, messages, tools),
             Box::new(openai::OpenAiStream::new()),
         ),
     }
@@ -319,12 +354,7 @@ mod tests {
 
     #[test]
     fn http_errors_are_friendly() {
-        let m = http_error_message(
-            ProviderId::Anthropic,
-            401,
-            r#"{"error":{"message":"invalid x-api-key"}}"#,
-            "m",
-        );
+        let m = http_error_message(ProviderId::Anthropic, 401, r#"{"error":{"message":"invalid x-api-key"}}"#, "m");
         assert!(m.contains("no es válida"));
         assert!(m.contains("invalid x-api-key"));
         let m = http_error_message(ProviderId::Openai, 404, "", "gpt-x");

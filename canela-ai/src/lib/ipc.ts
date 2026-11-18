@@ -33,6 +33,14 @@ export interface Settings {
   ttsVolume: number;
   speakReplies: 'voice' | 'always' | 'never';
   wakeWord: boolean;
+  visionEnabled: boolean;
+}
+
+export interface ImageData {
+  mediaType: string;
+  data: string;
+  width: number;
+  height: number;
 }
 
 export interface KeyStatus {
@@ -46,6 +54,7 @@ export interface WireMessage {
   text: string;
   provider?: ProviderId;
   transcript?: unknown[];
+  images?: ImageData[];
 }
 
 export type StreamEvent =
@@ -54,7 +63,7 @@ export type StreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'toolStart'; callId: string; name: string; label: string }
   | { type: 'toolEnd'; callId: string; ok: boolean; summary: string }
-  | { type: 'confirmRequest'; confirmId: string; title: string; details: string; diff: string | null }
+  | { type: 'confirmRequest'; confirmId: string; title: string; details: string; diff: string | null; image: string | null }
   | { type: 'done'; stopReason: string | null; model: string | null; notice: string | null; provider: ProviderId; transcript: unknown[] }
   | { type: 'error'; message: string }
   | { type: 'cancelled' };
@@ -235,3 +244,23 @@ export const onVoiceToggle = (cb: () => void): Promise<UnlistenFn> => listen('vo
 
 export const onTtsState = (cb: (e: { speaking: boolean; error?: string }) => void): Promise<UnlistenFn> =>
   listen<{ speaking: boolean; error?: string }>('tts-state', (e) => cb(e.payload));
+
+// ---------------------------------------------------------------- Pantalla
+
+export interface ScreenSources {
+  monitors: Array<{ id: number; name: string; width: number; height: number; primary: boolean }>;
+  windows: Array<{ id: number; title: string; app: string }>;
+}
+
+export type CaptureTarget = { kind: 'monitor'; id: number } | { kind: 'window'; id: number } | { kind: 'active' };
+
+export const screen = {
+  sources: () => invoke<ScreenSources>('screen_sources'),
+  capture: (target: CaptureTarget) =>
+    invoke<{ captureId: string; preview: string; width: number; height: number }>('screen_capture', { target }),
+  finalize: (captureId: string, crop: { x: number; y: number; w: number; h: number } | null) =>
+    invoke<ImageData>('screen_finalize', { captureId, crop }),
+  discard: (captureId: string) => invoke<void>('screen_discard', { captureId }),
+};
+
+export const imageUrl = (i: ImageData) => `data:${i.mediaType};base64,${i.data}`;

@@ -1,5 +1,5 @@
 // Modelo de datos del chat (puro, sin React) para poder probarlo.
-import type { ProviderId, WireMessage } from '../lib/ipc';
+import type { ImageData, ProviderId, WireMessage } from '../lib/ipc';
 
 export interface ToolActivity {
   callId: string;
@@ -13,6 +13,8 @@ export interface PendingConfirm {
   title: string;
   details: string;
   diff: string | null;
+  /** Vista previa de una imagen que se enviaría (captura). */
+  image?: string | null;
   state: 'waiting' | 'approved' | 'denied';
 }
 
@@ -29,6 +31,8 @@ export interface UiMessage {
   thinking?: boolean;
   /** Nombres de archivos adjuntos (sólo para mostrarlos). */
   attachments?: string[];
+  /** Imágenes que enviaste (capturas o fotos), ya autorizadas. */
+  images?: ImageData[];
   tools?: ToolActivity[];
   confirms?: PendingConfirm[];
   /** Mensaje generado al terminar un trabajo en segundo plano. */
@@ -85,7 +89,7 @@ export function toWire(messages: UiMessage[]): WireMessage[] {
   const out: WireMessage[] = [];
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', text: m.text });
+      out.push(m.images?.length ? { role: 'user', text: m.text, images: m.images } : { role: 'user', text: m.text });
       continue;
     }
     if (m.status === 'streaming') continue;

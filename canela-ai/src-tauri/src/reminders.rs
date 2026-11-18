@@ -84,9 +84,7 @@ pub fn spawn(app: AppHandle, launched_at_login: bool) {
                 notify(&app, "Recordatorio de Canela", &t.title);
                 pet_say(&app, "listen", format!("⏰ Recordatorio: {}", t.title));
                 let _ = state.db.task_mark_reminded(t.id);
-                state
-                    .db
-                    .log("recordatorio", &format!("Te recordé: {}", t.title));
+                state.db.log("recordatorio", &format!("Te recordé: {}", t.title));
                 crate::data_cmds::notify(&app, "tasks");
             }
         }
@@ -99,12 +97,8 @@ mod tests {
 
     #[test]
     fn greetings() {
-        assert_eq!(
-            greeting(8, "Eduardo", &[]),
-            "¡Buenos días, Eduardo! No tienes tareas para hoy 🐾"
-        );
-        assert!(greeting(15, "", &["Estudiar".into()])
-            .starts_with("¡Buenas tardes! Hoy tienes 1 tarea: Estudiar"));
+        assert_eq!(greeting(8, "Eduardo", &[]), "¡Buenos días, Eduardo! No tienes tareas para hoy 🐾");
+        assert!(greeting(15, "", &["Estudiar".into()]).starts_with("¡Buenas tardes! Hoy tienes 1 tarea: Estudiar"));
         let many: Vec<String> = (1..=5).map(|i| format!("t{i}")).collect();
         assert!(greeting(22, "Ana", &many).ends_with("t1, t2, t3…"));
     }

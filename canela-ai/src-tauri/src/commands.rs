@@ -34,16 +34,12 @@ pub struct AppState {
     /// Documentos, Descargas y Escritorio del usuario (alias y carpetas por defecto).
     pub known_dirs: Vec<(String, PathBuf)>,
     pub voice: crate::voice::VoiceRuntime,
+    /// Capturas pendientes de revisar (sólo en memoria).
+    pub captures: Mutex<HashMap<String, image::RgbaImage>>,
 }
 
 impl AppState {
-    pub fn new(
-        config_dir: PathBuf,
-        data_dir: PathBuf,
-        db: Arc<Db>,
-        jobs: Arc<Jobs>,
-        known_dirs: Vec<(String, PathBuf)>,
-    ) -> Self {
+    pub fn new(config_dir: PathBuf, data_dir: PathBuf, db: Arc<Db>, jobs: Arc<Jobs>, known_dirs: Vec<(String, PathBuf)>) -> Self {
         let settings = settings::load(&config_dir);
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
@@ -61,6 +57,7 @@ impl AppState {
             confirms: Arc::new(Confirmations::default()),
             known_dirs,
             voice: Default::default(),
+            captures: Mutex::new(HashMap::new()),
         }
     }
 
@@ -89,11 +86,7 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    settings: Settings,
-) -> Result<Settings, String> {
+pub fn save_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
     let clean = settings.sanitized();
     let before = state.current_settings();
     if clean.launch_at_startup != before.launch_at_startup {
@@ -211,6 +204,7 @@ pub async fn chat_send(
             api_key: key.clone(),
         }),
         notify: Arc::new(move |kind| crate::data_cmds::notify(&notify_app, kind)),
+        screen: Some(Arc::new(crate::vision_cmds::AppCapturer { app: app.clone() })),
     };
     let env = AgentEnv {
         http: state.http.clone(),

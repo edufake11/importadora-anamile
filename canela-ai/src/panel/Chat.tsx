@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
   data,
+  imageUrl,
   onJobFinished,
   onJobsChanged,
   sendMood,
   type ConversationMeta,
+  type ImageData,
   type JobInfo,
   type KeyStatus,
   type Settings,
@@ -24,7 +26,8 @@ import {
   toWire,
   type UiMessage,
 } from './chatModel';
-import { ClipIcon, MicIcon, SendIcon, StopIcon } from './icons';
+import { CaptureSheet } from './CaptureSheet';
+import { ClipIcon, MicIcon, ScreenIcon, SendIcon, StopIcon } from './icons';
 import { Markdown } from './markdown';
 import { useVoice } from './useVoice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -62,6 +65,7 @@ function ConfirmCard({ c, onAnswer }: { c: PendingConfirm; onAnswer: (ok: boolea
     <div className={`confirm ${c.state}`}>
       <div className="confirm-title">{c.title}</div>
       {c.details && <div className="confirm-details">{c.details}</div>}
+      {c.image && <img className="confirm-image" src={c.image} alt="Captura que se enviaría" />}
       {c.diff && <DiffView diff={c.diff} />}
       {c.state === 'waiting' ? (
         <div className="row end">
@@ -83,6 +87,8 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [images, setImages] = useState<ImageData[]>([]);
+  const [showCapture, setShowCapture] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
@@ -151,7 +157,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   }
 
   async function send(textOverride?: string, spoken = false) {
-    const text = composeUserText(textOverride ?? input, attachments);
+    const text = composeUserText(textOverride ?? input, attachments) || (images.length ? '¿Qué ves en esta imagen?' : '');
     if (!text || busyId) return;
     if (!hasKey) {
       onOpenSettings();
@@ -161,12 +167,20 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
     // para que el prompt de sistema no cambie a mitad de ella.
     const conv = await ensureConversation();
 
-    const user: UiMessage = { id: newId(), role: 'user', text, status: 'done', attachments: attachments.map((a) => a.name) };
+    const user: UiMessage = {
+      id: newId(),
+      role: 'user',
+      text,
+      status: 'done',
+      attachments: attachments.map((a) => a.name),
+      images: images.length ? images : undefined,
+    };
     const reply: UiMessage = { id: newId(), role: 'assistant', text: '', status: 'streaming', thinking: true, provider: settings.provider, tools: [], confirms: [] };
     const wire = toWire([...messagesRef.current, user]);
     setMessages((prev) => [...prev, user, reply]);
     setInput('');
     setAttachments([]);
+    setImages([]);
     setBusyId(reply.id);
     window.clearTimeout(listenTimer.current);
     void sendMood({ mood: 'think' });
@@ -220,7 +234,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           patch(reply.id, (m) => ({
             ...m,
             thinking: false,
-            confirms: [...(m.confirms ?? []), { confirmId: ev.confirmId, title: ev.title, details: ev.details, diff: ev.diff, state: 'waiting' }],
+            confirms: [...(m.confirms ?? []), { confirmId: ev.confirmId, title: ev.title, details: ev.details, diff: ev.diff, image: ev.image, state: 'waiting' }],
           }));
           void sendMood({ mood: 'listen', bubble: 'Necesito tu permiso para continuar 🐾' });
           // Si hablaste con el panel cerrado, lo abre para que puedas responder.
@@ -425,6 +439,13 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           <div key={m.id} className={`msg ${m.role} ${m.status} ${m.job ? 'job-msg' : ''}`}>
             {m.role === 'assistant' && <div className="msg-author">Canela</div>}
             {m.attachments && m.attachments.length > 0 && <div className="msg-files">Adjunto: {m.attachments.join(', ')}</div>}
+            {m.images && m.images.length > 0 && (
+              <div className="msg-images">
+                {m.images.map((im, i) => (
+                  <img key={i} src={imageUrl(im)} alt="Imagen enviada" />
+                ))}
+              </div>
+            )}
             {m.tools && m.tools.length > 0 && (
               <ul className="tool-log">
                 {m.tools.map((t) => (
@@ -456,6 +477,22 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           </div>
         ))}
       </div>
+
+      {showCapture && <CaptureSheet onAttach={(img) => setImages((prev) => [...prev, img].slice(0, 4))} onClose={() => setShowCapture(false)} />}
+
+      {images.length > 0 && (
+        <div className="attachments">
+          {images.map((im, i) => (
+            <span key={i} className="chip thumb">
+              <img src={imageUrl(im)} alt="" />
+              Captura {im.width}×{im.height}
+              <button onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))} aria-label="Quitar captura">
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {attachments.length > 0 && (
         <div className="attachments">
@@ -513,6 +550,11 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           <ClipIcon />
         </button>
         <input ref={fileRef} type="file" multiple hidden onChange={(e) => void addFiles(e.target.files)} />
+        {settings.visionEnabled && (
+          <button type="button" className="icon" title="Compartir una captura de pantalla" aria-label="Compartir captura" onClick={() => setShowCapture(true)}>
+            <ScreenIcon />
+          </button>
+        )}
         <textarea
           value={input}
           placeholder={voiceCtl.phase === 'listening' ? 'Te escucho…' : hasKey ? 'Escribe un mensaje…' : 'Configura tu clave en Ajustes'}
@@ -542,7 +584,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             <StopIcon />
           </button>
         ) : (
-          <button type="submit" className="send" disabled={!input.trim() && attachments.length === 0} title="Enviar (Enter)" aria-label="Enviar">
+          <button type="submit" className="send" disabled={!input.trim() && attachments.length === 0 && images.length === 0} title="Enviar (Enter)" aria-label="Enviar">
             <SendIcon />
           </button>
         )}

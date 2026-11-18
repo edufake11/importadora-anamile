@@ -104,9 +104,7 @@ pub fn normalize_kind(kind: &str) -> String {
         "proyecto" | "proyectos" | "project" => "proyecto",
         "preferencia" | "preferencias" | "preference" | "gusto" => "preferencia",
         "horario" | "horarios" | "schedule" | "rutina" => "horario",
-        "aplicacion" | "aplicaciones" | "app" | "apps" | "herramienta" | "herramientas" => {
-            "aplicacion"
-        }
+        "aplicacion" | "aplicaciones" | "app" | "apps" | "herramienta" | "herramientas" => "aplicacion",
         "persona" | "personas" | "contacto" => "persona",
         "dato" | "datos" | "hecho" | "fact" | "importante" => "dato",
         _ => "otro",
@@ -249,8 +247,7 @@ fn memory_from(r: &Row) -> rusqlite::Result<Memory> {
     })
 }
 
-const TASK_COLS: &str =
-    "id, title, notes, priority, due, remind_at, reminded, done, created_at, completed_at";
+const TASK_COLS: &str = "id, title, notes, priority, due, remind_at, reminded, done, created_at, completed_at";
 
 fn task_from(r: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -270,8 +267,7 @@ fn task_from(r: &Row) -> rusqlite::Result<Task> {
 impl Db {
     pub fn open(path: &Path) -> DbResult<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("No se pudo crear la carpeta de datos: {e}"))?;
+            std::fs::create_dir_all(dir).map_err(|e| format!("No se pudo crear la carpeta de datos: {e}"))?;
         }
         let conn = Connection::open(path).map_err(err)?;
         Self::init(conn)
@@ -284,23 +280,16 @@ impl Db {
     fn init(conn: Connection) -> DbResult<Self> {
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
             .map_err(err)?;
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(err)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(err)?;
         if version < 1 {
             conn.execute_batch(SCHEMA_V1).map_err(err)?;
             conn.execute_batch("PRAGMA user_version = 1").map_err(err)?;
         }
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> DbResult<T> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| "La base de datos está bloqueada.".to_string())?;
+        let conn = self.conn.lock().map_err(|_| "La base de datos está bloqueada.".to_string())?;
         f(&conn).map_err(err)
     }
 
@@ -328,8 +317,7 @@ impl Db {
             )?;
             Ok(c.last_insert_rowid())
         })?;
-        self.memory_get(id)?
-            .ok_or_else(|| "No se pudo guardar el recuerdo.".into())
+        self.memory_get(id)?.ok_or_else(|| "No se pudo guardar el recuerdo.".into())
     }
 
     pub fn memory_get(&self, id: i64) -> DbResult<Option<Memory>> {
@@ -344,12 +332,7 @@ impl Db {
     }
 
     /// Lista recuerdos; `query` busca por palabras (todas deben aparecer).
-    pub fn memory_list(
-        &self,
-        kind: Option<&str>,
-        query: Option<&str>,
-        limit: usize,
-    ) -> DbResult<Vec<Memory>> {
+    pub fn memory_list(&self, kind: Option<&str>, query: Option<&str>, limit: usize) -> DbResult<Vec<Memory>> {
         let kind = kind.filter(|k| !k.trim().is_empty()).map(normalize_kind);
         let words: Vec<String> = query
             .unwrap_or("")
@@ -358,9 +341,8 @@ impl Db {
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
         let all = self.with(|c| {
-            let mut st = c.prepare(
-                "SELECT id, kind, content, source, created_at, updated_at FROM memories ORDER BY updated_at DESC, id DESC",
-            )?;
+            let mut st =
+                c.prepare("SELECT id, kind, content, source, created_at, updated_at FROM memories ORDER BY updated_at DESC, id DESC")?;
             let rows = st.query_map([], memory_from)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })?;
@@ -375,15 +357,8 @@ impl Db {
             .collect())
     }
 
-    pub fn memory_update(
-        &self,
-        id: i64,
-        kind: Option<&str>,
-        content: Option<&str>,
-    ) -> DbResult<Memory> {
-        let current = self
-            .memory_get(id)?
-            .ok_or_else(|| format!("No existe el recuerdo #{id}."))?;
+    pub fn memory_update(&self, id: i64, kind: Option<&str>, content: Option<&str>) -> DbResult<Memory> {
+        let current = self.memory_get(id)?.ok_or_else(|| format!("No existe el recuerdo #{id}."))?;
         let kind = kind.map(normalize_kind).unwrap_or(current.kind);
         let content = match content {
             Some(c) => clean_text(c, 1000)?,
@@ -395,8 +370,7 @@ impl Db {
                 params![kind, content, now_str(), id],
             )
         })?;
-        self.memory_get(id)?
-            .ok_or_else(|| "Recuerdo no encontrado.".into())
+        self.memory_get(id)?.ok_or_else(|| "Recuerdo no encontrado.".into())
     }
 
     pub fn memory_delete(&self, id: i64) -> DbResult<bool> {
@@ -412,30 +386,13 @@ impl Db {
 
     pub fn task_add(&self, input: &TaskInput) -> DbResult<Task> {
         let title = clean_text(input.title.as_deref().unwrap_or(""), 200)?;
-        let notes = input
-            .notes
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(2000)
-            .collect::<String>();
+        let notes = input.notes.as_deref().unwrap_or("").trim().chars().take(2000).collect::<String>();
         let priority = input.priority.unwrap_or(2).clamp(1, 3);
-        let due = match input
-            .due
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
+        let due = match input.due.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(d) => Some(normalize_datetime(d, true)?),
             None => None,
         };
-        let remind = match input
-            .remind_at
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
+        let remind = match input.remind_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(d) => Some(normalize_datetime(d, false)?),
             None => None,
         };
@@ -446,25 +403,18 @@ impl Db {
             )?;
             Ok(c.last_insert_rowid())
         })?;
-        self.task_get(id)?
-            .ok_or_else(|| "No se pudo crear la tarea.".into())
+        self.task_get(id)?.ok_or_else(|| "No se pudo crear la tarea.".into())
     }
 
     pub fn task_get(&self, id: i64) -> DbResult<Option<Task>> {
         self.with(|c| {
-            c.query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
-                params![id],
-                task_from,
-            )
-            .optional()
+            c.query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), params![id], task_from)
+                .optional()
         })
     }
 
     pub fn task_update(&self, id: i64, input: &TaskInput) -> DbResult<Task> {
-        let cur = self
-            .task_get(id)?
-            .ok_or_else(|| format!("No existe la tarea #{id}."))?;
+        let cur = self.task_get(id)?.ok_or_else(|| format!("No existe la tarea #{id}."))?;
         let title = match &input.title {
             Some(t) => clean_text(t, 200)?,
             None => cur.title,
@@ -487,8 +437,7 @@ impl Db {
                 params![title, notes, priority, due, remind, reminded as i64, id],
             )
         })?;
-        self.task_get(id)?
-            .ok_or_else(|| "Tarea no encontrada.".into())
+        self.task_get(id)?.ok_or_else(|| "Tarea no encontrada.".into())
     }
 
     pub fn task_set_done(&self, id: i64, done: bool) -> DbResult<Task> {
@@ -502,8 +451,7 @@ impl Db {
         if n == 0 {
             return Err(format!("No existe la tarea #{id}."));
         }
-        self.task_get(id)?
-            .ok_or_else(|| "Tarea no encontrada.".into())
+        self.task_get(id)?.ok_or_else(|| "Tarea no encontrada.".into())
     }
 
     pub fn task_delete(&self, id: i64) -> DbResult<bool> {
@@ -514,10 +462,7 @@ impl Db {
     pub fn task_list(&self, filter: TaskFilter) -> DbResult<Vec<Task>> {
         let today = today_str();
         let (where_, limit) = match filter {
-            TaskFilter::Today => (
-                "done = 0 AND due IS NOT NULL AND substr(due, 1, 10) <= ?1",
-                200,
-            ),
+            TaskFilter::Today => ("done = 0 AND due IS NOT NULL AND substr(due, 1, 10) <= ?1", 200),
             TaskFilter::Pending => ("done = 0 AND ?1 = ?1", 500),
             TaskFilter::Done => ("done = 1 AND ?1 = ?1", 100),
             TaskFilter::All => ("?1 = ?1", 600),
@@ -562,17 +507,13 @@ impl Db {
                 params![now_str(), kind, summary],
             )?;
             // Conserva sólo los últimos 2000 registros.
-            c.execute(
-                "DELETE FROM activity WHERE id <= (SELECT MAX(id) - 2000 FROM activity)",
-                [],
-            )
+            c.execute("DELETE FROM activity WHERE id <= (SELECT MAX(id) - 2000 FROM activity)", [])
         });
     }
 
     pub fn activity_list(&self, limit: usize) -> DbResult<Vec<Activity>> {
         self.with(|c| {
-            let mut st =
-                c.prepare("SELECT id, at, kind, summary FROM activity ORDER BY id DESC LIMIT ?1")?;
+            let mut st = c.prepare("SELECT id, at, kind, summary FROM activity ORDER BY id DESC LIMIT ?1")?;
             let rows = st.query_map(params![limit as i64], |r| {
                 Ok(Activity {
                     id: r.get(0)?,
@@ -604,7 +545,12 @@ impl Db {
         self.with(|c| {
             let mut st = c.prepare("SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 200")?;
             let rows = st.query_map([], |r| {
-                Ok(ConversationMeta { id: r.get(0)?, title: r.get(1)?, created_at: r.get(2)?, updated_at: r.get(3)? })
+                Ok(ConversationMeta {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    created_at: r.get(2)?,
+                    updated_at: r.get(3)?,
+                })
             })?;
             rows.collect()
         })
@@ -612,12 +558,8 @@ impl Db {
 
     pub fn conversation_get(&self, id: &str) -> DbResult<Option<String>> {
         self.with(|c| {
-            c.query_row(
-                "SELECT data FROM conversations WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()
+            c.query_row("SELECT data FROM conversations WHERE id = ?1", params![id], |r| r.get(0))
+                .optional()
         })
     }
 
@@ -631,11 +573,7 @@ impl Db {
     }
 
     /// Busca texto en conversaciones guardadas y devuelve fragmentos.
-    pub fn conversation_search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> DbResult<Vec<(ConversationMeta, String)>> {
+    pub fn conversation_search(&self, query: &str, limit: usize) -> DbResult<Vec<(ConversationMeta, String)>> {
         let q = query.trim().to_lowercase();
         if q.chars().count() < 3 {
             return Ok(vec![]);
@@ -702,31 +640,17 @@ mod tests {
     fn memory_crud_and_search() {
         let d = db();
         let m = d
-            .memory_add(
-                "Proyectos",
-                "Estoy desarrollando una página web de la importadora",
-                "usuario",
-            )
+            .memory_add("Proyectos", "Estoy desarrollando una página web de la importadora", "usuario")
             .unwrap();
         assert_eq!(m.kind, "proyecto");
-        d.memory_add("preferencia", "Prefiere respuestas cortas", "usuario")
-            .unwrap();
+        d.memory_add("preferencia", "Prefiere respuestas cortas", "usuario").unwrap();
         // duplicado exacto no se repite
-        d.memory_add(
-            "proyecto",
-            "estoy desarrollando una página web de la importadora",
-            "usuario",
-        )
-        .unwrap();
+        d.memory_add("proyecto", "estoy desarrollando una página web de la importadora", "usuario")
+            .unwrap();
         assert_eq!(d.memory_list(None, None, 50).unwrap().len(), 2);
         assert_eq!(d.memory_list(Some("proyecto"), None, 50).unwrap().len(), 1);
-        assert_eq!(
-            d.memory_list(None, Some("página web"), 50).unwrap()[0].id,
-            m.id
-        );
-        let u = d
-            .memory_update(m.id, None, Some("Página web terminada"))
-            .unwrap();
+        assert_eq!(d.memory_list(None, Some("página web"), 50).unwrap()[0].id, m.id);
+        let u = d.memory_update(m.id, None, Some("Página web terminada")).unwrap();
         assert_eq!(u.content, "Página web terminada");
         assert!(d.memory_delete(m.id).unwrap());
         assert!(!d.memory_delete(m.id).unwrap());
@@ -749,14 +673,8 @@ mod tests {
 
     #[test]
     fn dates_are_validated() {
-        assert_eq!(
-            normalize_datetime("2026-11-20", true).unwrap(),
-            "2026-11-20"
-        );
-        assert_eq!(
-            normalize_datetime("2026-11-20T08:30", false).unwrap(),
-            "2026-11-20 08:30"
-        );
+        assert_eq!(normalize_datetime("2026-11-20", true).unwrap(), "2026-11-20");
+        assert_eq!(normalize_datetime("2026-11-20T08:30", false).unwrap(), "2026-11-20 08:30");
         assert!(normalize_datetime("mañana", true).is_err());
         assert!(normalize_datetime("2026-11-20", false).is_err());
     }
@@ -836,18 +754,11 @@ mod tests {
     fn activity_and_conversations() {
         let d = db();
         d.log("tarea", "Creaste «Estudiar»");
-        assert_eq!(
-            d.activity_list(10).unwrap()[0].summary,
-            "Creaste «Estudiar»"
-        );
+        assert_eq!(d.activity_list(10).unwrap()[0].summary, "Creaste «Estudiar»");
         d.conversation_save("c1", "React", r#"[{"text":"Hablemos de hooks de React"}]"#)
             .unwrap();
-        d.conversation_save(
-            "c1",
-            "React 2",
-            r#"[{"text":"Hablemos de hooks de React y efectos"}]"#,
-        )
-        .unwrap();
+        d.conversation_save("c1", "React 2", r#"[{"text":"Hablemos de hooks de React y efectos"}]"#)
+            .unwrap();
         assert_eq!(d.conversation_list().unwrap().len(), 1);
         assert_eq!(d.conversation_list().unwrap()[0].title, "React 2");
         let found = d.conversation_search("hooks", 5).unwrap();
@@ -859,8 +770,7 @@ mod tests {
     #[test]
     fn context_summary_lists_memories() {
         let d = db();
-        d.memory_add("proyecto", "App de Canela", "usuario")
-            .unwrap();
+        d.memory_add("proyecto", "App de Canela", "usuario").unwrap();
         let s = d.context_summary().unwrap();
         assert!(s.contains("App de Canela"));
         assert!(s.contains("pendientes"));

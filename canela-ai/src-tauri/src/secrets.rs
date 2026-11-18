@@ -13,8 +13,7 @@ use keyring::Entry;
 const SERVICE: &str = "com.canela.ai";
 
 fn entry(provider: ProviderId) -> Result<Entry, String> {
-    Entry::new(SERVICE, &format!("{}-api-key", provider.as_str()))
-        .map_err(|e| format!("No se pudo acceder al llavero del sistema: {e}"))
+    Entry::new(SERVICE, &format!("{}-api-key", provider.as_str())).map_err(|e| format!("No se pudo acceder al llavero del sistema: {e}"))
 }
 
 pub fn set_key(provider: ProviderId, key: &str) -> Result<(), String> {

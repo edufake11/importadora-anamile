@@ -18,25 +18,14 @@ pub fn notify(app: &AppHandle, kind: &'static str) {
 // ---------------------------------------------------------------- memoria
 
 #[tauri::command]
-pub fn memory_list(
-    state: State<'_, AppState>,
-    kind: Option<String>,
-    query: Option<String>,
-) -> Result<Vec<Memory>, String> {
+pub fn memory_list(state: State<'_, AppState>, kind: Option<String>, query: Option<String>) -> Result<Vec<Memory>, String> {
     state.db.memory_list(kind.as_deref(), query.as_deref(), 500)
 }
 
 #[tauri::command]
-pub fn memory_add(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    kind: String,
-    content: String,
-) -> Result<Memory, String> {
+pub fn memory_add(app: AppHandle, state: State<'_, AppState>, kind: String, content: String) -> Result<Memory, String> {
     let m = state.db.memory_add(&kind, &content, "usuario")?;
-    state
-        .db
-        .log("memoria", &format!("Guardaste un recuerdo: {}", m.content));
+    state.db.log("memoria", &format!("Guardaste un recuerdo: {}", m.content));
     notify(&app, "memory");
     Ok(m)
 }
@@ -49,9 +38,7 @@ pub fn memory_update(
     kind: Option<String>,
     content: Option<String>,
 ) -> Result<Memory, String> {
-    let m = state
-        .db
-        .memory_update(id, kind.as_deref(), content.as_deref())?;
+    let m = state.db.memory_update(id, kind.as_deref(), content.as_deref())?;
     notify(&app, "memory");
     Ok(m)
 }
@@ -60,9 +47,7 @@ pub fn memory_update(
 pub fn memory_delete(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<bool, String> {
     let ok = state.db.memory_delete(id)?;
     if ok {
-        state
-            .db
-            .log("memoria", &format!("Borraste el recuerdo #{id}"));
+        state.db.log("memoria", &format!("Borraste el recuerdo #{id}"));
         notify(&app, "memory");
     }
     Ok(ok)
@@ -71,10 +56,7 @@ pub fn memory_delete(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res
 #[tauri::command]
 pub fn memory_clear(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
     let n = state.db.memory_clear()?;
-    state.db.log(
-        "memoria",
-        &format!("Borraste toda la memoria ({n} recuerdos)"),
-    );
+    state.db.log("memoria", &format!("Borraste toda la memoria ({n} recuerdos)"));
     notify(&app, "memory");
     Ok(n)
 }
@@ -87,11 +69,7 @@ pub fn task_list(state: State<'_, AppState>, filter: TaskFilter) -> Result<Vec<T
 }
 
 #[tauri::command]
-pub fn task_add(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    input: TaskInput,
-) -> Result<Task, String> {
+pub fn task_add(app: AppHandle, state: State<'_, AppState>, input: TaskInput) -> Result<Task, String> {
     let t = state.db.task_add(&input)?;
     state.db.log("tarea", &format!("Nueva tarea: {}", t.title));
     notify(&app, "tasks");
@@ -99,12 +77,7 @@ pub fn task_add(
 }
 
 #[tauri::command]
-pub fn task_update(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-    input: TaskInput,
-) -> Result<Task, String> {
+pub fn task_update(app: AppHandle, state: State<'_, AppState>, id: i64, input: TaskInput) -> Result<Task, String> {
     let t = state.db.task_update(id, &input)?;
     state.db.log("tarea", &format!("Editaste: {}", t.title));
     notify(&app, "tasks");
@@ -112,21 +85,11 @@ pub fn task_update(
 }
 
 #[tauri::command]
-pub fn task_set_done(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-    done: bool,
-) -> Result<Task, String> {
+pub fn task_set_done(app: AppHandle, state: State<'_, AppState>, id: i64, done: bool) -> Result<Task, String> {
     let t = state.db.task_set_done(id, done)?;
-    state.db.log(
-        "tarea",
-        &format!(
-            "{}: {}",
-            if done { "Completada" } else { "Reabierta" },
-            t.title
-        ),
-    );
+    state
+        .db
+        .log("tarea", &format!("{}: {}", if done { "Completada" } else { "Reabierta" }, t.title));
     notify(&app, "tasks");
     Ok(t)
 }
@@ -152,12 +115,7 @@ pub fn activity_list(state: State<'_, AppState>) -> Result<Vec<Activity>, String
 // --------------------------------------------------------- conversaciones
 
 #[tauri::command]
-pub fn conversation_save(
-    state: State<'_, AppState>,
-    id: String,
-    title: String,
-    data: String,
-) -> Result<(), String> {
+pub fn conversation_save(state: State<'_, AppState>, id: String, title: String, data: String) -> Result<(), String> {
     if !state.current_settings().save_conversations {
         return Ok(());
     }
@@ -185,10 +143,7 @@ pub fn conversation_delete(state: State<'_, AppState>, id: String) -> Result<boo
 #[tauri::command]
 pub fn conversation_clear(state: State<'_, AppState>) -> Result<usize, String> {
     let n = state.db.conversation_clear()?;
-    state.db.log(
-        "privacidad",
-        &format!("Borraste el historial de chats ({n})"),
-    );
+    state.db.log("privacidad", &format!("Borraste el historial de chats ({n})"));
     Ok(n)
 }
 
@@ -196,15 +151,7 @@ pub fn conversation_clear(state: State<'_, AppState>) -> Result<usize, String> {
 #[tauri::command]
 pub fn conversation_context(state: State<'_, AppState>) -> Result<String, String> {
     let now = chrono::Local::now();
-    let days = [
-        "lunes",
-        "martes",
-        "miércoles",
-        "jueves",
-        "viernes",
-        "sábado",
-        "domingo",
-    ];
+    let days = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
     use chrono::Datelike;
     let weekday = days[now.weekday().num_days_from_monday() as usize];
     Ok(format!(

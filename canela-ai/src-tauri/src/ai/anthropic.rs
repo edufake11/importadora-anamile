@@ -12,11 +12,10 @@
 //! - Historial de sólo-anexar: los mensajes del asistente (razonamiento
 //!   firmado incluido) y los resultados de herramientas se reenvían tal cual.
 
-use super::{
-    ChatMessage, ParseOut, ProviderStream, Role, StreamEvent, ToolCall, ToolDef, TurnOutcome,
-};
+use super::{ChatMessage, ParseOut, ProviderStream, Role, StreamEvent, ToolCall, ToolDef, ToolResult, TurnOutcome};
 use crate::ai::sse::SseEvent;
 use crate::settings::ProviderId;
+use crate::vision::ImageData;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -57,7 +56,14 @@ pub fn native_messages(history: &[ChatMessage]) -> Vec<Value> {
     let mut out = Vec::new();
     for m in history {
         match m.role {
-            Role::User => out.push(json!({ "role": "user", "content": m.text })),
+            Role::User if m.images.is_empty() => out.push(json!({ "role": "user", "content": m.text })),
+            Role::User => {
+                let mut content: Vec<Value> = m.images.iter().map(image_block).collect();
+                if !m.text.trim().is_empty() {
+                    content.push(json!({ "type": "text", "text": m.text }));
+                }
+                out.push(json!({ "role": "user", "content": content }));
+            }
             Role::Assistant => {
                 if m.provider == Some(ProviderId::Anthropic) {
                     if let Some(t) = m.transcript.as_ref().filter(|t| !t.is_empty()) {
@@ -74,13 +80,7 @@ pub fn native_messages(history: &[ChatMessage]) -> Vec<Value> {
     out
 }
 
-pub fn build_body(
-    model: &str,
-    effort: &str,
-    system: &str,
-    messages: &[Value],
-    tools: &[ToolDef],
-) -> Value {
+pub fn build_body(model: &str, effort: &str, system: &str, messages: &[Value], tools: &[ToolDef]) -> Value {
     let mut body = json!({
         "model": model,
         "max_tokens": MAX_TOKENS,
@@ -140,11 +140,25 @@ pub fn build_request(
     req.json(&build_body(model, effort, system, messages, tools))
 }
 
+pub fn image_block(img: &ImageData) -> Value {
+    json!({ "type": "image", "source": { "type": "base64", "media_type": img.media_type, "data": img.data } })
+}
+
 /// Un único mensaje de usuario con todos los resultados de herramientas.
-pub fn tool_results_message(results: &[(String, String, bool)]) -> Vec<Value> {
+/// Las imágenes (capturas autorizadas) van dentro del propio tool_result.
+pub fn tool_results_message(results: &[ToolResult]) -> Vec<Value> {
     let blocks: Vec<Value> = results
         .iter()
-        .map(|(id, text, is_error)| json!({ "type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error }))
+        .map(|r| {
+            let content = if r.images.is_empty() {
+                json!(r.text)
+            } else {
+                let mut c = vec![json!({ "type": "text", "text": r.text })];
+                c.extend(r.images.iter().map(image_block));
+                Value::Array(c)
+            };
+            json!({ "type": "tool_result", "tool_use_id": r.id, "content": content, "is_error": r.is_error })
+        })
         .collect();
     vec![json!({ "role": "user", "content": blocks })]
 }
@@ -161,20 +175,12 @@ pub fn sanitize_for_replay(blocks: &[Value]) -> Vec<Value> {
         .filter(|(i, b)| {
             let t = b["type"].as_str().unwrap_or("");
             if let Some(fb) = last_fallback {
-                if *i < fb
-                    && matches!(
-                        t,
-                        "thinking" | "redacted_thinking" | "tool_use" | "server_tool_use"
-                    )
-                {
+                if *i < fb && matches!(t, "thinking" | "redacted_thinking" | "tool_use" | "server_tool_use") {
                     return false;
                 }
             }
             match t {
-                "thinking" => b
-                    .get("signature")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.is_empty()),
+                "thinking" => b.get("signature").and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
                 "text" => b["text"].as_str().is_some_and(|s| !s.is_empty()),
                 _ => true,
             }
@@ -209,15 +215,14 @@ impl AnthropicStream {
         let refused = self.stop_reason.as_deref() == Some("refusal");
         let mut notice = self.notice.take();
         if refused {
-            notice = Some("Claude no pudo continuar con esta solicitud (rechazo por políticas de seguridad). Prueba a reformularla.".into());
+            notice =
+                Some("Claude no pudo continuar con esta solicitud (rechazo por políticas de seguridad). Prueba a reformularla.".into());
         } else if self.stop_reason.as_deref() == Some("max_tokens") {
             notice = Some("La respuesta se cortó por alcanzar el límite de longitud.".into());
         }
         // Un fallback a mitad de respuesta descarta las herramientas anteriores al cambio.
         let last_fallback = self.blocks.iter().rposition(|b| b["type"] == "fallback");
-        let tool_calls: Vec<ToolCall> = if refused
-            || self.stop_reason.as_deref() == Some("max_tokens")
-        {
+        let tool_calls: Vec<ToolCall> = if refused || self.stop_reason.as_deref() == Some("max_tokens") {
             vec![]
         } else {
             self.blocks
@@ -234,12 +239,7 @@ impl AnthropicStream {
                 })
                 .collect()
         };
-        let blocks: Vec<Value> = self
-            .blocks
-            .iter()
-            .filter(|b| !b.is_null())
-            .cloned()
-            .collect();
+        let blocks: Vec<Value> = self.blocks.iter().filter(|b| !b.is_null()).cloned().collect();
         let kept = sanitize_for_replay(&blocks);
         let assistant = if refused || kept.is_empty() {
             None
@@ -264,10 +264,7 @@ impl ProviderStream for AnthropicStream {
         let index = data["index"].as_u64().unwrap_or(0) as usize;
         match data["type"].as_str().unwrap_or("") {
             "message_start" => {
-                let model = data["message"]["model"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
+                let model = data["message"]["model"].as_str().unwrap_or_default().to_string();
                 self.model = Some(model.clone());
                 vec![ParseOut::Event(StreamEvent::Started { model })]
             }
@@ -286,9 +283,7 @@ impl ProviderStream for AnthropicStream {
                     "fallback" => {
                         let to = block["to"]["model"].as_str().unwrap_or("otro modelo");
                         self.model = Some(to.to_string());
-                        self.notice = Some(format!(
-                            "Respuesta completada con el modelo de respaldo {to}."
-                        ));
+                        self.notice = Some(format!("Respuesta completada con el modelo de respaldo {to}."));
                         vec![]
                     }
                     "text" => {
@@ -311,9 +306,7 @@ impl ProviderStream for AnthropicStream {
                         let t = delta["text"].as_str().unwrap_or("");
                         let prev = block["text"].as_str().unwrap_or("").to_string();
                         block["text"] = Value::String(prev + t);
-                        vec![ParseOut::Event(StreamEvent::Delta {
-                            text: t.to_string(),
-                        })]
+                        vec![ParseOut::Event(StreamEvent::Delta { text: t.to_string() })]
                     }
                     "thinking_delta" => {
                         let t = delta["thinking"].as_str().unwrap_or("");
@@ -326,8 +319,7 @@ impl ProviderStream for AnthropicStream {
                         vec![]
                     }
                     "input_json_delta" => {
-                        self.partial_json[index]
-                            .push_str(delta["partial_json"].as_str().unwrap_or(""));
+                        self.partial_json[index].push_str(delta["partial_json"].as_str().unwrap_or(""));
                         vec![]
                     }
                     _ => vec![],
@@ -341,7 +333,10 @@ impl ProviderStream for AnthropicStream {
                             Ok(input) if input.is_object() => self.blocks[index]["input"] = input,
                             _ => {
                                 // JSON incompleto o inválido: no se ejecuta; se informa al modelo.
-                                self.bad_input.insert(index, "INVALID_JSON: la entrada de la herramienta no es un JSON válido. Vuelve a intentarlo.".into());
+                                self.bad_input.insert(
+                                    index,
+                                    "INVALID_JSON: la entrada de la herramienta no es un JSON válido. Vuelve a intentarlo.".into(),
+                                );
                             }
                         }
                     }
@@ -356,13 +351,10 @@ impl ProviderStream for AnthropicStream {
             }
             "message_stop" => vec![ParseOut::Finished(self.outcome())],
             "error" => {
-                let msg = data["error"]["message"]
-                    .as_str()
-                    .unwrap_or("error desconocido");
+                let msg = data["error"]["message"].as_str().unwrap_or("error desconocido");
                 let kind = data["error"]["type"].as_str().unwrap_or("");
                 vec![ParseOut::Failed(if kind == "overloaded_error" {
-                    "Claude está saturado en este momento. Inténtalo de nuevo en unos segundos."
-                        .to_string()
+                    "Claude está saturado en este momento. Inténtalo de nuevo en unos segundos.".to_string()
                 } else {
                     format!("Error de Claude: {msg}")
                 })]
@@ -387,6 +379,7 @@ mod tests {
             text: t.into(),
             provider: None,
             transcript: None,
+            images: vec![],
         }
     }
 
@@ -452,6 +445,7 @@ mod tests {
             text: "¡Listo!".into(),
             provider: Some(ProviderId::Anthropic),
             transcript: Some(transcript.clone()),
+            images: vec![],
         };
         let msgs = native_messages(&[user("abre algo"), a.clone(), user("gracias")]);
         assert_eq!(msgs.len(), 5);
@@ -531,15 +525,8 @@ mod tests {
         let (_, o) = run(raw);
         let o = o.unwrap();
         assert_eq!(o.tool_calls.len(), 2);
-        assert_eq!(
-            o.tool_calls[0].input.as_ref().unwrap()["nombre"],
-            "Visual Studio Code"
-        );
-        assert!(o.tool_calls[1]
-            .input
-            .as_ref()
-            .unwrap_err()
-            .starts_with("INVALID_JSON"));
+        assert_eq!(o.tool_calls[0].input.as_ref().unwrap()["nombre"], "Visual Studio Code");
+        assert!(o.tool_calls[1].input.as_ref().unwrap_err().starts_with("INVALID_JSON"));
         // El bloque tool_use se conserva para reenviarlo con su resultado.
         assert_eq!(o.assistant.unwrap()["content"][0]["id"], "toolu_1");
     }
@@ -557,11 +544,47 @@ mod tests {
         assert!(o.notice.unwrap().contains("rechazo"));
     }
 
+    fn img() -> ImageData {
+        ImageData {
+            media_type: "image/jpeg".into(),
+            data: "AAAA".into(),
+            width: 1,
+            height: 1,
+        }
+    }
+
     #[test]
     fn tool_results_shape() {
-        let m = tool_results_message(&[("t1".into(), "hecho".into(), false)]);
+        let m = tool_results_message(&[ToolResult {
+            id: "t1".into(),
+            text: "hecho".into(),
+            is_error: false,
+            images: vec![],
+        }]);
         assert_eq!(m[0]["role"], "user");
         assert_eq!(m[0]["content"][0]["type"], "tool_result");
         assert_eq!(m[0]["content"][0]["tool_use_id"], "t1");
+        let m = tool_results_message(&[ToolResult {
+            id: "t2".into(),
+            text: "captura".into(),
+            is_error: false,
+            images: vec![img()],
+        }]);
+        assert_eq!(m[0]["content"][0]["content"][1]["type"], "image");
+        assert_eq!(m[0]["content"][0]["content"][1]["source"]["media_type"], "image/jpeg");
+    }
+
+    #[test]
+    fn user_images_go_before_text() {
+        let u = ChatMessage {
+            role: Role::User,
+            text: "¿qué falla?".into(),
+            provider: None,
+            transcript: None,
+            images: vec![img()],
+        };
+        let msgs = native_messages(&[u]);
+        assert_eq!(msgs[0]["content"][0]["type"], "image");
+        assert_eq!(msgs[0]["content"][1]["text"], "¿qué falla?");
     }
 }

@@ -59,12 +59,7 @@ pub fn encode_wav(samples: &[f32], rate: u32) -> Vec<u8> {
 
 // ---------------------------------------------------------- transcripción
 
-pub async fn transcribe(
-    http: &reqwest::Client,
-    api_key: &str,
-    model: &str,
-    wav: Vec<u8>,
-) -> Result<String, String> {
+pub async fn transcribe(http: &reqwest::Client, api_key: &str, model: &str, wav: Vec<u8>) -> Result<String, String> {
     let part = reqwest::multipart::Part::bytes(wav)
         .file_name("canela.wav")
         .mime_str("audio/wav")
@@ -89,15 +84,9 @@ pub async fn transcribe(
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(crate::ai::http_error_message(
-            ProviderId::Openai,
-            status.as_u16(),
-            &body,
-            model,
-        ));
+        return Err(crate::ai::http_error_message(ProviderId::Openai, status.as_u16(), &body, model));
     }
-    let v: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| "Respuesta de transcripción no válida.".to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|_| "Respuesta de transcripción no válida.".to_string())?;
     Ok(v["text"].as_str().unwrap_or_default().trim().to_string())
 }
 
@@ -127,18 +116,10 @@ pub async fn synthesize(
     let status = resp.status();
     if !status.is_success() {
         let b = resp.text().await.unwrap_or_default();
-        return Err(crate::ai::http_error_message(
-            ProviderId::Openai,
-            status.as_u16(),
-            &b,
-            model,
-        ));
+        return Err(crate::ai::http_error_message(ProviderId::Openai, status.as_u16(), &b, model));
     }
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect())
+    Ok(bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect())
 }
 
 // ------------------------------------------------------- estado en vivo
@@ -166,14 +147,7 @@ pub struct VoiceRuntime {
 }
 
 fn emit_state(app: &AppHandle, state: &'static str, level: Option<f32>, message: Option<String>) {
-    let _ = app.emit(
-        "voice-state",
-        VoiceStateEvent {
-            state,
-            level,
-            message,
-        },
-    );
+    let _ = app.emit("voice-state", VoiceStateEvent { state, level, message });
 }
 
 fn openai_key() -> Result<String, String> {
@@ -237,12 +211,7 @@ pub async fn voice_start(app: AppHandle, state: State<'_, AppState>) -> Result<(
                             let _ = app.emit("voice-transcript", TranscriptEvent { text });
                             emit_state(&app, "idle", None, None);
                         }
-                        Ok(_) => emit_state(
-                            &app,
-                            "idle",
-                            None,
-                            Some("No entendí nada. ¿Lo repites?".into()),
-                        ),
+                        Ok(_) => emit_state(&app, "idle", None, Some("No entendí nada. ¿Lo repites?".into())),
                         Err(e) => emit_state(&app, "error", None, Some(e)),
                     }
                 });
@@ -299,11 +268,7 @@ pub fn voice_cancel(state: State<'_, AppState>) -> bool {
 
 /// Encola un fragmento para decirlo con la voz de OpenAI.
 #[tauri::command]
-pub fn tts_cloud_speak(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    text: String,
-) -> Result<(), String> {
+pub fn tts_cloud_speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), String> {
     let text: String = text.chars().take(4000).collect();
     if text.trim().is_empty() {
         return Ok(());
@@ -325,21 +290,12 @@ pub fn tts_cloud_speak(
                 let key = match openai_key() {
                     Ok(k) => k,
                     Err(e) => {
-                        let _ = app2.emit(
-                            "tts-state",
-                            serde_json::json!({ "speaking": false, "error": e }),
-                        );
+                        let _ = app2.emit("tts-state", serde_json::json!({ "speaking": false, "error": e }));
                         continue;
                     }
                 };
-                let pcm = tauri::async_runtime::block_on(synthesize(
-                    &http,
-                    &key,
-                    &s.tts_cloud_model,
-                    &s.tts_cloud_voice,
-                    &text,
-                    s.tts_rate,
-                ));
+                let pcm =
+                    tauri::async_runtime::block_on(synthesize(&http, &key, &s.tts_cloud_model, &s.tts_cloud_voice, &text, s.tts_rate));
                 if g != gen.load(Ordering::SeqCst) {
                     continue;
                 }
@@ -347,25 +303,13 @@ pub fn tts_cloud_speak(
                     Ok(pcm) => {
                         stop.store(false, Ordering::SeqCst);
                         let _ = app2.emit("tts-state", serde_json::json!({ "speaking": true }));
-                        if let Err(e) = audio::play_pcm(
-                            s.voice_output_device.as_deref(),
-                            &pcm,
-                            TTS_RATE,
-                            s.tts_volume,
-                            stop.clone(),
-                        ) {
-                            let _ = app2.emit(
-                                "tts-state",
-                                serde_json::json!({ "speaking": false, "error": e }),
-                            );
+                        if let Err(e) = audio::play_pcm(s.voice_output_device.as_deref(), &pcm, TTS_RATE, s.tts_volume, stop.clone()) {
+                            let _ = app2.emit("tts-state", serde_json::json!({ "speaking": false, "error": e }));
                             continue;
                         }
                     }
                     Err(e) => {
-                        let _ = app2.emit(
-                            "tts-state",
-                            serde_json::json!({ "speaking": false, "error": e }),
-                        );
+                        let _ = app2.emit("tts-state", serde_json::json!({ "speaking": false, "error": e }));
                         continue;
                     }
                 }
@@ -375,10 +319,7 @@ pub fn tts_cloud_speak(
         *tx = Some(sender);
     }
     let g = state.voice.tts_gen.load(Ordering::SeqCst);
-    tx.as_ref()
-        .unwrap()
-        .send((g, text))
-        .map_err(|e| e.to_string())
+    tx.as_ref().unwrap().send((g, text)).map_err(|e| e.to_string())
 }
 
 /// Calla a Canela (voz de OpenAI) y descarta lo pendiente.
@@ -424,18 +365,16 @@ mod tests {
             }
             *s2.lock().unwrap() = String::from_utf8_lossy(&req).to_string();
             let body = r#"{"text":"  Canela, ¿qué tenemos pendiente hoy?  "}"#;
-            let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
             sock.write_all(head.as_bytes()).await.unwrap();
             sock.write_all(body.as_bytes()).await.unwrap();
         });
-        std::env::set_var(
-            "CANELA_TEST_STT_URL",
-            format!("http://{addr}/v1/audio/transcriptions"),
-        );
+        std::env::set_var("CANELA_TEST_STT_URL", format!("http://{addr}/v1/audio/transcriptions"));
         let wav = encode_wav(&vec![0.1; 16_000], 16_000);
-        let text = transcribe(&reqwest::Client::new(), "sk-test", "gpt-transcribe", wav)
-            .await
-            .unwrap();
+        let text = transcribe(&reqwest::Client::new(), "sk-test", "gpt-transcribe", wav).await.unwrap();
         std::env::remove_var("CANELA_TEST_STT_URL");
         assert_eq!(text, "Canela, ¿qué tenemos pendiente hoy?");
         let req = seen.lock().unwrap().clone();

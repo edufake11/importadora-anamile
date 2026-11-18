@@ -1,11 +1,10 @@
 //! Proveedor OpenAI (ChatGPT) — Chat Completions API con streaming SSE y
 //! llamadas a funciones (herramientas).
 
-use super::{
-    ChatMessage, ParseOut, ProviderStream, Role, StreamEvent, ToolCall, ToolDef, TurnOutcome,
-};
+use super::{ChatMessage, ParseOut, ProviderStream, Role, StreamEvent, ToolCall, ToolDef, ToolResult, TurnOutcome};
 use crate::ai::sse::SseEvent;
 use crate::settings::ProviderId;
+use crate::vision::ImageData;
 use serde_json::{json, Value};
 
 pub const API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -14,7 +13,8 @@ pub fn native_messages(history: &[ChatMessage]) -> Vec<Value> {
     let mut out = Vec::new();
     for m in history {
         match m.role {
-            Role::User => out.push(json!({ "role": "user", "content": m.text })),
+            Role::User if m.images.is_empty() => out.push(json!({ "role": "user", "content": m.text })),
+            Role::User => out.push(user_with_images(&m.text, &m.images)),
             Role::Assistant => {
                 if m.provider == Some(ProviderId::Openai) {
                     if let Some(t) = m.transcript.as_ref().filter(|t| !t.is_empty()) {
@@ -39,7 +39,9 @@ pub fn build_body(model: &str, system: &str, messages: &[Value], tools: &[ToolDe
         body["tools"] = Value::Array(
             tools
                 .iter()
-                .map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.schema } }))
+                .map(
+                    |t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.schema } }),
+                )
                 .collect(),
         );
     }
@@ -65,18 +67,35 @@ pub fn build_request(
         .json(&build_body(model, system, messages, tools))
 }
 
-pub fn tool_results_messages(results: &[(String, String, bool)]) -> Vec<Value> {
-    results
+fn user_with_images(text: &str, images: &[ImageData]) -> Value {
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    content.extend(
+        images
+            .iter()
+            .map(|i| json!({ "type": "image_url", "image_url": { "url": i.data_url() } })),
+    );
+    json!({ "role": "user", "content": content })
+}
+
+/// Mensajes "tool" con los resultados. Como OpenAI no admite imágenes dentro
+/// de un mensaje "tool", las capturas autorizadas van en un mensaje de
+/// usuario inmediatamente después.
+pub fn tool_results_messages(results: &[ToolResult]) -> Vec<Value> {
+    let mut out: Vec<Value> = results
         .iter()
-        .map(|(id, text, is_error)| {
-            let content = if *is_error {
-                format!("ERROR: {text}")
-            } else {
-                text.clone()
-            };
-            json!({ "role": "tool", "tool_call_id": id, "content": content })
+        .map(|r| {
+            let content = if r.is_error { format!("ERROR: {}", r.text) } else { r.text.clone() };
+            json!({ "role": "tool", "tool_call_id": r.id, "content": content })
         })
-        .collect()
+        .collect();
+    let images: Vec<ImageData> = results.iter().flat_map(|r| r.images.clone()).collect();
+    if !images.is_empty() {
+        out.push(user_with_images(
+            "(Imagen entregada por la herramienta anterior, autorizada por el usuario.)",
+            &images,
+        ));
+    }
+    out
 }
 
 #[derive(Default, Clone)]
@@ -102,12 +121,8 @@ impl OpenAiStream {
 
     fn outcome(&self) -> TurnOutcome {
         let notice = match self.finish_reason.as_deref() {
-            Some("length") => {
-                Some("La respuesta se cortó por alcanzar el límite de longitud.".to_string())
-            }
-            Some("content_filter") => Some(
-                "OpenAI filtró parte de la respuesta por sus políticas de contenido.".to_string(),
-            ),
+            Some("length") => Some("La respuesta se cortó por alcanzar el límite de longitud.".to_string()),
+            Some("content_filter") => Some("OpenAI filtró parte de la respuesta por sus políticas de contenido.".to_string()),
             _ => None,
         };
         let calls: Vec<&PartialCall> = self.calls.iter().filter(|c| !c.name.is_empty()).collect();
@@ -116,20 +131,14 @@ impl OpenAiStream {
             .map(|c| ToolCall {
                 id: c.id.clone(),
                 name: c.name.clone(),
-                input: match serde_json::from_str::<Value>(if c.arguments.trim().is_empty() {
-                    "{}"
-                } else {
-                    &c.arguments
-                }) {
+                input: match serde_json::from_str::<Value>(if c.arguments.trim().is_empty() { "{}" } else { &c.arguments }) {
                     Ok(v) if v.is_object() => Ok(v),
-                    _ => Err(
-                        "INVALID_JSON: los argumentos no son un JSON válido. Vuelve a intentarlo."
-                            .into(),
-                    ),
+                    _ => Err("INVALID_JSON: los argumentos no son un JSON válido. Vuelve a intentarlo.".into()),
                 },
             })
             .collect();
-        let mut assistant = json!({ "role": "assistant", "content": if self.text.is_empty() { Value::Null } else { Value::String(self.text.clone()) } });
+        let mut assistant =
+            json!({ "role": "assistant", "content": if self.text.is_empty() { Value::Null } else { Value::String(self.text.clone()) } });
         if !calls.is_empty() {
             assistant["tool_calls"] = Value::Array(
                 calls
@@ -165,18 +174,14 @@ impl ProviderStream for OpenAiStream {
             if let Some(m) = data["model"].as_str() {
                 self.started = true;
                 self.model = Some(m.to_string());
-                out.push(ParseOut::Event(StreamEvent::Started {
-                    model: m.to_string(),
-                }));
+                out.push(ParseOut::Event(StreamEvent::Started { model: m.to_string() }));
             }
         }
         let choice = &data["choices"][0];
         if let Some(t) = choice["delta"]["content"].as_str() {
             if !t.is_empty() {
                 self.text.push_str(t);
-                out.push(ParseOut::Event(StreamEvent::Delta {
-                    text: t.to_string(),
-                }));
+                out.push(ParseOut::Event(StreamEvent::Delta { text: t.to_string() }));
             }
         }
         if let Some(calls) = choice["delta"]["tool_calls"].as_array() {
@@ -238,12 +243,14 @@ mod tests {
                 text: "hola".into(),
                 provider: None,
                 transcript: None,
+                images: vec![],
             },
             ChatMessage {
                 role: Role::Assistant,
                 text: "¡guau!".into(),
                 provider: Some(ProviderId::Openai),
                 transcript: None,
+                images: vec![],
             },
         ]);
         let tools = vec![ToolDef {
@@ -282,14 +289,31 @@ mod tests {
         );
         let o = run(raw).1.unwrap();
         assert_eq!(o.tool_calls.len(), 1);
-        assert_eq!(
-            o.tool_calls[0].input.as_ref().unwrap()["titulo"],
-            "Estudiar"
-        );
+        assert_eq!(o.tool_calls[0].input.as_ref().unwrap()["titulo"], "Estudiar");
         let a = o.assistant.unwrap();
         assert_eq!(a["tool_calls"][0]["id"], "call_1");
         assert!(a["content"].is_null());
-        let r = tool_results_messages(&[("call_1".into(), "ok".into(), false)]);
+        let r = tool_results_messages(&[ToolResult {
+            id: "call_1".into(),
+            text: "ok".into(),
+            is_error: false,
+            images: vec![],
+        }]);
         assert_eq!(r[0]["role"], "tool");
+        let img = ImageData {
+            media_type: "image/jpeg".into(),
+            data: "AAAA".into(),
+            width: 1,
+            height: 1,
+        };
+        let r = tool_results_messages(&[ToolResult {
+            id: "call_2".into(),
+            text: "captura".into(),
+            is_error: false,
+            images: vec![img],
+        }]);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[1]["role"], "user");
+        assert_eq!(r[1]["content"][1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
     }
 }

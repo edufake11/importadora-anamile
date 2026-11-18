@@ -16,6 +16,7 @@ use crate::ai::{self, ToolDef};
 use crate::db::{looks_sensitive, normalize_kind, Db, TaskFilter, TaskInput};
 use crate::jobs::Jobs;
 use crate::settings::Settings;
+use crate::vision;
 use files::{display, Scope};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -38,6 +39,23 @@ pub struct ToolCtx {
     pub llm: Option<LlmAccess>,
     /// Avisa a la interfaz de que cambiaron tareas o memoria.
     pub notify: Arc<dyn Fn(&'static str) + Send + Sync>,
+    /// Capturas de pantalla (None = no disponibles en este contexto).
+    pub screen: Option<Arc<dyn ScreenCapturer>>,
+}
+
+type BoxFut<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Quien sabe capturar la pantalla (en la app: oculta a Canela y captura).
+pub trait ScreenCapturer: Send + Sync {
+    fn capture(&self, target: vision::Target) -> BoxFut<'_, Result<image::RgbaImage, String>>;
+    /// Id de una ventana cuyo título contiene `title` (sin ventanas sensibles).
+    fn find_window(&self, title: &str) -> Option<u32>;
+}
+
+/// Lo que una herramienta devuelve al modelo.
+pub struct ToolOutput {
+    pub text: String,
+    pub images: Vec<vision::ImageData>,
 }
 
 pub enum Permission {
@@ -46,6 +64,8 @@ pub enum Permission {
         title: String,
         details: String,
         diff: Option<String>,
+        /// Vista previa (data URL) de una imagen que se enviaría.
+        image: Option<String>,
     },
 }
 
@@ -57,6 +77,7 @@ pub struct Prepared {
 }
 
 enum Action {
+    SendImage(vision::ImageData),
     Remember {
         kind: String,
         content: String,
@@ -250,6 +271,17 @@ pub fn definitions() -> Vec<ToolDef> {
             schema: obj(json!({ "ruta": { "type": "string" } }), &["ruta"]),
         },
         ToolDef {
+            name: "ver_pantalla",
+            description: "Toma una captura de la pantalla (o de una ventana) para ver lo que el usuario tiene delante: errores, mensajes, código. El usuario verá la captura y decidirá si se envía. Úsala cuando te pidan mirar la pantalla.",
+            schema: obj(
+                json!({
+                    "que": { "type": "string", "enum": ["pantalla", "ventana"] },
+                    "ventana": { "type": "string", "description": "Parte del título de la ventana (si que=ventana)" }
+                }),
+                &[],
+            ),
+        },
+        ToolDef {
             name: "analizar_proyecto",
             description: "Analiza la estructura y archivos clave de un proyecto de software en SEGUNDO PLANO y luego entrega un informe en el chat. El usuario puede seguir conversando mientras tanto.",
             schema: obj(
@@ -283,10 +315,8 @@ fn int(input: &Value, key: &str) -> Result<i64, String> {
     input
         .get(key)
         .and_then(|v| {
-            v.as_i64().or_else(|| {
-                v.as_str()
-                    .and_then(|s| s.trim().trim_start_matches('#').parse().ok())
-            })
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().trim_start_matches('#').parse().ok()))
         })
         .ok_or_else(|| format!("Falta el parámetro numérico «{key}»."))
 }
@@ -298,22 +328,17 @@ fn priority(input: &Value) -> Result<Option<i64>, String> {
             "alta" | "high" | "1" => Ok(Some(1)),
             "normal" | "media" | "2" => Ok(Some(2)),
             "baja" | "low" | "3" => Ok(Some(3)),
-            _ => Err(format!(
-                "Prioridad no válida: «{p}» (usa alta, normal o baja)."
-            )),
+            _ => Err(format!("Prioridad no válida: «{p}» (usa alta, normal o baja).")),
         },
     }
 }
 
-fn confirm(
-    title: impl Into<String>,
-    details: impl Into<String>,
-    diff: Option<String>,
-) -> Permission {
+fn confirm(title: impl Into<String>, details: impl Into<String>, diff: Option<String>) -> Permission {
     Permission::Confirm {
         title: title.into(),
         details: details.into(),
         diff,
+        image: None,
     }
 }
 
@@ -336,9 +361,7 @@ fn task_line(t: &crate::db::Task) -> String {
 
 /// Nombre corto («notas.md») para etiquetas; la ruta completa va en los detalles.
 fn short(p: &std::path::Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| display(p))
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| display(p))
 }
 
 fn parent(p: &std::path::Path) -> String {
@@ -352,28 +375,54 @@ fn fmt_time(t: std::time::SystemTime) -> String {
 
 // ---------------------------------------------------------------- prepare
 
-pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, String> {
-    let p = |label: String, permission: Permission, action: Action| {
-        Ok(Prepared {
-            label,
-            permission,
-            action,
-        })
+/// Como `prepare`, pero puede hacer trabajo asíncrono previo (capturas).
+pub async fn prepare_async(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, String> {
+    if name != "ver_pantalla" {
+        return prepare(ctx, name, input);
+    }
+    let screen = ctx.screen.clone().ok_or("La captura de pantalla no está disponible ahora.")?;
+    if !ctx.settings.vision_enabled {
+        return Err("La visión de pantalla está desactivada en Ajustes.".into());
+    }
+    if ai::model_supports_images(ctx.settings.provider, &ai::model_of(&ctx.settings)) == Some(false) {
+        return Err("El modelo elegido no acepta imágenes. Cambia a un modelo con visión en Ajustes.".into());
+    }
+    let target = match s(input, "que").as_deref() {
+        Some("ventana") => {
+            let title = req(input, "ventana")?;
+            let id = screen
+                .find_window(&title)
+                .ok_or_else(|| format!("No encontré una ventana abierta con «{title}» (o es una ventana privada)."))?;
+            vision::Target::Window(id)
+        }
+        _ => vision::Target::Active,
     };
+    let img = screen.capture(target).await?;
+    let for_model = vision::for_model(&img, None)?;
+    let preview = vision::preview(&img)?.data_url();
+    drop(img);
+    Ok(Prepared {
+        label: "Mirar tu pantalla".into(),
+        permission: Permission::Confirm {
+            title: "¿Envío esta captura a la IA?".into(),
+            details: "Revisa que no aparezca nada privado. Sólo se enviará si pulsas Permitir.".into(),
+            diff: None,
+            image: Some(preview),
+        },
+        action: Action::SendImage(for_model),
+    })
+}
+
+pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, String> {
+    let p = |label: String, permission: Permission, action: Action| Ok(Prepared { label, permission, action });
     match name {
         "recordar" => {
             let content = req(input, "contenido")?;
             if let Some(why) = looks_sensitive(&content) {
-                return Err(format!(
-                    "No guardo información sensible ({why}). Por seguridad no lo recordaré."
-                ));
+                return Err(format!("No guardo información sensible ({why}). Por seguridad no lo recordaré."));
             }
             let kind = normalize_kind(&s(input, "tipo").unwrap_or_default());
-            p(
-                format!("Recordar: {content}"),
-                Permission::Auto,
-                Action::Remember { kind, content },
-            )
+            p(format!("Recordar: {content}"), Permission::Auto, Action::Remember { kind, content })
         }
         "buscar_recuerdos" => p(
             "Buscar en mi memoria".into(),
@@ -385,10 +434,7 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
         ),
         "olvidar" => {
             let id = int(input, "id")?;
-            let m = ctx
-                .db
-                .memory_get(id)?
-                .ok_or_else(|| format!("No existe el recuerdo #{id}."))?;
+            let m = ctx.db.memory_get(id)?.ok_or_else(|| format!("No existe el recuerdo #{id}."))?;
             p(
                 "Olvidar un recuerdo".to_string(),
                 confirm("Olvidar este recuerdo", m.content, None),
@@ -397,9 +443,7 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
         }
         "buscar_conversaciones" => {
             if !ctx.settings.save_conversations {
-                return Err(
-                    "El historial de conversaciones está desactivado (Ajustes › Memoria).".into(),
-                );
+                return Err("El historial de conversaciones está desactivado (Ajustes › Memoria).".into());
             }
             p(
                 "Buscar en conversaciones anteriores".into(),
@@ -425,11 +469,7 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             if let Some(d) = &ti.remind_at {
                 crate::db::normalize_datetime(d, false)?;
             }
-            p(
-                format!("Crear tarea: {title}"),
-                Permission::Auto,
-                Action::AddTask(ti),
-            )
+            p(format!("Crear tarea: {title}"), Permission::Auto, Action::AddTask(ti))
         }
         "listar_tareas" => {
             let f = match s(input, "filtro").as_deref() {
@@ -438,18 +478,11 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                 Some("todas") => TaskFilter::All,
                 _ => TaskFilter::Pending,
             };
-            p(
-                "Revisar tus tareas".into(),
-                Permission::Auto,
-                Action::ListTasks(f),
-            )
+            p("Revisar tus tareas".into(), Permission::Auto, Action::ListTasks(f))
         }
         "actualizar_tarea" => {
             let id = int(input, "id")?;
-            let t = ctx
-                .db
-                .task_get(id)?
-                .ok_or_else(|| format!("No existe la tarea #{id}."))?;
+            let t = ctx.db.task_get(id)?.ok_or_else(|| format!("No existe la tarea #{id}."))?;
             let ti = TaskInput {
                 title: s(input, "titulo"),
                 notes: None,
@@ -463,22 +496,11 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             } else {
                 format!("Editar tarea: {}", t.title)
             };
-            p(
-                label,
-                Permission::Auto,
-                Action::UpdateTask {
-                    id,
-                    input: ti,
-                    done,
-                },
-            )
+            p(label, Permission::Auto, Action::UpdateTask { id, input: ti, done })
         }
         "eliminar_tarea" => {
             let id = int(input, "id")?;
-            let t = ctx
-                .db
-                .task_get(id)?
-                .ok_or_else(|| format!("No existe la tarea #{id}."))?;
+            let t = ctx.db.task_get(id)?.ok_or_else(|| format!("No existe la tarea #{id}."))?;
             p(
                 format!("Eliminar tarea: {}", t.title),
                 confirm("Eliminar tarea", t.title, None),
@@ -487,9 +509,8 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
         }
         "abrir_aplicacion" => {
             let name = req(input, "nombre")?;
-            let target = apps::resolve(&name, &apps::start_menu_shortcuts()).ok_or_else(|| {
-                format!("No encontré «{name}» entre las aplicaciones instaladas del menú Inicio.")
-            })?;
+            let target = apps::resolve(&name, &apps::start_menu_shortcuts())
+                .ok_or_else(|| format!("No encontré «{name}» entre las aplicaciones instaladas del menú Inicio."))?;
             let label = format!("Abrir {}", target.label());
             let perm = if ctx.settings.auto_open_apps {
                 Permission::Auto
@@ -499,8 +520,7 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             p(label, perm, Action::OpenApp(target))
         }
         "abrir_web" => {
-            let url =
-                apps::web_target(s(input, "url").as_deref(), s(input, "busqueda").as_deref())?;
+            let url = apps::web_target(s(input, "url").as_deref(), s(input, "busqueda").as_deref())?;
             let browser = s(input, "navegador").filter(|b| b != "predeterminado");
             let label = match s(input, "busqueda") {
                 Some(q) if s(input, "url").is_none() => format!("Buscar en la web: {q}"),
@@ -514,11 +534,7 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             p(label, perm, Action::OpenWeb { url, browser })
         }
         "listar_carpeta" => match s(input, "ruta") {
-            None => p(
-                "Ver carpetas autorizadas".into(),
-                Permission::Auto,
-                Action::ListDir(None),
-            ),
+            None => p("Ver carpetas autorizadas".into(), Permission::Auto, Action::ListDir(None)),
             Some(r) => {
                 let dir = ctx.scope.existing(&r)?;
                 p(
@@ -542,32 +558,16 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             p(
                 format!("Buscar «{query}»"),
                 Permission::Auto,
-                Action::Search {
-                    query,
-                    root,
-                    only_dirs,
-                },
+                Action::Search { query, root, only_dirs },
             )
         }
         "archivos_recientes" => {
-            let limit = input
-                .get("limite")
-                .and_then(Value::as_u64)
-                .unwrap_or(15)
-                .clamp(1, 40) as usize;
-            p(
-                "Ver archivos recientes".into(),
-                Permission::Auto,
-                Action::Recent { limit },
-            )
+            let limit = input.get("limite").and_then(Value::as_u64).unwrap_or(15).clamp(1, 40) as usize;
+            p("Ver archivos recientes".into(), Permission::Auto, Action::Recent { limit })
         }
         "leer_archivo" => {
             let path = ctx.scope.existing(&req(input, "ruta")?)?;
-            p(
-                format!("Leer {}", short(&path)),
-                Permission::Auto,
-                Action::Read(path),
-            )
+            p(format!("Leer {}", short(&path)), Permission::Auto, Action::Read(path))
         }
         "abrir_ruta" => {
             let path = ctx.scope.existing(&req(input, "ruta")?)?;
@@ -610,36 +610,23 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                 return Err("Esa ruta es una carpeta.".into());
             }
             let (title, old) = if path.exists() {
-                (
-                    format!("Modificar «{}»", short(&path)),
-                    files::read_text(&path)?,
-                )
+                (format!("Modificar «{}»", short(&path)), files::read_text(&path)?)
             } else {
                 (format!("Crear «{}»", short(&path)), String::new())
             };
             if old == content {
-                return Err(
-                    "El archivo ya tiene exactamente ese contenido; no hay cambios.".into(),
-                );
+                return Err("El archivo ya tiene exactamente ese contenido; no hay cambios.".into());
             }
             let diff = files::unified_diff(&old, &content, 400);
             let details = if old.is_empty() {
-                format!(
-                    "Carpeta: {}\nArchivo nuevo ({} líneas).",
-                    parent(&path),
-                    content.lines().count()
-                )
+                format!("Carpeta: {}\nArchivo nuevo ({} líneas).", parent(&path), content.lines().count())
             } else {
                 format!(
                     "Carpeta: {}\nRevisa los cambios. Se guardará una copia del original.",
                     parent(&path)
                 )
             };
-            p(
-                title.clone(),
-                confirm(title, details, Some(diff)),
-                Action::Write { path, content },
-            )
+            p(title.clone(), confirm(title, details, Some(diff)), Action::Write { path, content })
         }
         "organizar_carpeta" => {
             let dir = ctx.scope.existing(&req(input, "ruta")?)?;
@@ -654,20 +641,14 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
                     None => counts.push((cat, 1)),
                 }
             }
-            let summary = counts
-                .iter()
-                .map(|(c, n)| format!("{n} → {c}"))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let summary = counts.iter().map(|(c, n)| format!("{n} → {c}")).collect::<Vec<_>>().join("\n");
             let preview = plan
                 .iter()
                 .take(60)
                 .map(|(f, c)| {
                     format!(
                         "{}  →  {c}/",
-                        f.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
+                        f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
                     )
                 })
                 .collect::<Vec<_>>()
@@ -705,9 +686,21 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
 
 // -------------------------------------------------------------------- run
 
-pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
+pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<ToolOutput, String> {
+    if let Action::SendImage(img) = prepared.action {
+        ctx.db.log("pantalla", "Enviaste una captura de pantalla a la IA");
+        return Ok(ToolOutput {
+            text: "Captura de pantalla adjunta (autorizada por el usuario).".into(),
+            images: vec![img],
+        });
+    }
+    run_text(ctx, prepared).await.map(|text| ToolOutput { text, images: vec![] })
+}
+
+async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
     let db = &ctx.db;
     match prepared.action {
+        Action::SendImage(_) => Ok(String::new()),
         Action::Remember { kind, content } => {
             let m = db.memory_add(&kind, &content, "canela")?;
             db.log("memoria", &format!("Canela recordó: {}", m.content));
@@ -760,10 +753,7 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
             ))
         }
         Action::UpdateTask { id, input, done } => {
-            let changed = input.title.is_some()
-                || input.priority.is_some()
-                || input.due.is_some()
-                || input.remind_at.is_some();
+            let changed = input.title.is_some() || input.priority.is_some() || input.due.is_some() || input.remind_at.is_some();
             let mut t = if changed {
                 db.task_update(id, &input)?
             } else {
@@ -794,12 +784,7 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
         }
         Action::ListDir(None) => Ok(format!(
             "Carpetas autorizadas:\n{}",
-            ctx.scope
-                .roots
-                .iter()
-                .map(|r| display(r))
-                .collect::<Vec<_>>()
-                .join("\n")
+            ctx.scope.roots.iter().map(|r| display(r)).collect::<Vec<_>>().join("\n")
         )),
         Action::ListDir(Some(dir)) => {
             let entries = files::list_dir(&dir)?;
@@ -828,18 +813,11 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
                 lines.join("\n")
             ))
         }
-        Action::Search {
-            query,
-            root,
-            only_dirs,
-        } => {
-            let roots = root
-                .map(|r| vec![r])
-                .unwrap_or_else(|| ctx.scope.roots.clone());
-            let found =
-                tokio::task::spawn_blocking(move || files::search(&roots, &query, only_dirs, 40))
-                    .await
-                    .map_err(|e| e.to_string())?;
+        Action::Search { query, root, only_dirs } => {
+            let roots = root.map(|r| vec![r]).unwrap_or_else(|| ctx.scope.roots.clone());
+            let found = tokio::task::spawn_blocking(move || files::search(&roots, &query, only_dirs, 40))
+                .await
+                .map_err(|e| e.to_string())?;
             if found.is_empty() {
                 return Ok("No encontré coincidencias en las carpetas autorizadas.".into());
             }
@@ -886,38 +864,22 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
             let backup = files::write_with_backup(&path, &content, &ctx.backups_dir)?;
             db.log("archivo", &format!("Escribió {}", display(&path)));
             Ok(match backup {
-                Some(b) => format!(
-                    "Archivo actualizado: {}. Copia del original: {}",
-                    display(&path),
-                    display(&b)
-                ),
+                Some(b) => format!("Archivo actualizado: {}. Copia del original: {}", display(&path), display(&b)),
                 None => format!("Archivo creado: {}", display(&path)),
             })
         }
         Action::Organize { dir, plan } => {
             let d = dir.clone();
-            let (moved, errors) =
-                tokio::task::spawn_blocking(move || files::organize_apply(&d, &plan))
-                    .await
-                    .map_err(|e| e.to_string())?;
-            db.log(
-                "archivo",
-                &format!("Organizó {} ({moved} archivos)", display(&dir)),
-            );
-            let mut msg = format!(
-                "Moví {moved} archivos a subcarpetas dentro de {}.",
-                display(&dir)
-            );
+            let (moved, errors) = tokio::task::spawn_blocking(move || files::organize_apply(&d, &plan))
+                .await
+                .map_err(|e| e.to_string())?;
+            db.log("archivo", &format!("Organizó {} ({moved} archivos)", display(&dir)));
+            let mut msg = format!("Moví {moved} archivos a subcarpetas dentro de {}.", display(&dir));
             if !errors.is_empty() {
                 msg.push_str(&format!(
                     " No pude mover {}: {}",
                     errors.len(),
-                    errors
-                        .iter()
-                        .take(5)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("; ")
+                    errors.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
                 ));
             }
             Ok(msg)
@@ -927,19 +889,15 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
             let llm = ctx.llm.clone().ok_or("IA no disponible.")?;
             let title = format!(
                 "Analizar {}",
-                dir.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default()
+                dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
             );
             let id = jobs.spawn(&title, move |progress| async move {
                 progress.set("Leyendo la estructura del proyecto…");
                 let d = dir.clone();
                 let p2 = progress.clone();
-                let snapshot = tokio::task::spawn_blocking(move || {
-                    files::project_snapshot(&d, &|m| p2.set(m))
-                })
-                .await
-                .map_err(|e| e.to_string())??;
+                let snapshot = tokio::task::spawn_blocking(move || files::project_snapshot(&d, &|m| p2.set(m)))
+                    .await
+                    .map_err(|e| e.to_string())??;
                 progress.set("Preparando el informe…");
                 analyze_with_llm(&llm, &snapshot, focus.as_deref()).await
             })?;
@@ -950,11 +908,7 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
 }
 
 /// Pide a la IA (sin herramientas) un informe del proyecto.
-async fn analyze_with_llm(
-    llm: &LlmAccess,
-    snapshot: &str,
-    focus: Option<&str>,
-) -> Result<String, String> {
+async fn analyze_with_llm(llm: &LlmAccess, snapshot: &str, focus: Option<&str>) -> Result<String, String> {
     let system = ai::system_prompt(&llm.settings.user_name, "", false);
     let prompt = format!(
         "Analiza este proyecto de software. Explica en español claro: qué es, tecnologías, cómo está organizado, \
@@ -962,14 +916,7 @@ posibles problemas y 3-5 mejoras concretas priorizadas.{}\n\n{snapshot}",
         focus.map(|f| format!(" Presta especial atención a: {f}.")).unwrap_or_default()
     );
     let messages = vec![json!({ "role": "user", "content": prompt })];
-    let (req, parser) = ai::build_turn(
-        &llm.http,
-        &llm.settings,
-        &llm.api_key,
-        &system,
-        &messages,
-        &[],
-    );
+    let (req, parser) = ai::build_turn(&llm.http, &llm.settings, &llm.api_key, &system, &messages, &[]);
     let model = ai::model_of(&llm.settings);
     let text = Arc::new(std::sync::Mutex::new(String::new()));
     let sink = text.clone();
@@ -1000,11 +947,9 @@ mod tests {
                 auto_open_web: false,
                 ..Settings::default()
             },
-            scope: Scope::new(
-                vec![root.to_path_buf()],
-                vec![("descargas".into(), root.to_path_buf())],
-            ),
+            scope: Scope::new(vec![root.to_path_buf()], vec![("descargas".into(), root.to_path_buf())]),
             backups_dir: root.join(".bak"),
+            screen: Some(Arc::new(FakeScreen)),
             jobs: None,
             llm: None,
             notify: Arc::new(|_| {}),
@@ -1018,6 +963,44 @@ mod tests {
         d
     }
 
+    struct FakeScreen;
+    impl ScreenCapturer for FakeScreen {
+        fn capture(&self, _t: vision::Target) -> BoxFut<'_, Result<image::RgbaImage, String>> {
+            Box::pin(async { Ok(image::RgbaImage::from_pixel(2560, 1440, image::Rgba([20, 20, 20, 255]))) })
+        }
+        fn find_window(&self, title: &str) -> Option<u32> {
+            title.to_lowercase().contains("code").then_some(7)
+        }
+    }
+
+    #[tokio::test]
+    async fn screen_tool_always_asks_and_sends_only_after() {
+        let root = tmp("screen");
+        let c = ctx(&root);
+        let p = prepare_async(&c, "ver_pantalla", &json!({})).await.unwrap();
+        match &p.permission {
+            Permission::Confirm { image: Some(url), .. } => assert!(url.starts_with("data:image/jpeg;base64,")),
+            _ => panic!("ver_pantalla debe pedir permiso mostrando la captura"),
+        }
+        let out = run(&c, p).await.unwrap();
+        assert_eq!(out.images.len(), 1);
+        assert!(out.images[0].width <= vision::MAX_SIDE);
+        assert!(prepare_async(&c, "ver_pantalla", &json!({"que":"ventana","ventana":"Bitwarden"}))
+            .await
+            .is_err());
+        assert!(
+            prepare_async(&c, "ver_pantalla", &json!({"que":"ventana","ventana":"Visual Studio Code"}))
+                .await
+                .is_ok()
+        );
+        // Con un modelo sin visión, se rechaza antes de capturar.
+        let mut c2 = ctx(&root);
+        c2.settings.provider = crate::settings::ProviderId::Openai;
+        c2.settings.openai_model = "gpt-3.5-turbo".into();
+        assert!(prepare_async(&c2, "ver_pantalla", &json!({})).await.is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn is_auto(p: &Prepared) -> bool {
         matches!(p.permission, Permission::Auto)
     }
@@ -1029,11 +1012,7 @@ mod tests {
         for d in defs {
             assert_eq!(d.schema["type"], "object", "{}", d.name);
             assert!(d.description.len() > 20, "{}", d.name);
-            assert!(
-                d.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
-                "{}",
-                d.name
-            );
+            assert!(d.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", d.name);
         }
     }
 
@@ -1041,26 +1020,14 @@ mod tests {
     async fn memory_tools_and_sensitive_filter() {
         let root = tmp("mem");
         let c = ctx(&root);
-        let p = prepare(
-            &c,
-            "recordar",
-            &json!({"tipo":"proyecto","contenido":"Desarrolla una página web"}),
-        )
-        .unwrap();
+        let p = prepare(&c, "recordar", &json!({"tipo":"proyecto","contenido":"Desarrolla una página web"})).unwrap();
         assert!(is_auto(&p));
-        assert!(run(&c, p).await.unwrap().contains("Guardado"));
-        assert!(prepare(
-            &c,
-            "recordar",
-            &json!({"tipo":"dato","contenido":"mi contraseña es hunter2"})
-        )
-        .is_err());
-        let out = run(
-            &c,
-            prepare(&c, "buscar_recuerdos", &json!({"consulta":"web"})).unwrap(),
-        )
-        .await
-        .unwrap();
+        assert!(run(&c, p).await.unwrap().text.contains("Guardado"));
+        assert!(prepare(&c, "recordar", &json!({"tipo":"dato","contenido":"mi contraseña es hunter2"})).is_err());
+        let out = run(&c, prepare(&c, "buscar_recuerdos", &json!({"consulta":"web"})).unwrap())
+            .await
+            .unwrap()
+            .text;
         assert!(out.contains("página web"));
         let forget = prepare(&c, "olvidar", &json!({"id": 1})).unwrap();
         assert!(!is_auto(&forget), "olvidar debe pedir confirmación");
@@ -1071,30 +1038,29 @@ mod tests {
     async fn task_tools() {
         let root = tmp("tasks");
         let c = ctx(&root);
-        run(&c, prepare(&c, "crear_tarea", &json!({"titulo":"Estudiar programación","fecha": crate::db::today_str(), "prioridad":"alta"})).unwrap()).await.unwrap();
-        assert!(prepare(&c, "crear_tarea", &json!({"titulo":"x","fecha":"mañana"})).is_err());
-        let today = run(
-            &c,
-            prepare(&c, "listar_tareas", &json!({"filtro":"hoy"})).unwrap(),
-        )
-        .await
-        .unwrap();
-        assert!(today.contains("Estudiar programación"));
-        let done = run(
+        run(
             &c,
             prepare(
                 &c,
-                "actualizar_tarea",
-                &json!({"id": 1, "completada": true}),
+                "crear_tarea",
+                &json!({"titulo":"Estudiar programación","fecha": crate::db::today_str(), "prioridad":"alta"}),
             )
             .unwrap(),
         )
         .await
         .unwrap();
+        assert!(prepare(&c, "crear_tarea", &json!({"titulo":"x","fecha":"mañana"})).is_err());
+        let today = run(&c, prepare(&c, "listar_tareas", &json!({"filtro":"hoy"})).unwrap())
+            .await
+            .unwrap()
+            .text;
+        assert!(today.contains("Estudiar programación"));
+        let done = run(&c, prepare(&c, "actualizar_tarea", &json!({"id": 1, "completada": true})).unwrap())
+            .await
+            .unwrap()
+            .text;
         assert!(done.contains("completada"));
-        assert!(!is_auto(
-            &prepare(&c, "eliminar_tarea", &json!({"id": 1})).unwrap()
-        ));
+        assert!(!is_auto(&prepare(&c, "eliminar_tarea", &json!({"id": 1})).unwrap()));
         assert!(prepare(&c, "eliminar_tarea", &json!({"id": 99})).is_err());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1108,7 +1074,7 @@ mod tests {
         // Lectura: automática
         let r = prepare(&c, "leer_archivo", &json!({"ruta":"Descargas/notas.txt"})).unwrap();
         assert!(is_auto(&r));
-        assert!(run(&c, r).await.unwrap().contains("hola"));
+        assert!(run(&c, r).await.unwrap().text.contains("hola"));
         // Fuera del ámbito: rechazado
         assert!(prepare(
             &c,
@@ -1128,37 +1094,22 @@ mod tests {
             _ => panic!("debe pedir confirmación con diff"),
         }
         run(&c, w).await.unwrap();
-        assert_eq!(
-            fs::read_to_string(root.join("notas.txt")).unwrap(),
-            "hola\nmundo\n"
-        );
+        assert_eq!(fs::read_to_string(root.join("notas.txt")).unwrap(), "hola\nmundo\n");
         // Ejecutables: bloqueados
-        assert!(prepare(
-            &c,
-            "escribir_archivo",
-            &json!({"ruta":"Descargas/x.bat","contenido":"del *"})
-        )
-        .is_err());
+        assert!(prepare(&c, "escribir_archivo", &json!({"ruta":"Descargas/x.bat","contenido":"del *"})).is_err());
         // Crear carpeta y organizar: confirmación
         assert!(!is_auto(
-            &prepare(
-                &c,
-                "crear_carpeta",
-                &json!({"ruta":"Descargas/Universidad"})
-            )
-            .unwrap()
+            &prepare(&c, "crear_carpeta", &json!({"ruta":"Descargas/Universidad"})).unwrap()
         ));
         let org = prepare(&c, "organizar_carpeta", &json!({"ruta":"Descargas"})).unwrap();
         assert!(!is_auto(&org));
-        assert!(run(&c, org).await.unwrap().contains("Moví 2"));
+        assert!(run(&c, org).await.unwrap().text.contains("Moví 2"));
         assert!(root.join("Imágenes/a.jpg").exists());
         // Buscar y recientes
-        let found = run(
-            &c,
-            prepare(&c, "buscar_archivos", &json!({"texto":"notas"})).unwrap(),
-        )
-        .await
-        .unwrap();
+        let found = run(&c, prepare(&c, "buscar_archivos", &json!({"texto":"notas"})).unwrap())
+            .await
+            .unwrap()
+            .text;
         assert!(found.contains("notas.txt"));
         let _ = fs::remove_dir_all(&root);
     }

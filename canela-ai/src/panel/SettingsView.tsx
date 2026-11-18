@@ -243,6 +243,9 @@ export function SettingsView({ settings, keys, onSaved, onKeysChanged }: Props) 
         <Toggle checked={form.autoOpenWeb} onChange={(v) => set('autoOpenWeb', v)}>
           Abrir páginas web sin preguntar
         </Toggle>
+        <Toggle checked={form.visionEnabled} onChange={(v) => set('visionEnabled', v)}>
+          Permitir capturas de pantalla (siempre con vista previa y tu permiso)
+        </Toggle>
       </section>
 
       <section>

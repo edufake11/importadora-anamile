@@ -10,6 +10,8 @@ mod reminders;
 mod secrets;
 mod settings;
 mod tools;
+mod vision;
+mod vision_cmds;
 mod voice;
 mod windows;
 
@@ -33,20 +35,8 @@ fn shortcut_toggle_panel() -> Shortcut {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let toggle_pet = MenuItem::with_id(
-        app,
-        "toggle_pet",
-        "Mostrar u ocultar a Canela   (Ctrl+Alt+C)",
-        true,
-        None::<&str>,
-    )?;
-    let panel = MenuItem::with_id(
-        app,
-        "panel",
-        "Abrir asistente   (Ctrl+Alt+Espacio)",
-        true,
-        None::<&str>,
-    )?;
+    let toggle_pet = MenuItem::with_id(app, "toggle_pet", "Mostrar u ocultar a Canela   (Ctrl+Alt+C)", true, None::<&str>)?;
+    let panel = MenuItem::with_id(app, "panel", "Abrir asistente   (Ctrl+Alt+Espacio)", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Salir de Canela AI", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&toggle_pet, &panel, &sep, &quit])?;
@@ -90,10 +80,7 @@ fn spawn_fullscreen_watch(app: AppHandle) {
         let mut hidden_by_us = false;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1500));
-            let enabled = app
-                .state::<AppState>()
-                .current_settings()
-                .hide_in_fullscreen;
+            let enabled = app.state::<AppState>().current_settings().hide_in_fullscreen;
             let fullscreen = enabled && fullscreen::foreground_is_fullscreen();
             let Some(pet) = app.get_webview_window(windows::PET) else {
                 continue;
@@ -168,24 +155,14 @@ pub fn run() {
                     let _ = job_app.emit("job-finished", info);
                 }
             });
-            app.manage(AppState::new(
-                config_dir,
-                data_dir,
-                std::sync::Arc::new(db),
-                jobs,
-                known_dirs,
-            ));
+            app.manage(AppState::new(config_dir, data_dir, std::sync::Arc::new(db), jobs, known_dirs));
             build_tray(app.handle())?;
             spawn_fullscreen_watch(app.handle().clone());
             let at_login = std::env::args().any(|a| a == "--autostart");
             reminders::spawn(app.handle().clone(), at_login);
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
-            for sc in [
-                shortcut_toggle_pet(),
-                shortcut_toggle_panel(),
-                shortcut_voice(),
-            ] {
+            for sc in [shortcut_toggle_pet(), shortcut_toggle_panel(), shortcut_voice()] {
                 if let Err(e) = app.global_shortcut().register(sc) {
                     eprintln!("[canela] no se pudo registrar el atajo {sc:?}: {e}");
                 }
@@ -221,6 +198,10 @@ pub fn run() {
             voice::voice_cancel,
             voice::tts_cloud_speak,
             voice::tts_cloud_stop,
+            vision_cmds::screen_sources,
+            vision_cmds::screen_capture,
+            vision_cmds::screen_finalize,
+            vision_cmds::screen_discard,
             data_cmds::memory_list,
             data_cmds::memory_add,
             data_cmds::memory_update,

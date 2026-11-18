@@ -2,10 +2,7 @@
 //! servidor local que imita a la API (sin red ni claves reales).
 
 use super::agent::{self, AgentEnv, Confirmations};
-use super::{
-    anthropic::AnthropicStream, openai::OpenAiStream, run_turn, ChatMessage, ProviderStream, Role,
-    StreamEvent,
-};
+use super::{anthropic::AnthropicStream, openai::OpenAiStream, run_turn, ChatMessage, ProviderStream, Role, StreamEvent};
 use crate::db::Db;
 use crate::settings::{ProviderId, Settings};
 use crate::tools::{files::Scope, ToolCtx};
@@ -47,7 +44,10 @@ async fn serve(responses: Vec<(&'static str, String)>) -> (String, Arc<Mutex<Vec
                     break;
                 }
             }
-            let head = format!("HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+            let head = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
             sock.write_all(head.as_bytes()).await.unwrap();
             for chunk in body.as_bytes().chunks(7) {
                 sock.write_all(chunk).await.unwrap();
@@ -154,6 +154,7 @@ async fn agent_runs_tool_and_continues() {
         jobs: None,
         llm: None,
         notify: Arc::new(|_| {}),
+        screen: None,
     };
     // Redirige la URL de OpenAI al servidor local mediante un cliente con proxy inverso simple:
     // construimos el entorno con una URL base distinta usando el ajuste de pruebas.
@@ -171,6 +172,7 @@ async fn agent_runs_tool_and_continues() {
             text: "agrega estudiar programación".into(),
             provider: None,
             transcript: None,
+            images: vec![],
         }],
         tools: Some(Arc::new(tools)),
         confirms: Arc::new(Confirmations::default()),
@@ -181,11 +183,7 @@ async fn agent_runs_tool_and_continues() {
     std::env::remove_var("CANELA_TEST_OPENAI_URL");
 
     let evs = events.lock().unwrap().clone();
-    assert!(
-        evs.iter()
-            .any(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. })),
-        "{evs:?}"
-    );
+    assert!(evs.iter().any(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. })), "{evs:?}");
     match evs.last().unwrap() {
         StreamEvent::Done { transcript, .. } => {
             // asistente(tool_calls) + tool + asistente(texto)
@@ -239,6 +237,7 @@ async fn claude_agent_respects_denied_confirmation() {
         jobs: None,
         llm: None,
         notify: Arc::new(|_| {}),
+        screen: None,
     };
     std::env::set_var("CANELA_TEST_ANTHROPIC_URL", &url);
     let confirms = Arc::new(Confirmations::default());
@@ -252,6 +251,7 @@ async fn claude_agent_respects_denied_confirmation() {
             text: "crea x.md".into(),
             provider: None,
             transcript: None,
+            images: vec![],
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
@@ -263,10 +263,7 @@ async fn claude_agent_respects_denied_confirmation() {
     agent::run(
         env,
         Arc::new(move |e| {
-            if let StreamEvent::ConfirmRequest {
-                confirm_id, diff, ..
-            } = &e
-            {
+            if let StreamEvent::ConfirmRequest { confirm_id, diff, .. } = &e {
                 assert!(diff.as_deref().unwrap_or("").contains("+hola"));
                 let (c, id) = (c2.clone(), confirm_id.clone());
                 tokio::spawn(async move {
@@ -281,7 +278,9 @@ async fn claude_agent_respects_denied_confirmation() {
 
     assert!(!root.join("x.md").exists(), "no debe crearse sin permiso");
     let evs = events.lock().unwrap().clone();
-    assert!(evs.iter().any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, summary, .. } if summary == "No autorizado")));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, summary, .. } if summary == "No autorizado")));
     assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
     let second_body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[1]).unwrap();
     let msgs = second_body["messages"].as_array().unwrap();
