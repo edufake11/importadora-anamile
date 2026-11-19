@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 pub enum ProviderId {
     Anthropic,
     Openai,
+    /// Modelos locales con Ollama: sin clave y sin salir del equipo.
+    Ollama,
 }
 
 impl ProviderId {
@@ -18,7 +20,18 @@ impl ProviderId {
         match self {
             ProviderId::Anthropic => "anthropic",
             ProviderId::Openai => "openai",
+            ProviderId::Ollama => "ollama",
         }
+    }
+
+    /// Ollama funciona sin clave API.
+    pub fn needs_key(&self) -> bool {
+        !matches!(self, ProviderId::Ollama)
+    }
+
+    /// ¿La conversación se envía a un servicio en internet?
+    pub fn is_cloud(&self) -> bool {
+        !matches!(self, ProviderId::Ollama)
     }
 }
 
@@ -33,6 +46,16 @@ pub struct Settings {
     /// Nivel de esfuerzo de razonamiento de Claude (`output_config.effort`).
     pub anthropic_effort: String,
     pub openai_model: String,
+    /// Dirección de Ollama (sólo este equipo).
+    pub ollama_url: String,
+    pub ollama_model: String,
+    /// Tamaño de contexto en tokens (`options.num_ctx`).
+    pub ollama_num_ctx: u32,
+    /// Dejar que el modelo razone antes de responder (más lento; el
+    /// razonamiento nunca se muestra).
+    pub ollama_think: bool,
+    /// Con Ollama, permitir igualmente la voz de OpenAI (envía audio/texto a internet).
+    pub ollama_cloud_voice: bool,
     /// Cómo quiere el usuario que Canela le llame.
     pub user_name: String,
     /// Escala entera del pixel art (1..=6).
@@ -91,11 +114,17 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            provider: ProviderId::Anthropic,
+            // v0.4: el cerebro local es el predeterminado; Claude y ChatGPT son opcionales.
+            provider: ProviderId::Ollama,
             anthropic_model: "claude-opus-5-5".into(),
             anthropic_effort: "medium".into(),
             // Editable desde Ajustes: usa cualquier modelo de chat de tu cuenta de OpenAI.
             openai_model: "gpt-5".into(),
+            ollama_url: crate::ai::ollama::DEFAULT_URL.into(),
+            ollama_model: crate::ai::ollama::DEFAULT_MODEL.into(),
+            ollama_num_ctx: crate::ai::ollama::DEFAULT_NUM_CTX,
+            ollama_think: false,
+            ollama_cloud_voice: false,
             user_name: String::new(),
             pet_scale: 3,
             wander: true,
@@ -144,6 +173,15 @@ impl Settings {
         }
         self.anthropic_model = self.anthropic_model.trim().to_string();
         self.openai_model = self.openai_model.trim().to_string();
+        // Ollama: sólo direcciones de este equipo; modelo y contexto válidos.
+        self.ollama_url = crate::ai::ollama::loopback_url(&self.ollama_url).unwrap_or(d.ollama_url.clone());
+        self.ollama_model = self.ollama_model.trim().chars().take(120).collect();
+        if self.ollama_model.is_empty() {
+            self.ollama_model = d.ollama_model.clone();
+        }
+        self.ollama_num_ctx = self
+            .ollama_num_ctx
+            .clamp(crate::ai::ollama::MIN_NUM_CTX, crate::ai::ollama::MAX_NUM_CTX);
         self.user_name = self.user_name.trim().chars().take(40).collect();
         self.tts_rate = if self.tts_rate.is_finite() {
             self.tts_rate.clamp(0.5, 2.0)
@@ -212,9 +250,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_use_claude() {
+    fn defaults_use_local_ollama() {
         let s = Settings::default();
-        assert_eq!(s.provider, ProviderId::Anthropic);
+        assert_eq!(s.provider, ProviderId::Ollama);
+        assert_eq!(s.ollama_model, "qwen3:8b");
+        assert_eq!(s.ollama_url, "http://127.0.0.1:11434");
+        assert!(!s.ollama_cloud_voice, "con Ollama nada sale del equipo por defecto");
         assert_eq!(s.anthropic_model, "claude-opus-5-5");
         assert_eq!(s.pet_scale, 3);
         assert!(!s.voice_consent, "la voz necesita consentimiento explícito");
@@ -236,6 +277,24 @@ mod tests {
         assert_eq!(s.tts_volume, 0.0);
         assert_eq!(s.speak_replies, "voice");
         assert!(!s.wake_word);
+    }
+
+    #[test]
+    fn ollama_settings_are_sanitized() {
+        let s = Settings {
+            ollama_url: "http://192.168.0.10:11434".into(),
+            ollama_model: "   ".into(),
+            ollama_num_ctx: 10,
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(s.ollama_url, "http://127.0.0.1:11434", "sólo direcciones de este equipo");
+        assert_eq!(s.ollama_model, "qwen3:8b");
+        assert_eq!(s.ollama_num_ctx, 4096);
+        // Un archivo de ajustes de la v0.3 (sin campos de Ollama) se lee bien.
+        let old: Settings = serde_json::from_str(r#"{"provider":"anthropic","userName":"Eduardo"}"#).unwrap();
+        assert_eq!(old.provider, ProviderId::Anthropic);
+        assert_eq!(old.ollama_model, "qwen3:8b");
     }
 
     #[test]

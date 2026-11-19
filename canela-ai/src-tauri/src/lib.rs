@@ -214,6 +214,7 @@ pub fn run() {
             vision_cmds::screen_discard,
             vision_cmds::prepare_attachment,
             model_cmds::model_info,
+            model_cmds::ollama_status,
             model_cmds::summarize_conversation,
             data_cmds::memory_set_temporary,
             data_cmds::memory_list,

@@ -571,6 +571,7 @@ mod tests {
     fn tool_results_shape() {
         let m = tool_results_message(&[ToolResult {
             id: "t1".into(),
+            name: "x".into(),
             text: "hecho".into(),
             is_error: false,
             images: vec![],
@@ -580,6 +581,7 @@ mod tests {
         assert_eq!(m[0]["content"][0]["tool_use_id"], "t1");
         let m = tool_results_message(&[ToolResult {
             id: "t2".into(),
+            name: "x".into(),
             text: "captura".into(),
             is_error: false,
             images: vec![img()],

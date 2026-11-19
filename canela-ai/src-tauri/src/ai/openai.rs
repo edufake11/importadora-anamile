@@ -312,6 +312,7 @@ mod tests {
         assert!(a["content"].is_null());
         let r = tool_results_messages(&[ToolResult {
             id: "call_1".into(),
+            name: "x".into(),
             text: "ok".into(),
             is_error: false,
             images: vec![],
@@ -325,6 +326,7 @@ mod tests {
         };
         let r = tool_results_messages(&[ToolResult {
             id: "call_2".into(),
+            name: "x".into(),
             text: "captura".into(),
             is_error: false,
             images: vec![img],

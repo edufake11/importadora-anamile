@@ -42,6 +42,9 @@ pub fn parse_anthropic_model(v: &Value, info: &mut ModelInfo) {
 }
 
 fn key_for(provider: ProviderId) -> Option<String> {
+    if !provider.needs_key() {
+        return Some(String::new());
+    }
     #[cfg(debug_assertions)]
     if let Ok(k) = std::env::var("CANELA_DEV_API_KEY") {
         return Some(k);
@@ -64,6 +67,19 @@ pub async fn model_info(state: State<'_, AppState>) -> Result<ModelInfo, String>
         source: "tabla",
         ..Default::default()
     };
+    if provider == ProviderId::Ollama {
+        let st = ai::ollama::status(&state.http, &settings).await;
+        info.exists = st.running.then_some(st.model_installed);
+        info.source = "ollama";
+        if !st.capabilities.is_empty() {
+            let has = |c: &str| st.capabilities.iter().any(|x| x == c);
+            info.supports_images = Some(has("vision"));
+            info.supports_thinking = Some(has("thinking"));
+        }
+        info.context_tokens = Some(settings.ollama_num_ctx as u64);
+        info.note = Some(st.message);
+        return Ok(info);
+    }
     let key = tauri::async_runtime::spawn_blocking(move || key_for(provider))
         .await
         .map_err(|e| e.to_string())?;
@@ -81,7 +97,7 @@ pub async fn model_info(state: State<'_, AppState>) -> Result<ModelInfo, String>
                 .send()
                 .await
         }
-        ProviderId::Openai => {
+        ProviderId::Openai | ProviderId::Ollama => {
             state
                 .http
                 .get(format!("https://api.openai.com/v1/models/{model}"))
@@ -99,7 +115,7 @@ pub async fn model_info(state: State<'_, AppState>) -> Result<ModelInfo, String>
             let v: Value = r.json().await.unwrap_or(Value::Null);
             match provider {
                 ProviderId::Anthropic => parse_anthropic_model(&v, &mut info),
-                ProviderId::Openai => {
+                ProviderId::Openai | ProviderId::Ollama => {
                     info.exists = Some(true);
                     info.note = Some("OpenAI no publica las capacidades por modelo: se muestran valores conocidos.".into());
                 }
@@ -113,6 +129,17 @@ pub async fn model_info(state: State<'_, AppState>) -> Result<ModelInfo, String>
         Err(e) => info.note = Some(pricing::redact_secrets(&format!("No pude comprobarlo: {e}"))),
     }
     Ok(info)
+}
+
+/// ¿Está Ollama encendido? ¿Qué modelos hay instalados? Sólo consulta este
+/// equipo (127.0.0.1); nunca descarga nada.
+#[tauri::command]
+pub async fn ollama_status(state: State<'_, AppState>, model: Option<String>) -> Result<ai::ollama::OllamaStatus, String> {
+    let mut settings = state.current_settings();
+    if let Some(m) = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()) {
+        settings.ollama_model = m;
+    }
+    Ok(ai::ollama::status(&state.http, &settings).await)
 }
 
 /// Texto plano de la conversación para resumirla (sin bloques internos).
@@ -152,7 +179,6 @@ Máximo 350 palabras, en español, en viñetas.\n\n{}",
         plain_transcript(&messages, 200_000)
     );
     let msgs = vec![json!({ "role": "user", "content": prompt })];
-    let (req, parser) = ai::build_turn(&state.http, &settings, &key, &system, &msgs, &[]);
     let text = Arc::new(Mutex::new(String::new()));
     let sink = text.clone();
     let emit = move |e: StreamEvent| {
@@ -160,7 +186,7 @@ Máximo 350 palabras, en español, en viñetas.\n\n{}",
             sink.lock().unwrap().push_str(&text);
         }
     };
-    ai::run_turn(provider, &ai::model_of(&settings), req, parser, &emit)
+    ai::complete(&state.http, &settings, &key, &system, &msgs, &[], &emit)
         .await
         .map_err(|e| pricing::redact_secrets(&e))?;
     let out = text.lock().unwrap().trim().to_string();

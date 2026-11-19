@@ -1,17 +1,17 @@
 // Utilidades de voz hablada (sin dependencias de Tauri, para poder probarlas).
 
-const CODE_NOTE = 'Te dejé el código en el chat.';
+const CODE_NOTE = "Te dejé el código en el chat.";
 
 /** Quita lo que no se debe leer en voz alta (markdown, enlaces, emojis). */
 export function cleanForSpeech(text: string): string {
   return text
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, 'un enlace')
-    .replace(/(\*\*|__|\*|~~)/g, '')
-    .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.)\s+/gm, '')
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .replace(/\s+/g, ' ')
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, "un enlace")
+    .replace(/(\*\*|__|\*|~~)/g, "")
+    .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -20,7 +20,7 @@ export function cleanForSpeech(text: string): string {
  * Los bloques de código no se leen: se anuncia una sola vez que están en el chat.
  */
 export class SentenceSplitter {
-  private buf = '';
+  private buf = "";
   private pos = 0;
   private inCode = false;
 
@@ -42,7 +42,7 @@ export class SentenceSplitter {
     for (;;) {
       const rest = this.buf.slice(this.pos);
       if (this.inCode) {
-        const end = rest.indexOf('```');
+        const end = rest.indexOf("```");
         if (end < 0) {
           if (final) this.pos = this.buf.length;
           break;
@@ -51,14 +51,14 @@ export class SentenceSplitter {
         this.inCode = false;
         continue;
       }
-      const fence = rest.indexOf('```');
+      const fence = rest.indexOf("```");
       const m = (final ? /[.!?…](\s|$)|\n/ : /[.!?…]\s|\n/).exec(rest);
       const boundary = m ? m.index + m[0].length : -1;
       if (fence >= 0 && (boundary < 0 || fence < boundary)) {
         push(rest.slice(0, fence));
         out.push(CODE_NOTE);
         // salta el resto de la línea de apertura (```lenguaje)
-        const nl = rest.indexOf('\n', fence);
+        const nl = rest.indexOf("\n", fence);
         this.pos += nl >= 0 ? nl + 1 : fence + 3;
         this.inCode = true;
         continue;
@@ -81,12 +81,12 @@ export class SentenceSplitter {
 /** Agrupa frases cortas para no hacer demasiadas peticiones a la voz de OpenAI. */
 export function groupSentences(sentences: string[], min = 160): string[] {
   const out: string[] = [];
-  let cur = '';
+  let cur = "";
   for (const s of sentences) {
     cur = cur ? `${cur} ${s}` : s;
     if (cur.length >= min) {
       out.push(cur);
-      cur = '';
+      cur = "";
     }
   }
   if (cur) out.push(cur);
@@ -94,8 +94,14 @@ export function groupSentences(sentences: string[], min = 160): string[] {
 }
 
 /** Voces de Windows en español, ordenadas (las locales primero). */
-export function spanishVoices(all: SpeechSynthesisVoice[]): SpeechSynthesisVoice[] {
+export function spanishVoices(
+  all: SpeechSynthesisVoice[],
+): SpeechSynthesisVoice[] {
   return all
-    .filter((v) => v.lang.toLowerCase().startsWith('es'))
-    .sort((a, b) => Number(b.localService) - Number(a.localService) || a.name.localeCompare(b.name));
+    .filter((v) => v.lang.toLowerCase().startsWith("es"))
+    .sort(
+      (a, b) =>
+        Number(b.localService) - Number(a.localService) ||
+        a.name.localeCompare(b.name),
+    );
 }

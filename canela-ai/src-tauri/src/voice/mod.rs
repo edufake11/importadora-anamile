@@ -154,6 +154,17 @@ fn emit_state(app: &AppHandle, state: &'static str, level: Option<f32>, message:
     let _ = app.emit("voice-state", VoiceStateEvent { state, level, message });
 }
 
+/// Con un proveedor local (Ollama) la conversación no sale del equipo: la
+/// voz de OpenAI (que envía audio o texto a internet) queda bloqueada salvo
+/// que el usuario la permita expresamente.
+pub fn cloud_voice_allowed(settings: &crate::settings::Settings) -> Result<(), String> {
+    if settings.provider.is_cloud() || settings.ollama_cloud_voice {
+        Ok(())
+    } else {
+        Err("Con Ollama tu conversación no sale de este equipo. Para entender tu voz o hablar con la voz de OpenAI habría que enviar audio o texto a internet: si lo aceptas, actívalo en Ajustes › Voz. Mientras tanto puedes escribirle a Canela y usar la voz de Windows.".into())
+    }
+}
+
 fn openai_key() -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Ok(k) = std::env::var("CANELA_DEV_API_KEY") {
@@ -176,6 +187,7 @@ pub async fn voice_start(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if !settings.voice_consent {
         return Err("Primero acepta el aviso de privacidad de la voz en Ajustes › Voz.".into());
     }
+    cloud_voice_allowed(&settings)?;
     let key = tauri::async_runtime::spawn_blocking(openai_key)
         .await
         .map_err(|e| e.to_string())??;
@@ -273,6 +285,7 @@ pub fn voice_cancel(state: State<'_, AppState>) -> bool {
 /// Encola un fragmento para decirlo con la voz de OpenAI.
 #[tauri::command]
 pub fn tts_cloud_speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), String> {
+    cloud_voice_allowed(&state.current_settings())?;
     let text: String = text.chars().take(4000).collect();
     if text.trim().is_empty() {
         return Ok(());
@@ -335,6 +348,22 @@ pub fn tts_cloud_stop(state: State<'_, AppState>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cloud_voice_is_blocked_with_ollama_unless_allowed() {
+        use crate::settings::{ProviderId, Settings};
+        let mut s = Settings {
+            provider: ProviderId::Ollama,
+            ..Settings::default()
+        };
+        assert!(cloud_voice_allowed(&s).unwrap_err().contains("no sale de este equipo"));
+        s.ollama_cloud_voice = true;
+        assert!(cloud_voice_allowed(&s).is_ok());
+        s.ollama_cloud_voice = false;
+        s.provider = ProviderId::Anthropic;
+        assert!(cloud_voice_allowed(&s).is_ok());
+    }
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

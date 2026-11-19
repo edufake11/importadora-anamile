@@ -1,6 +1,6 @@
-# Arquitectura de CANELA AI (v0.3)
+# Arquitectura de CANELA AI (v0.4)
 
-Este documento describe cómo está construida Canela. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**. La v0.3 se verificó en Linux (Xvfb, micrófono virtual, IA simulada) y en el CI de Windows; falta la prueba en un equipo Windows 11 real.
+Este documento describe cómo está construida Canela. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**. La v0.4 se verificó en Linux (Xvfb, micrófono virtual, Ollama/OpenAI/Claude simulados) y en el CI de Windows; falta la prueba en un equipo Windows 11 real y con un Ollama real.
 
 ## Visión general
 
@@ -28,6 +28,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │   agent.rs        bucle del agente: modelo → herramientas (con permiso) → modelo …             │
 │   anthropic.rs    Claude: Messages API, razonamiento adaptativo, fallback, herramientas        │
 │   openai.rs       ChatGPT: Chat Completions con funciones                                      │
+│   ollama.rs       Ollama local: /api/chat NDJSON, think oculto, num_ctx, sólo 127.0.0.1        │
 │   sse.rs          parser de streaming                                                          │
 │   pricing.rs      uso de tokens → costo aproximado; ocultar claves en mensajes de error        │
 │ tools/          herramientas                                                                   │
@@ -98,6 +99,19 @@ Para añadir una herramienta: define su esquema en `tools::definitions()`, su va
 - Varias respuestas pueden estar en curso (cada una con su id y cancelación).
 - `jobs.rs`: cola con semáforo (2 trabajos simultáneos, 8 activos como máximo), estados `queued/running/done/failed/cancelled`, progreso y cancelación; eventos `jobs-changed` y `job-finished` hacia la interfaz.
 - El chat y las animaciones nunca esperan a un trabajo.
+
+## Cerebro local: Ollama (v0.4)
+
+- **API nativa** `POST {127.0.0.1:11434}/api/chat` con `stream: true` (NDJSON, una línea JSON por trozo). No se usa la API compatible con OpenAI porque no permite `options.num_ctx` ni `think`.
+- **Contexto**: `options.num_ctx` = 16 384 por defecto (4 096–131 072). Instrucciones + 31 herramientas ≈ 5 200 tokens (prueba `prompt_and_tools_fit_default_context`), así que el valor por defecto de Ollama (4 096) no alcanza. KV de qwen3:8b ≈ 144 KB/token → 16 384 ≈ 2,4 GB + 5,2 GB de pesos. `keep_alive: 30m`.
+- **Razonamiento**: `think` = ajuste «Pensar más» (falso por defecto). `message.thinking` nunca se muestra ni se reenvía (sólo emite el estado «pensando» de Canela). `ThinkFilter` quita además `<think>…</think>` del texto aunque llegue partido entre trozos.
+- **Herramientas**: mismas definiciones que Claude/ChatGPT; `message.tool_calls[].function.arguments` llega como objeto; ids generados si faltan; resultados como `{role:"tool", tool_name, content}`. Pasan por el mismo `prepare → permiso → run`, la defensa de contenido externo y las confirmaciones.
+- **Compatibilidad**: si Ollama responde 400 «does not support thinking/tools», `ai::complete` lo recuerda para ese modelo y reintenta sin el campo (aviso si el modelo no admite herramientas).
+- **Privacidad**: `loopback_url` sólo acepta `127.0.0.1`, `localhost` o `::1` (también al cargar ajustes). Sin cabecera de autenticación. Con Ollama, `cloud_voice_allowed` bloquea la transcripción y la voz de OpenAI salvo `ollama_cloud_voice`. Resúmenes y análisis de proyectos usan el mismo proveedor local.
+- **Estado**: `ollama_status` consulta `/api/version`, `/api/tags` (modelos y tamaños) y `/api/show` (capacidades: tools, thinking, vision; longitud de contexto). Nunca descarga modelos.
+- **Errores claros**: conexión rechazada → «No encuentro Ollama…»; 404/«not found» → `ollama pull <modelo>`; falta de memoria → bajar contexto o cerrar programas; error a mitad del stream (`{"error": …}`) → se muestra.
+- **Costo**: 0 (tabla de precios); la interfaz muestra «local».
+- **Imágenes**: sólo modelos de visión (llava, *-vl, gemma3…); con qwen3:8b las capturas se rechazan con un mensaje claro.
 
 ## Voz (v0.3)
 

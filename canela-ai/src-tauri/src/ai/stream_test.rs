@@ -237,7 +237,10 @@ async fn claude_agent_respects_denied_confirmation() {
     std::fs::create_dir_all(&root).unwrap();
     let tools = ToolCtx {
         db: Arc::new(Db::open_in_memory().unwrap()),
-        settings: Settings::default(),
+        settings: Settings {
+            provider: ProviderId::Anthropic,
+            ..Settings::default()
+        },
         scope: Scope::new(vec![root.clone()], vec![("descargas".into(), root.clone())]),
         backups_dir: root.join("bak"),
         jobs: None,
@@ -249,7 +252,10 @@ async fn claude_agent_respects_denied_confirmation() {
     let confirms = Arc::new(Confirmations::default());
     let env = AgentEnv {
         http: reqwest::Client::new(),
-        settings: Settings::default(),
+        settings: Settings {
+            provider: ProviderId::Anthropic,
+            ..Settings::default()
+        },
         api_key: "sk-ant-test".into(),
         system: "s".into(),
         history: vec![ChatMessage {
@@ -482,4 +488,198 @@ async fn plan_runs_steps_and_rechecks_destructive_ones() {
     let report = bodies.lock().unwrap()[1].clone();
     assert!(report.contains("2 de 3 pasos completados"), "{report}");
     assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
+}
+
+// ------------------------------------------------------------ Ollama (local)
+
+fn ndjson(lines: &[serde_json::Value]) -> String {
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
+fn ollama_env(base: &str, model: &str, db: Arc<Db>, confirms: Arc<Confirmations>, text: &str) -> AgentEnv {
+    let settings = Settings {
+        provider: ProviderId::Ollama,
+        ollama_url: base.to_string(),
+        ollama_model: model.to_string(),
+        ..Settings::default()
+    };
+    let root = std::env::temp_dir();
+    let tools = ToolCtx {
+        db,
+        settings: settings.clone(),
+        scope: Scope::new(vec![root.clone()], vec![]),
+        backups_dir: root.join("canela-bak-ollama"),
+        jobs: None,
+        llm: None,
+        notify: Arc::new(|_| {}),
+        screen: None,
+    };
+    AgentEnv {
+        http: reqwest::Client::new(),
+        settings,
+        // Ollama no usa clave.
+        api_key: String::new(),
+        system: "s".into(),
+        history: vec![ChatMessage {
+            role: Role::User,
+            text: text.into(),
+            provider: None,
+            transcript: None,
+            images: vec![],
+        }],
+        tools: Some(Arc::new(tools)),
+        confirms,
+    }
+}
+
+async fn run_collect(env: AgentEnv, approve: bool) -> Vec<StreamEvent> {
+    let confirms = env.confirms.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    agent::run(
+        env,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, .. } = &e {
+                let (c, id) = (confirms.clone(), confirm_id.clone());
+                tokio::spawn(async move {
+                    c.resolve(&id, approve);
+                });
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    )
+    .await;
+    let out = events.lock().unwrap().clone();
+    out
+}
+
+/// Con Ollama: sin clave, razonamiento oculto, herramientas que funcionan,
+/// confirmación para borrar y costo 0.
+#[tokio::test]
+async fn ollama_agent_uses_tools_locally_and_keeps_confirmations() {
+    use serde_json::json;
+    let m = "qwen3:8b";
+    let r1 = ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":"","thinking":"PENSAMIENTO SECRETO"},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"crear_tarea","arguments":{"titulo":"Estudiar Rust"}}}]},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":900,"eval_count":30}),
+    ]);
+    let r2 = ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":"<think>otro secreto</think>Ahora la borro."},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"eliminar_tarea","arguments":{"id":1}}}]},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1000,"eval_count":20}),
+    ]);
+    let r3 = ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":"No la borré "},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":"porque no lo autorizaste."},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1100,"eval_count":10}),
+    ]);
+    let (url, bodies) = serve(vec![("200 OK", r1), ("200 OK", r2), ("200 OK", r3)]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "crea y borra"),
+        false,
+    )
+    .await;
+
+    let all = format!("{evs:?}");
+    assert!(
+        !all.contains("SECRETO") && !all.contains("otro secreto"),
+        "el razonamiento no se muestra"
+    );
+    let text: String = evs
+        .iter()
+        .filter_map(|e| {
+            if let StreamEvent::Delta { text } = e {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        text.contains("Ahora la borro.") && text.ends_with("porque no lo autorizaste."),
+        "{text}"
+    );
+    assert!(
+        evs.iter().any(|e| matches!(e, StreamEvent::ConfirmRequest { .. })),
+        "borrar sigue pidiendo permiso"
+    );
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1, "creada y NO borrada");
+    match evs.last() {
+        Some(StreamEvent::Done {
+            provider,
+            cost_usd,
+            usage,
+            transcript,
+            ..
+        }) => {
+            assert_eq!(*provider, ProviderId::Ollama);
+            assert_eq!(*cost_usd, Some(0.0));
+            assert_eq!(usage.input, 3000);
+            assert!(!format!("{transcript:?}").contains("SECRETO"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let b = bodies.lock().unwrap().clone();
+    let first: serde_json::Value = serde_json::from_str(&b[0]).unwrap();
+    assert_eq!(first["model"], m);
+    assert_eq!(first["think"], false);
+    assert_eq!(first["options"]["num_ctx"], 16384);
+    assert!(first["tools"].as_array().unwrap().len() > 20);
+    let second: serde_json::Value = serde_json::from_str(&b[1]).unwrap();
+    let msgs = second["messages"].as_array().unwrap();
+    assert!(
+        msgs.iter().any(|x| x["role"] == "tool" && x["tool_name"] == "crear_tarea"),
+        "{msgs:?}"
+    );
+}
+
+/// Modelos sin razonamiento: Ollama responde 400 y Canela reintenta sin `think`.
+#[tokio::test]
+async fn ollama_retries_without_think_for_models_that_do_not_support_it() {
+    use serde_json::json;
+    let m = "llama-sin-think:3b";
+    let err = r#"{"error":"\"llama-sin-think:3b\" does not support thinking"}"#.to_string();
+    let ok = ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":"Hola"},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}),
+    ]);
+    let (url, bodies) = serve(vec![("400 Bad Request", err), ("200 OK", ok)]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "hola"), true).await;
+    assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })), "{evs:?}");
+    let b = bodies.lock().unwrap().clone();
+    assert!(b[0].contains("\"think\""));
+    assert!(!b[1].contains("\"think\""));
+}
+
+/// Si Ollama no está abierto, el mensaje lo dice claramente.
+#[tokio::test]
+async fn ollama_not_running_is_explained() {
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env("http://127.0.0.1:9", "qwen3:8b", db, Arc::new(Confirmations::default()), "hola"),
+        true,
+    )
+    .await;
+    match evs.last() {
+        Some(StreamEvent::Error { message }) => assert!(message.contains("No encuentro Ollama en http://127.0.0.1:9"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Modelo no instalado: indica el comando para instalarlo (no lo descarga).
+#[tokio::test]
+async fn ollama_missing_model_is_explained() {
+    let (url, _) = serve(vec![("404 Not Found", r#"{"error":"model 'qwen3:8b' not found"}"#.to_string())]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(ollama_env(&base, "qwen3:8b", db, Arc::new(Confirmations::default()), "hola"), true).await;
+    match evs.last() {
+        Some(StreamEvent::Error { message }) => assert!(message.contains("ollama pull qwen3:8b"), "{message}"),
+        other => panic!("{other:?}"),
+    }
 }

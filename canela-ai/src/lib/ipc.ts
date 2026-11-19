@@ -1,14 +1,34 @@
 // Envoltorios tipados de los comandos Rust y de los eventos entre ventanas.
-import { Channel, invoke } from '@tauri-apps/api/core';
-import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ProviderId = 'anthropic' | 'openai';
+export type ProviderId = "anthropic" | "openai" | "ollama";
+
+export const PROVIDER_NAMES: Record<ProviderId, string> = {
+  anthropic: "Claude",
+  openai: "ChatGPT",
+  ollama: "Ollama (local)",
+};
+
+/** Ollama funciona sin clave API. */
+export const needsKey = (p: ProviderId) => p !== "ollama";
+
+/** ¿Hay clave (o no hace falta) para chatear con este proveedor? */
+export const canChat = (
+  p: ProviderId,
+  keys: { anthropic: boolean; openai: boolean },
+) => (p === "ollama" ? true : keys[p]);
 
 export interface Settings {
   provider: ProviderId;
   anthropicModel: string;
-  anthropicEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  anthropicEffort: "low" | "medium" | "high" | "xhigh" | "max";
   openaiModel: string;
+  ollamaUrl: string;
+  ollamaModel: string;
+  ollamaNumCtx: number;
+  ollamaThink: boolean;
+  ollamaCloudVoice: boolean;
   userName: string;
   petScale: number;
   wander: boolean;
@@ -26,13 +46,13 @@ export interface Settings {
   voiceInputDevice: string | null;
   voiceOutputDevice: string | null;
   sttModel: string;
-  ttsEngine: 'local' | 'openai';
+  ttsEngine: "local" | "openai";
   ttsVoice: string;
   ttsCloudModel: string;
   ttsCloudVoice: string;
   ttsRate: number;
   ttsVolume: number;
-  speakReplies: 'voice' | 'always' | 'never';
+  speakReplies: "voice" | "always" | "never";
   wakeWord: boolean;
   visionEnabled: boolean;
   confirmFileSharing: boolean;
@@ -52,7 +72,7 @@ export interface KeyStatus {
 
 /** Mensaje tal como se envía a Rust. */
 export interface WireMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   text: string;
   provider?: ProviderId;
   transcript?: unknown[];
@@ -60,14 +80,21 @@ export interface WireMessage {
 }
 
 export type StreamEvent =
-  | { type: 'started'; model: string }
-  | { type: 'thinking' }
-  | { type: 'delta'; text: string }
-  | { type: 'toolStart'; callId: string; name: string; label: string }
-  | { type: 'toolEnd'; callId: string; ok: boolean; summary: string }
-  | { type: 'confirmRequest'; confirmId: string; title: string; details: string; diff: string | null; image: string | null }
+  | { type: "started"; model: string }
+  | { type: "thinking" }
+  | { type: "delta"; text: string }
+  | { type: "toolStart"; callId: string; name: string; label: string }
+  | { type: "toolEnd"; callId: string; ok: boolean; summary: string }
   | {
-      type: 'done';
+      type: "confirmRequest";
+      confirmId: string;
+      title: string;
+      details: string;
+      diff: string | null;
+      image: string | null;
+    }
+  | {
+      type: "done";
       stopReason: string | null;
       model: string | null;
       notice: string | null;
@@ -76,8 +103,8 @@ export type StreamEvent =
       usage: Usage;
       costUsd: number | null;
     }
-  | { type: 'error'; message: string }
-  | { type: 'cancelled' };
+  | { type: "error"; message: string }
+  | { type: "cancelled" };
 
 export interface Usage {
   input: number;
@@ -96,14 +123,26 @@ export interface ModelInfo {
   contextTokens: number | null;
   maxOutput: number | null;
   price: { input: number; output: number; cacheRead: number } | null;
-  source: 'api' | 'tabla';
+  source: "api" | "tabla" | "ollama";
   note: string | null;
+}
+
+export interface OllamaStatus {
+  url: string;
+  running: boolean;
+  version: string | null;
+  models: { name: string; sizeGb: number; parameters: string | null }[];
+  model: string;
+  modelInstalled: boolean;
+  capabilities: string[];
+  contextLength: number | null;
+  message: string;
 }
 
 export interface JobInfo {
   id: string;
   title: string;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
   progress: string | null;
   result: string | null;
   error: string | null;
@@ -111,23 +150,36 @@ export interface JobInfo {
 }
 
 export const api = {
-  getSettings: () => invoke<Settings>('get_settings'),
-  saveSettings: (settings: Settings) => invoke<Settings>('save_settings', { settings }),
-  keyStatus: () => invoke<KeyStatus>('api_key_status'),
-  setApiKey: (provider: ProviderId, key: string) => invoke<void>('set_api_key', { provider, key }),
-  deleteApiKey: (provider: ProviderId) => invoke<void>('delete_api_key', { provider }),
-  showPanel: () => invoke<void>('show_panel'),
-  hidePanel: () => invoke<void>('hide_panel'),
-  togglePet: () => invoke<void>('toggle_pet'),
-  quit: () => invoke<void>('quit_app'),
-  confirmAction: (confirmId: string, approved: boolean) => invoke<boolean>('confirm_action', { confirmId, approved }),
-  jobsList: () => invoke<JobInfo[]>('jobs_list'),
-  jobCancel: (id: string) => invoke<boolean>('job_cancel', { id }),
-  allowedFolders: () => invoke<string[]>('allowed_folders'),
-  modelInfo: () => invoke<ModelInfo>('model_info'),
-  summarize: (messages: WireMessage[], userName: string) => invoke<string>('summarize_conversation', { messages, userName }),
+  getSettings: () => invoke<Settings>("get_settings"),
+  saveSettings: (settings: Settings) =>
+    invoke<Settings>("save_settings", { settings }),
+  keyStatus: () => invoke<KeyStatus>("api_key_status"),
+  setApiKey: (provider: ProviderId, key: string) =>
+    invoke<void>("set_api_key", { provider, key }),
+  deleteApiKey: (provider: ProviderId) =>
+    invoke<void>("delete_api_key", { provider }),
+  showPanel: () => invoke<void>("show_panel"),
+  hidePanel: () => invoke<void>("hide_panel"),
+  togglePet: () => invoke<void>("toggle_pet"),
+  quit: () => invoke<void>("quit_app"),
+  confirmAction: (confirmId: string, approved: boolean) =>
+    invoke<boolean>("confirm_action", { confirmId, approved }),
+  jobsList: () => invoke<JobInfo[]>("jobs_list"),
+  jobCancel: (id: string) => invoke<boolean>("job_cancel", { id }),
+  allowedFolders: () => invoke<string[]>("allowed_folders"),
+  modelInfo: () => invoke<ModelInfo>("model_info"),
+  ollamaStatus: (model?: string) =>
+    invoke<OllamaStatus>("ollama_status", { model: model ?? null }),
+  summarize: (messages: WireMessage[], userName: string) =>
+    invoke<string>("summarize_conversation", { messages, userName }),
   prepareAttachment: (path: string) =>
-    invoke<{ name: string; kind: 'text' | 'image'; text: string | null; image: ImageData | null; note: string | null }>('prepare_attachment', { path }),
+    invoke<{
+      name: string;
+      kind: "text" | "image";
+      text: string | null;
+      image: ImageData | null;
+      note: string | null;
+    }>("prepare_attachment", { path }),
 
   /** Inicia una respuesta en streaming. Devuelve una función para cancelarla. */
   async chat(
@@ -139,16 +191,30 @@ export const api = {
   ): Promise<() => Promise<void>> {
     const channel = new Channel<StreamEvent>();
     channel.onmessage = onEvent;
-    await invoke('chat_send', { requestId, messages, userName, context, onEvent: channel });
+    await invoke("chat_send", {
+      requestId,
+      messages,
+      userName,
+      context,
+      onEvent: channel,
+    });
     return async () => {
-      await invoke('chat_cancel', { requestId });
+      await invoke("chat_cancel", { requestId });
     };
   },
 };
 
 // ------------------------- Eventos entre ventanas ---------------------------
 
-export type Mood = 'idle' | 'listen' | 'think' | 'curious' | 'talk' | 'happy' | 'sad' | 'celebrate';
+export type Mood =
+  | "idle"
+  | "listen"
+  | "think"
+  | "curious"
+  | "talk"
+  | "happy"
+  | "sad"
+  | "celebrate";
 
 export interface MoodPayload {
   mood: Mood;
@@ -156,13 +222,16 @@ export interface MoodPayload {
   bubble?: string;
 }
 
-export const sendMood = (payload: MoodPayload) => emitTo('pet', 'canela-mood', payload);
+export const sendMood = (payload: MoodPayload) =>
+  emitTo("pet", "canela-mood", payload);
 
 export const onMood = (cb: (p: MoodPayload) => void): Promise<UnlistenFn> =>
-  listen<MoodPayload>('canela-mood', (e) => cb(e.payload));
+  listen<MoodPayload>("canela-mood", (e) => cb(e.payload));
 
-export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
-  listen<Settings>('settings-changed', (e) => cb(e.payload));
+export const onSettingsChanged = (
+  cb: (s: Settings) => void,
+): Promise<UnlistenFn> =>
+  listen<Settings>("settings-changed", (e) => cb(e.payload));
 
 // ------------------------------ Datos locales --------------------------------
 
@@ -214,41 +283,54 @@ export interface ConversationMeta {
   updatedAt: string;
 }
 
-export type TaskFilter = 'today' | 'pending' | 'done' | 'all';
+export type TaskFilter = "today" | "pending" | "done" | "all";
 
 export const MEMORY_KINDS: Array<{ id: string; label: string }> = [
-  { id: 'proyecto', label: 'Proyecto' },
-  { id: 'preferencia', label: 'Preferencia' },
-  { id: 'horario', label: 'Horario' },
-  { id: 'aplicacion', label: 'Aplicación' },
-  { id: 'persona', label: 'Persona' },
-  { id: 'dato', label: 'Dato importante' },
-  { id: 'otro', label: 'Otro' },
+  { id: "proyecto", label: "Proyecto" },
+  { id: "preferencia", label: "Preferencia" },
+  { id: "horario", label: "Horario" },
+  { id: "aplicacion", label: "Aplicación" },
+  { id: "persona", label: "Persona" },
+  { id: "dato", label: "Dato importante" },
+  { id: "otro", label: "Otro" },
 ];
 
 export const data = {
-  memoryList: (kind?: string, query?: string) => invoke<Memory[]>('memory_list', { kind: kind || null, query: query || null }),
-  memoryAdd: (kind: string, content: string) => invoke<Memory>('memory_add', { kind, content }),
-  memoryUpdate: (id: number, kind: string, content: string) => invoke<Memory>('memory_update', { id, kind, content }),
-  memoryDelete: (id: number) => invoke<boolean>('memory_delete', { id }),
-  memoryClear: () => invoke<number>('memory_clear'),
-  memorySetTemporary: (id: number, days: number | null) => invoke<Memory>('memory_set_temporary', { id, days }),
-  taskList: (filter: TaskFilter) => invoke<Task[]>('task_list', { filter }),
-  taskAdd: (input: TaskInput) => invoke<Task>('task_add', { input }),
-  taskUpdate: (id: number, input: TaskInput) => invoke<Task>('task_update', { id, input }),
-  taskSetDone: (id: number, done: boolean) => invoke<Task>('task_set_done', { id, done }),
-  taskDelete: (id: number) => invoke<boolean>('task_delete', { id }),
-  activityList: () => invoke<ActivityItem[]>('activity_list'),
-  conversationSave: (id: string, title: string, payload: string) => invoke<void>('conversation_save', { id, title, data: payload }),
-  conversationList: () => invoke<ConversationMeta[]>('conversation_list'),
-  conversationGet: (id: string) => invoke<string | null>('conversation_get', { id }),
-  conversationDelete: (id: string) => invoke<boolean>('conversation_delete', { id }),
-  conversationClear: () => invoke<number>('conversation_clear'),
-  conversationContext: () => invoke<string>('conversation_context'),
-  docIndexStats: () => invoke<{ files: number; updatedAt: string | null }>('doc_index_stats'),
-  docIndexClear: () => invoke<void>('doc_index_clear'),
-  routineList: () => invoke<Routine[]>('routine_list'),
-  routineDelete: (name: string) => invoke<void>('routine_delete', { name }),
+  memoryList: (kind?: string, query?: string) =>
+    invoke<Memory[]>("memory_list", {
+      kind: kind || null,
+      query: query || null,
+    }),
+  memoryAdd: (kind: string, content: string) =>
+    invoke<Memory>("memory_add", { kind, content }),
+  memoryUpdate: (id: number, kind: string, content: string) =>
+    invoke<Memory>("memory_update", { id, kind, content }),
+  memoryDelete: (id: number) => invoke<boolean>("memory_delete", { id }),
+  memoryClear: () => invoke<number>("memory_clear"),
+  memorySetTemporary: (id: number, days: number | null) =>
+    invoke<Memory>("memory_set_temporary", { id, days }),
+  taskList: (filter: TaskFilter) => invoke<Task[]>("task_list", { filter }),
+  taskAdd: (input: TaskInput) => invoke<Task>("task_add", { input }),
+  taskUpdate: (id: number, input: TaskInput) =>
+    invoke<Task>("task_update", { id, input }),
+  taskSetDone: (id: number, done: boolean) =>
+    invoke<Task>("task_set_done", { id, done }),
+  taskDelete: (id: number) => invoke<boolean>("task_delete", { id }),
+  activityList: () => invoke<ActivityItem[]>("activity_list"),
+  conversationSave: (id: string, title: string, payload: string) =>
+    invoke<void>("conversation_save", { id, title, data: payload }),
+  conversationList: () => invoke<ConversationMeta[]>("conversation_list"),
+  conversationGet: (id: string) =>
+    invoke<string | null>("conversation_get", { id }),
+  conversationDelete: (id: string) =>
+    invoke<boolean>("conversation_delete", { id }),
+  conversationClear: () => invoke<number>("conversation_clear"),
+  conversationContext: () => invoke<string>("conversation_context"),
+  docIndexStats: () =>
+    invoke<{ files: number; updatedAt: string | null }>("doc_index_stats"),
+  docIndexClear: () => invoke<void>("doc_index_clear"),
+  routineList: () => invoke<Routine[]>("routine_list"),
+  routineDelete: (name: string) => invoke<void>("routine_delete", { name }),
 };
 
 export interface Routine {
@@ -268,71 +350,107 @@ export interface RoutineStep {
 export function routineSteps(r: Routine): RoutineStep[] {
   try {
     const v: unknown = JSON.parse(r.steps);
-    return Array.isArray(v) ? (v as RoutineStep[]).filter((x) => x && typeof x.herramienta === 'string') : [];
+    return Array.isArray(v)
+      ? (v as RoutineStep[]).filter(
+          (x) => x && typeof x.herramienta === "string",
+        )
+      : [];
   } catch {
     return [];
   }
 }
 
-export const onDataChanged = (cb: (kind: string) => void): Promise<UnlistenFn> =>
-  listen<{ kind: string }>('data-changed', (e) => cb(e.payload.kind));
+export const onDataChanged = (
+  cb: (kind: string) => void,
+): Promise<UnlistenFn> =>
+  listen<{ kind: string }>("data-changed", (e) => cb(e.payload.kind));
 
-export const onJobsChanged = (cb: (jobs: JobInfo[]) => void): Promise<UnlistenFn> =>
-  listen<JobInfo[]>('jobs-changed', (e) => cb(e.payload));
+export const onJobsChanged = (
+  cb: (jobs: JobInfo[]) => void,
+): Promise<UnlistenFn> =>
+  listen<JobInfo[]>("jobs-changed", (e) => cb(e.payload));
 
-export const onJobFinished = (cb: (job: JobInfo) => void): Promise<UnlistenFn> =>
-  listen<JobInfo>('job-finished', (e) => cb(e.payload));
+export const onJobFinished = (
+  cb: (job: JobInfo) => void,
+): Promise<UnlistenFn> => listen<JobInfo>("job-finished", (e) => cb(e.payload));
 
 // ------------------------------------------------------------------ Voz
 
 export interface VoiceStateEvent {
-  state: 'listening' | 'processing' | 'idle' | 'error';
+  state: "listening" | "processing" | "idle" | "error";
   level: number | null;
   message: string | null;
 }
 
 export const voice = {
-  devices: () => invoke<{ inputs: string[]; outputs: string[] }>('voice_devices'),
-  start: () => invoke<void>('voice_start'),
-  stop: () => invoke<boolean>('voice_stop'),
-  cancel: () => invoke<boolean>('voice_cancel'),
-  cloudSpeak: (text: string) => invoke<void>('tts_cloud_speak', { text }),
-  cloudStop: () => invoke<void>('tts_cloud_stop'),
+  devices: () =>
+    invoke<{ inputs: string[]; outputs: string[] }>("voice_devices"),
+  start: () => invoke<void>("voice_start"),
+  stop: () => invoke<boolean>("voice_stop"),
+  cancel: () => invoke<boolean>("voice_cancel"),
+  cloudSpeak: (text: string) => invoke<void>("tts_cloud_speak", { text }),
+  cloudStop: () => invoke<void>("tts_cloud_stop"),
 };
 
-export const onVoiceState = (cb: (e: VoiceStateEvent) => void): Promise<UnlistenFn> =>
-  listen<VoiceStateEvent>('voice-state', (e) => cb(e.payload));
+export const onVoiceState = (
+  cb: (e: VoiceStateEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<VoiceStateEvent>("voice-state", (e) => cb(e.payload));
 
-export const onVoiceTranscript = (cb: (text: string) => void): Promise<UnlistenFn> =>
-  listen<{ text: string }>('voice-transcript', (e) => cb(e.payload.text));
+export const onVoiceTranscript = (
+  cb: (text: string) => void,
+): Promise<UnlistenFn> =>
+  listen<{ text: string }>("voice-transcript", (e) => cb(e.payload.text));
 
-export const onVoiceToggle = (cb: () => void): Promise<UnlistenFn> => listen('voice-toggle', () => cb());
+export const onVoiceToggle = (cb: () => void): Promise<UnlistenFn> =>
+  listen("voice-toggle", () => cb());
 
-export const onTtsState = (cb: (e: { speaking: boolean; error?: string }) => void): Promise<UnlistenFn> =>
-  listen<{ speaking: boolean; error?: string }>('tts-state', (e) => cb(e.payload));
+export const onTtsState = (
+  cb: (e: { speaking: boolean; error?: string }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ speaking: boolean; error?: string }>("tts-state", (e) =>
+    cb(e.payload),
+  );
 
 // ---------------------------------------------------------------- Pantalla
 
 export interface ScreenSources {
-  monitors: Array<{ id: number; name: string; width: number; height: number; primary: boolean }>;
+  monitors: Array<{
+    id: number;
+    name: string;
+    width: number;
+    height: number;
+    primary: boolean;
+  }>;
   windows: Array<{ id: number; title: string; app: string }>;
 }
 
-export type CaptureTarget = { kind: 'monitor'; id: number } | { kind: 'window'; id: number } | { kind: 'active' };
+export type CaptureTarget =
+  | { kind: "monitor"; id: number }
+  | { kind: "window"; id: number }
+  | { kind: "active" };
 
 export const screen = {
-  sources: () => invoke<ScreenSources>('screen_sources'),
+  sources: () => invoke<ScreenSources>("screen_sources"),
   capture: (target: CaptureTarget) =>
-    invoke<{ captureId: string; preview: string; width: number; height: number }>('screen_capture', { target }),
-  finalize: (captureId: string, crop: { x: number; y: number; w: number; h: number } | null) =>
-    invoke<ImageData>('screen_finalize', { captureId, crop }),
-  discard: (captureId: string) => invoke<void>('screen_discard', { captureId }),
+    invoke<{
+      captureId: string;
+      preview: string;
+      width: number;
+      height: number;
+    }>("screen_capture", { target }),
+  finalize: (
+    captureId: string,
+    crop: { x: number; y: number; w: number; h: number } | null,
+  ) => invoke<ImageData>("screen_finalize", { captureId, crop }),
+  discard: (captureId: string) => invoke<void>("screen_discard", { captureId }),
 };
 
-export const imageUrl = (i: ImageData) => `data:${i.mediaType};base64,${i.data}`;
+export const imageUrl = (i: ImageData) =>
+  `data:${i.mediaType};base64,${i.data}`;
 
 /** "≈ 0,0042 US$" */
 export function formatUsd(v: number): string {
-  if (v > 0 && v < 0.0001) return '< 0,0001 US$';
-  return `${v.toLocaleString('es', { minimumFractionDigits: v < 1 ? 4 : 2, maximumFractionDigits: v < 1 ? 4 : 2 })} US$`;
+  if (v > 0 && v < 0.0001) return "< 0,0001 US$";
+  return `${v.toLocaleString("es", { minimumFractionDigits: v < 1 ? 4 : 2, maximumFractionDigits: v < 1 ? 4 : 2 })} US$`;
 }

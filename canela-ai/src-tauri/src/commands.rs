@@ -175,15 +175,16 @@ pub async fn chat_send(
     #[cfg(not(debug_assertions))]
     let dev_key: Option<String> = None;
     let key = match dev_key {
+        // Ollama no usa clave.
+        _ if !provider.needs_key() => String::new(),
         Some(k) => k,
         None => tauri::async_runtime::spawn_blocking(move || secrets::get_key(provider))
             .await
             .map_err(|e| e.to_string())??
             .ok_or_else(|| {
-                let name = if provider == ProviderId::Anthropic {
-                    "Claude (Anthropic)"
-                } else {
-                    "ChatGPT (OpenAI)"
+                let name = match provider {
+                    ProviderId::Anthropic => "Claude (Anthropic)",
+                    _ => "ChatGPT (OpenAI)",
                 };
                 format!("Falta la clave API de {name}. Agrégala en Ajustes.")
             })?,

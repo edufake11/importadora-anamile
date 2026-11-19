@@ -2,7 +2,7 @@
 //! que solicite (con permiso del usuario cuando corresponde) y repite hasta
 //! que el modelo termine, con un límite de pasos.
 
-use super::{build_turn, model_of, native_history, run_turn, tool_results, ChatMessage, StreamEvent, ToolCall, ToolResult};
+use super::{model_of, native_history, tool_results, ChatMessage, StreamEvent, ToolCall, ToolResult};
 use crate::settings::Settings;
 use crate::tools::{self, Permission, ToolCtx};
 use serde_json::Value;
@@ -58,6 +58,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
         (
             ToolResult {
                 id: call.id.clone(),
+                name: call.name.clone(),
                 text,
                 is_error: true,
                 images: vec![],
@@ -137,6 +138,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
         return (
             ToolResult {
                 id: call.id.clone(),
+                name: call.name.clone(),
                 text,
                 is_error: false,
                 images: vec![],
@@ -154,6 +156,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
             (
                 ToolResult {
                     id: call.id.clone(),
+                    name: call.name.clone(),
                     text: out.text,
                     is_error: false,
                     images: out.images,
@@ -300,9 +303,8 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     for step in 0..MAX_STEPS {
         let mut messages = base.clone();
         messages.extend(transcript.iter().cloned());
-        let (req, parser) = build_turn(&env.http, &env.settings, &env.api_key, &env.system, &messages, &defs);
         let emit_ref: &(dyn Fn(StreamEvent) + Send + Sync) = &*emit;
-        let outcome = match run_turn(provider, &model, req, parser, emit_ref).await {
+        let outcome = match super::complete(&env.http, &env.settings, &env.api_key, &env.system, &messages, &defs, emit_ref).await {
             Ok(o) => o,
             Err(message) => {
                 emit(StreamEvent::Error {

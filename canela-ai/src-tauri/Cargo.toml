@@ -1,6 +1,6 @@
 [package]
 name = "canela-ai"
-version = "0.3.0"
+version = "0.4.0"
 description = "CANELA AI — mascota virtual e asistente inteligente de escritorio"
 edition = "2021"
 rust-version = "1.82"
@@ -31,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 xcap = "0.9"
 base64 = "0.23.1"
 pdf-extract = { version = "0.12.1", default-features = false }
+url = "2"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 

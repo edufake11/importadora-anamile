@@ -1,18 +1,29 @@
 // Conversación por voz: micrófono → texto → respuesta hablada, con las
 // reacciones de Canela. El panel coordina todo, incluso si está oculto.
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { onTtsState, onVoiceState, onVoiceToggle, onVoiceTranscript, sendMood, voice, type Settings } from '../lib/ipc';
-import { groupSentences, SentenceSplitter, spanishVoices } from './speech';
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  onTtsState,
+  onVoiceState,
+  onVoiceToggle,
+  onVoiceTranscript,
+  sendMood,
+  voice,
+  type Settings,
+} from "../lib/ipc";
+import { groupSentences, SentenceSplitter, spanishVoices } from "./speech";
 
-export type VoicePhase = 'idle' | 'listening' | 'processing' | 'speaking';
+export type VoicePhase = "idle" | "listening" | "processing" | "speaking";
 
 export interface SpeechStream {
   feed(delta: string): void;
   end(): void;
 }
 
-export function useVoice(settings: Settings, onTranscript: (text: string) => void) {
-  const [phase, setPhase] = useState<VoicePhase>('idle');
+export function useVoice(
+  settings: Settings,
+  onTranscript: (text: string) => void,
+) {
+  const [phase, setPhase] = useState<VoicePhase>("idle");
   const [level, setLevel] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const settingsRef = useRef(settings);
@@ -28,8 +39,8 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
   const speechDone = useCallback(() => {
     window.clearTimeout(watchdog.current);
     deadline.current = 0;
-    setPhase((p) => (p === 'speaking' ? 'idle' : p));
-    void sendMood({ mood: 'happy' });
+    setPhase((p) => (p === "speaking" ? "idle" : p));
+    void sendMood({ mood: "happy" });
   }, []);
 
   /**
@@ -52,13 +63,13 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
   );
 
   const stopSpeaking = useCallback(() => {
-    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
     pendingLocal.current = 0;
     void voice.cloudStop().catch(() => undefined);
     cloudPending.current = 0;
     window.clearTimeout(watchdog.current);
     deadline.current = 0;
-    setPhase((p) => (p === 'speaking' ? 'idle' : p));
+    setPhase((p) => (p === "speaking" ? "idle" : p));
   }, []);
 
   /** Dice una o varias frases con el motor elegido. */
@@ -66,9 +77,11 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
     (sentences: string[]) => {
       const s = settingsRef.current;
       if (!sentences.length) return;
-      setPhase('speaking');
-      void sendMood({ mood: 'talk' });
-      if (s.ttsEngine === 'openai') {
+      setPhase("speaking");
+      void sendMood({ mood: "talk" });
+      // Con Ollama no se envía nada a internet salvo permiso expreso.
+      const cloudOk = s.provider !== "ollama" || s.ollamaCloudVoice;
+      if (s.ttsEngine === "openai" && cloudOk) {
         for (const chunk of groupSentences(sentences)) {
           cloudPending.current += 1;
           armWatchdog(60_000);
@@ -79,8 +92,8 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
         }
         return;
       }
-      if (typeof speechSynthesis === 'undefined') {
-        setMessage('Este equipo no tiene voces instaladas para hablar.');
+      if (typeof speechSynthesis === "undefined") {
+        setMessage("Este equipo no tiene voces instaladas para hablar.");
         return;
       }
       const voices = spanishVoices(speechSynthesis.getVoices());
@@ -88,7 +101,7 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
       for (const text of sentences) {
         const u = new SpeechSynthesisUtterance(text);
         if (v) u.voice = v;
-        u.lang = v?.lang ?? 'es-MX';
+        u.lang = v?.lang ?? "es-MX";
         u.rate = s.ttsRate;
         u.volume = s.ttsVolume;
         pendingLocal.current += 1;
@@ -107,7 +120,7 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
   const speechStream = useCallback(
     (spoken: boolean): SpeechStream | null => {
       const mode = settingsRef.current.speakReplies;
-      if (mode === 'never' || (mode === 'voice' && !spoken)) return null;
+      if (mode === "never" || (mode === "voice" && !spoken)) return null;
       const splitter = new SentenceSplitter();
       return {
         feed: (d) => say(splitter.feed(d)),
@@ -120,20 +133,20 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
   /** Botón de micrófono / atajo: escuchar, terminar o interrumpir. */
   const toggle = useCallback(async () => {
     setMessage(null);
-    if (phase === 'speaking') stopSpeaking();
-    if (phase === 'listening') {
+    if (phase === "speaking") stopSpeaking();
+    if (phase === "listening") {
       await voice.stop();
       return;
     }
-    if (phase === 'processing') return;
+    if (phase === "processing") return;
     try {
       await voice.start();
-      setPhase('listening');
-      void sendMood({ mood: 'listen', bubble: '🎙 Te escucho…' });
+      setPhase("listening");
+      void sendMood({ mood: "listen", bubble: "🎙 Te escucho…" });
     } catch (e) {
       setMessage(String(e));
-      setPhase('idle');
-      void sendMood({ mood: 'sad', bubble: String(e) });
+      setPhase("idle");
+      void sendMood({ mood: "sad", bubble: String(e) });
     }
   }, [phase, stopSpeaking]);
 
@@ -143,21 +156,25 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
   useEffect(() => {
     const un = [
       onVoiceState((e) => {
-        if (e.state === 'listening') {
-          setPhase('listening');
+        if (e.state === "listening") {
+          setPhase("listening");
           setLevel(e.level ?? 0);
-        } else if (e.state === 'processing') {
-          setPhase('processing');
+        } else if (e.state === "processing") {
+          setPhase("processing");
           setLevel(0);
-          void sendMood({ mood: 'curious' });
+          void sendMood({ mood: "curious" });
         } else {
-          setPhase((p) => (p === 'speaking' ? p : 'idle'));
+          setPhase((p) => (p === "speaking" ? p : "idle"));
           setLevel(0);
           if (e.message) {
             setMessage(e.message);
-            void sendMood(e.state === 'error' ? { mood: 'sad', bubble: e.message } : { mood: 'idle', bubble: e.message });
-          } else if (e.state === 'idle') {
-            void sendMood({ mood: 'idle' });
+            void sendMood(
+              e.state === "error"
+                ? { mood: "sad", bubble: e.message }
+                : { mood: "idle", bubble: e.message },
+            );
+          } else if (e.state === "idle") {
+            void sendMood({ mood: "idle" });
           }
         }
       }),
@@ -178,5 +195,14 @@ export function useVoice(settings: Settings, onTranscript: (text: string) => voi
     return () => un.forEach((p) => void p.then((f) => f()));
   }, [speechDone]);
 
-  return { phase, level, message, setMessage, toggle, stopSpeaking, speechStream, say };
+  return {
+    phase,
+    level,
+    message,
+    setMessage,
+    toggle,
+    stopSpeaking,
+    speechStream,
+    say,
+  };
 }

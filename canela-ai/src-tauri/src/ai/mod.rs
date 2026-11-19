@@ -11,6 +11,7 @@
 
 pub mod agent;
 pub mod anthropic;
+pub mod ollama;
 pub mod openai;
 pub mod pricing;
 pub mod sse;
@@ -52,6 +53,8 @@ pub struct ChatMessage {
 #[derive(Debug, Clone)]
 pub struct ToolResult {
     pub id: String,
+    /// Nombre de la herramienta (Ollama lo necesita en el resultado).
+    pub name: String,
     pub text: String,
     pub is_error: bool,
     pub images: Vec<crate::vision::ImageData>,
@@ -142,6 +145,11 @@ pub enum ParseOut {
 
 /// Traduce eventos SSE de un proveedor concreto.
 pub trait ProviderStream: Send {
+    /// `true` si la respuesta llega como NDJSON (una línea JSON por trozo,
+    /// como Ollama) en vez de Server-Sent Events.
+    fn ndjson(&self) -> bool {
+        false
+    }
     fn on_event(&mut self, ev: &sse::SseEvent) -> Vec<ParseOut>;
     /// Llamado si la conexión termina sin evento final.
     fn finish(&mut self) -> Option<TurnOutcome>;
@@ -199,6 +207,7 @@ pub fn http_error_message(provider: ProviderId, status: u16, body: &str, model: 
     let name = match provider {
         ProviderId::Anthropic => "Claude",
         ProviderId::Openai => "OpenAI",
+        ProviderId::Ollama => return ollama::error_message(status, body, model),
     };
     let detail = serde_json::from_str::<Value>(body)
         .ok()
@@ -227,6 +236,7 @@ pub fn native_history(provider: ProviderId, history: &[ChatMessage]) -> Vec<Valu
     match provider {
         ProviderId::Anthropic => anthropic::native_messages(history),
         ProviderId::Openai => openai::native_messages(history),
+        ProviderId::Ollama => ollama::native_messages(history),
     }
 }
 
@@ -235,6 +245,7 @@ pub fn tool_results(provider: ProviderId, results: &[ToolResult]) -> Vec<Value> 
     match provider {
         ProviderId::Anthropic => anthropic::tool_results_message(results),
         ProviderId::Openai => openai::tool_results_messages(results),
+        ProviderId::Ollama => ollama::tool_results_messages(results),
     }
 }
 
@@ -244,6 +255,27 @@ pub fn model_supports_images(provider: ProviderId, model: &str) -> Option<bool> 
     match provider {
         // Todos los modelos Claude actuales (3 y posteriores) aceptan imágenes.
         ProviderId::Anthropic => Some(m.starts_with("claude-")),
+        // Modelos locales: sólo los de visión conocidos (qwen3 no ve imágenes).
+        ProviderId::Ollama => {
+            const VISION: [&str; 9] = [
+                "llava",
+                "vision",
+                "-vl",
+                "vl:",
+                "gemma3",
+                "minicpm-v",
+                "moondream",
+                "bakllava",
+                "mistral-small3",
+            ];
+            if VISION.iter().any(|v| m.contains(v)) {
+                Some(true)
+            } else if m.starts_with("qwen3") || m.starts_with("llama3.1") || m.starts_with("deepseek-r1") || m.starts_with("phi") {
+                Some(false)
+            } else {
+                None
+            }
+        }
         ProviderId::Openai => {
             if m.starts_with("gpt-3.5")
                 || m == "gpt-4"
@@ -273,6 +305,7 @@ pub fn model_of(settings: &Settings) -> String {
     match settings.provider {
         ProviderId::Anthropic => settings.anthropic_model.clone(),
         ProviderId::Openai => settings.openai_model.clone(),
+        ProviderId::Ollama => settings.ollama_model.clone(),
     }
 }
 
@@ -302,51 +335,156 @@ pub fn build_turn(
             openai::build_request(http, api_key, &settings.openai_model, system, messages, tools),
             Box::new(openai::OpenAiStream::new()),
         ),
+        ProviderId::Ollama => (
+            ollama::build_request(http, settings, system, messages, tools),
+            Box::new(ollama::OllamaStream::new(&settings.ollama_model, settings.ollama_num_ctx)),
+        ),
     }
 }
 
+/// Una vuelta completa (petición + streaming). Con Ollama, si el modelo
+/// responde que no admite razonamiento o herramientas, se reintenta una vez
+/// sin ese campo para que cualquier modelo local funcione.
+pub async fn complete(
+    http: &reqwest::Client,
+    settings: &Settings,
+    api_key: &str,
+    system: &str,
+    messages: &[Value],
+    tools: &[ToolDef],
+    emit: &(dyn Fn(StreamEvent) + Send + Sync),
+) -> Result<TurnOutcome, String> {
+    let model = model_of(settings);
+    for attempt in 0..3 {
+        let (req, parser) = build_turn(http, settings, api_key, system, messages, tools);
+        match run_turn_inner(settings, &model, req, parser, emit).await {
+            Err(TurnError::Retry(_)) if attempt < 2 => continue,
+            Err(TurnError::Retry(m)) | Err(TurnError::Message(m)) => return Err(m),
+            Ok(mut o) => {
+                if settings.provider == ProviderId::Ollama && !tools.is_empty() && ollama::tools_unsupported(&model) && o.notice.is_none() {
+                    o.notice = Some(format!(
+                        "«{model}» no admite herramientas: puedo conversar, pero no abrir apps ni tocar archivos. Para eso usa qwen3:8b."
+                    ));
+                }
+                return Ok(o);
+            }
+        }
+    }
+    unreachable!()
+}
+
+enum TurnError {
+    Retry(String),
+    Message(String),
+}
+
 /// Ejecuta una vuelta: emite Started/Thinking/Delta y devuelve el resultado
-/// (o un mensaje de error claro).
-pub async fn run_turn(
-    provider: ProviderId,
+/// (o un mensaje de error claro). Se usa a través de `complete`.
+async fn run_turn_inner(
+    settings: &Settings,
     model: &str,
     request: reqwest::RequestBuilder,
     mut parser: Box<dyn ProviderStream>,
     emit: &(dyn Fn(StreamEvent) + Send + Sync),
-) -> Result<TurnOutcome, String> {
+) -> Result<TurnOutcome, TurnError> {
+    let provider = settings.provider;
+    let local = provider == ProviderId::Ollama;
     let response = request.send().await.map_err(|e| {
-        if e.is_timeout() {
+        TurnError::Message(if local && (e.is_connect() || e.is_timeout()) {
+            ollama::connect_error_message(settings)
+        } else if e.is_timeout() {
             "La solicitud tardó demasiado. Revisa tu conexión.".to_string()
         } else if e.is_connect() {
             "No hay conexión con el servicio de IA. Revisa tu internet o firewall.".to_string()
         } else {
             format!("Error de red: {e}")
-        }
+        })
     })?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(http_error_message(provider, status.as_u16(), &body, model));
+        if local && status.as_u16() == 400 && ollama::learn_from_error(model, &body) {
+            return Err(TurnError::Retry(http_error_message(provider, status.as_u16(), &body, model)));
+        }
+        return Err(TurnError::Message(http_error_message(provider, status.as_u16(), &body, model)));
     }
 
+    let ndjson = parser.ndjson();
     let mut sse = sse::SseParser::new();
+    let mut lines: Vec<u8> = Vec::new();
     let mut bytes = response.bytes_stream();
-    while let Some(chunk) = bytes.next().await {
-        let chunk = chunk.map_err(|e| format!("Se interrumpió la conexión: {e}"))?;
-        for ev in sse.push(&chunk) {
+    let handle = |events: Vec<sse::SseEvent>, parser: &mut Box<dyn ProviderStream>| -> Option<Result<TurnOutcome, TurnError>> {
+        for ev in events {
             for out in parser.on_event(&ev) {
                 match out {
                     ParseOut::Event(e) => emit(e),
-                    ParseOut::Finished(o) => return Ok(o),
-                    ParseOut::Failed(m) => return Err(m),
+                    ParseOut::Finished(o) => return Some(Ok(o)),
+                    ParseOut::Failed(m) => return Some(Err(TurnError::Message(m))),
                 }
             }
+        }
+        None
+    };
+    while let Some(chunk) = bytes.next().await {
+        let chunk = chunk.map_err(|e| {
+            TurnError::Message(if local {
+                format!("Se cortó la conexión con Ollama: {e}")
+            } else {
+                format!("Se interrumpió la conexión: {e}")
+            })
+        })?;
+        let events = if ndjson {
+            lines.extend_from_slice(&chunk);
+            split_lines(&mut lines)
+        } else {
+            sse.push(&chunk)
+        };
+        if let Some(r) = handle(events, &mut parser) {
+            return r;
+        }
+    }
+    if ndjson && !lines.is_empty() {
+        lines.push(b'\n');
+        let events = split_lines(&mut lines);
+        if let Some(r) = handle(events, &mut parser) {
+            return r;
         }
     }
     parser
         .finish()
-        .ok_or_else(|| "La conexión terminó antes de completar la respuesta.".into())
+        .ok_or_else(|| TurnError::Message("La conexión terminó antes de completar la respuesta.".into()))
+}
+
+/// Una vuelta con una petición ya construida (para pruebas).
+#[cfg(test)]
+pub async fn run_turn(
+    provider: ProviderId,
+    model: &str,
+    request: reqwest::RequestBuilder,
+    parser: Box<dyn ProviderStream>,
+    emit: &(dyn Fn(StreamEvent) + Send + Sync),
+) -> Result<TurnOutcome, String> {
+    let settings = Settings {
+        provider,
+        ..Settings::default()
+    };
+    run_turn_inner(&settings, model, request, parser, emit).await.map_err(|e| match e {
+        TurnError::Retry(m) | TurnError::Message(m) => m,
+    })
+}
+
+/// Separa líneas completas de NDJSON (cada una se trata como un evento).
+fn split_lines(buf: &mut Vec<u8>) -> Vec<sse::SseEvent> {
+    let mut out = Vec::new();
+    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=pos).collect();
+        let text = String::from_utf8_lossy(&line).trim().to_string();
+        if !text.is_empty() {
+            out.push(sse::SseEvent { event: None, data: text });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -1164,3 +1164,25 @@ details.fold summary {
   font-size: 12px;
   color: var(--muted);
 }
+
+.ollama-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.ollama-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+.ollama-status.ok .dot {
+  background: var(--text);
+}
+.ollama-status.bad .dot {
+  background: transparent;
+  border: 1px solid var(--muted);
+}

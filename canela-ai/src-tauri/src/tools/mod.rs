@@ -1501,8 +1501,6 @@ posibles problemas y 3-5 mejoras concretas priorizadas.{}\n\n{snapshot}",
         focus.map(|f| format!(" Presta especial atención a: {f}.")).unwrap_or_default()
     );
     let messages = vec![json!({ "role": "user", "content": prompt })];
-    let (req, parser) = ai::build_turn(&llm.http, &llm.settings, &llm.api_key, &system, &messages, &[]);
-    let model = ai::model_of(&llm.settings);
     let text = Arc::new(std::sync::Mutex::new(String::new()));
     let sink = text.clone();
     let emit = move |e: ai::StreamEvent| {
@@ -1510,7 +1508,7 @@ posibles problemas y 3-5 mejoras concretas priorizadas.{}\n\n{snapshot}",
             sink.lock().unwrap().push_str(&text);
         }
     };
-    ai::run_turn(llm.settings.provider, &model, req, parser, &emit).await?;
+    ai::complete(&llm.http, &llm.settings, &llm.api_key, &system, &messages, &[], &emit).await?;
     let out = text.lock().unwrap().clone();
     if out.trim().is_empty() {
         Err("La IA no devolvió ningún informe.".into())
@@ -1528,6 +1526,7 @@ mod tests {
         ToolCtx {
             db: Arc::new(Db::open_in_memory().unwrap()),
             settings: Settings {
+                provider: crate::settings::ProviderId::Anthropic,
                 auto_open_apps: true,
                 auto_open_web: false,
                 ..Settings::default()
@@ -1556,6 +1555,20 @@ mod tests {
         fn find_window(&self, title: &str) -> Option<u32> {
             title.to_lowercase().contains("code").then_some(7)
         }
+    }
+
+    #[tokio::test]
+    async fn local_text_model_refuses_screenshots_clearly() {
+        let root = tmp("screen-ollama");
+        let mut c = ctx(&root);
+        c.settings.provider = crate::settings::ProviderId::Ollama;
+        c.settings.ollama_model = "qwen3:8b".into();
+        let e = prepare_async(&c, "ver_pantalla", &json!({}))
+            .await
+            .err()
+            .expect("qwen3 no ve imágenes");
+        assert!(e.contains("no acepta imágenes"), "{e}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

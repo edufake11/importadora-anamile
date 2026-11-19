@@ -39,6 +39,8 @@ pub fn price(provider: ProviderId, model: &str) -> Option<Price> {
     let m = model.to_lowercase();
     let p = |input: f64, output: f64, cache_read: f64| Some(Price { input, output, cache_read });
     match provider {
+        // Modelos locales: no hay costo por uso (sólo la electricidad).
+        ProviderId::Ollama => p(0.0, 0.0, 0.0),
         ProviderId::Anthropic => match m.as_str() {
             "claude-fable-5-2" | "claude-mythos-5-2" => p(8.0, 40.0, 0.20),
             "claude-fable-5-1" | "claude-mythos-5-1" => p(10.0, 50.0, 0.25),
