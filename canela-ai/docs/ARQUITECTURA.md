@@ -1,6 +1,6 @@
-# Arquitectura de CANELA AI (v0.4)
+# Arquitectura de CANELA AI (v0.5)
 
-Este documento describe cómo está construida Canela. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**. La v0.4 se verificó en Linux (Xvfb, micrófono virtual, Ollama/OpenAI/Claude simulados) y en el CI de Windows; falta la prueba en un equipo Windows 11 real y con un Ollama real.
+Este documento describe cómo está construida Canela. Las secciones marcadas **[DISEÑO]** son planes: **todavía no están implementadas**. La v0.5 se verificó en Linux (Xvfb, micrófono virtual, Ollama simulado, whisper.cpp **real** con modelos descargados, Piper simulado) y en el CI de Windows; falta la prueba en un equipo Windows 11 real, con Ollama real y con Piper real.
 
 ## Visión general
 
@@ -18,6 +18,10 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │ vision.rs       capturas (xcap), redimensionado, ventanas sensibles excluidas                  │
 │ vision_cmds.rs  ocultar mascota/panel, capturar, vista previa, recorte, adjuntos               │
 │ media.rs        teclas multimedia (lista fija) · system.rs  estado del equipo (sysinfo)       │
+│ memdiag.rs      lectura de memoria (RAM, commit, VRAM, procesos) y detector de anomalías      │
+│ resources.rs    modos Equilibrado/Ahorro, descarga por inactividad, liberar memoria, registro │
+│ voice/local.rs  whisper.cpp en proceso + Piper por frase + catálogo verificado por SHA-256   │
+│ voice/wake.rs   «Hola, Canela»: segmentador + whisper tiny + detección de la frase           │
 │ docs.rs         texto de PDF (pdf-extract), Word (.docx/zip), partes de 12 000 caracteres      │
 │ model_cmds.rs   capacidades del modelo (API de modelos de Anthropic), resúmenes               │
 │ secrets.rs      claves API en el Administrador de credenciales de Windows                      │
@@ -113,15 +117,36 @@ Para añadir una herramienta: define su esquema en `tools::definitions()`, su va
 - **Costo**: 0 (tabla de precios); la interfaz muestra «local».
 - **Imágenes**: sólo modelos de visión (llava, *-vl, gemma3…); con qwen3:8b las capturas se rechazan con un mensaje claro.
 
-## Voz (v0.3)
+## Memoria y recursos (v0.5)
 
-- **Pulsar para hablar**: botón 🎙 o `Ctrl+Alt+V` (funciona con el panel cerrado). Requiere aceptar el consentimiento en Ajustes (`voice_consent`) y la clave de OpenAI.
-- **Captura**: `cpal` en un hilo propio → mono → remuestreo a 16 kHz → `vad.rs` (detector por energía con piso de ruido adaptativo: calibra 240 ms, fin de frase tras 900 ms de silencio, abandona a los 8 s sin voz, máximo 45 s). Evento `voice-state` con nivel para el indicador.
-- **Transcripción**: WAV construido en memoria → `POST /v1/audio/transcriptions` (modelo `gpt-transcribe`, idioma `es`). El audio nunca se escribe en disco.
-- **Respuesta hablada**: voces de Windows mediante `speechSynthesis` de WebView2 (gratis, sin red) o `POST /v1/audio/speech` (`gpt-4o-mini-tts`, PCM 24 kHz reproducido con `cpal`). El texto se va diciendo por frases mientras llega; vigilante contra bloqueos; interrumpible.
-- **Canela**: `listen` mientras graba, `curious` al transcribir, `think`, `talk` mientras habla, `sad` si falla.
-- **[DISEÑO] «Hola, Canela»**: detector de palabra clave local (p. ej. openWakeWord, ~40 MB). Desactivado en la interfaz; sólo se implementará con descarga autorizada mostrando el tamaño.
-- **[DISEÑO] Sin conexión**: whisper.cpp con CUDA (modelo *small* ≈ 0,5 GB o *large-v3-turbo* ≈ 1,6 GB) y Piper para voz. Con una RTX 5060 Ti 16 GB la transcripción local sería más rápida que la API, pero exige descargas grandes; no se descargan automáticamente.
+**Lectura** (`memdiag.rs`, sólo lectura, nada sale del equipo):
+- Sistema: `GetPerformanceInfo` (psapi) → RAM física total/disponible, memoria comprometida (`CommitTotal`), límite (`CommitLimit`), pico y caché. No usa `Get-Counter`/PDH (en el equipo del usuario falla con `c0000bb8`). En Linux, `/proc/meminfo` (`Committed_AS`, `CommitLimit`).
+- Procesos: `sysinfo` → PID, nombre, ruta (si Windows lo permite), **memoria privada** (`PrivateUsage`) y **conjunto de trabajo**. Canela suma su proceso y sus WebView2 hijos.
+- VRAM: `nvidia-smi --query-gpu=name,memory.used,memory.total` (comando fijo, sin ventana, 3 s de límite). Modelos de IA: `GET /api/ps` de Ollama (tamaño, VRAM, `expires_at`).
+
+**Detector** (`Detector::observe`, probado con casos sintéticos):
+- Proceso nuevo ≥ 1 GB privado → `aparece`; salto ≥ 512 MB entre muestras o cada +1 GB acumulado → `crece`; proceso ≥ 1 GB que termina → `desaparece`.
+- RAM disponible < 1,5 GB o < 10 % → `ram_baja` (repite cada 10 min; `ram_ok` al recuperarse). Commit ≥ 90 % del límite → `commit_alto`.
+- Commit que sube ≥ 3 GB en 10 min **sin ningún modelo cargado** → `commit_crece_sin_ia`, con la lista de procesos que crecieron en esa ventana (o el aviso de que ninguno visible lo explica: controladores, kernel o un proceso que ya terminó).
+- Muestras cada 60 s (120 s en Ahorro); 1 500 en memoria; registro JSONL diario en `%APPDATA%\com.canela.ai\diagnostico` (7 días); informe JSON exportable.
+
+**IA local** (`resources.rs`):
+- `keep_alive` en cada petición: `2m` (Equilibrado) / `30s` (Ahorro). Ollama descarga solo el modelo; Canela además lo descarga como respaldo (`keep_alive: 0`) tras la inactividad.
+- Contador de actividad (`resources::busy()` en `agent::run` y `ai::complete`): mientras haya una respuesta o herramientas en curso no se descarga nada; cada 45 s se renueva el plazo **sólo si `/api/ps` muestra el modelo** (no se vuelve a cargar algo que el usuario descargó a mano).
+- «Liberar memoria de IA»: descarga todos los modelos de `/api/ps` y el modelo de voz; si Canela está respondiendo, se aplaza hasta que termine.
+- Recarga automática con el siguiente mensaje; en Equilibrado se precarga al abrir el micrófono.
+- Ahorro: contexto máx. 8 192, sin «pensar más», voz descargada al terminar de escuchar.
+
+## Voz (v0.3 + v0.5 sin internet)
+
+- **Pulsar para hablar**: botón 🎙 o `Ctrl+Alt+V` (también con el panel cerrado). Requiere el consentimiento de voz (`voice_consent`).
+- **Captura**: `audio::open_input` (cpal) → mono → 16 kHz → `vad.rs` (piso de ruido adaptativo, fin de frase tras 900 ms de silencio, 8 s sin voz, máx. 45 s). El audio sólo vive en memoria.
+- **Reconocimiento local (predeterminado en v0.5)**: whisper.cpp vía `whisper-rs` dentro del proceso, en CPU (deja la GPU al modelo de IA), idioma `es`, `audio_ctx` ajustado a la duración (≈ 3,5× más rápido en frases cortas, misma precisión en las pruebas), hilos = núcleos − 1 (máx. 8). El modelo se carga al usarlo y se libera tras 5 min (Equilibrado) o al terminar (Ahorro).
+- **Reconocimiento con OpenAI (opcional)**: `POST /v1/audio/transcriptions`; con Ollama sólo con permiso expreso.
+- **Voz**: voces de Windows (`speechSynthesis`, respaldo), **Piper** (`piper.exe --output-raw` una vez por frase: el proceso termina y no deja memoria; interrumpible al instante; velocidad con `--length_scale`, volumen al reproducir) u OpenAI.
+- **Modelos**: catálogo fijo con URL, tamaño y SHA-256 (whisper tiny/base/small/large-v3-turbo de `ggerganov/whisper.cpp`; voces Piper davefx CC0, claude Apache-2.0, ald Unlicense; Piper para Windows 2023.11.14-2 MIT + espeak-ng GPL-3.0). Sólo se descargan al pulsar «Descargar» (con el tamaño a la vista); se escriben como `.part`, se comprueban tamaño y SHA-256 y sólo entonces se renombran; el zip de Piper se extrae sin permitir rutas fuera de la carpeta.
+- **«Hola, Canela»** (`wake.rs`): desactivada por defecto y con permiso expreso. Segmentador de energía (ráfagas de 0,3–6 s; tras una más larga espera una pausa) → whisper **tiny** (modelo aparte del principal) → `detect()` (la palabra «canela» con distancia ≤ 1, al principio y precedida sólo de «hola/oye/hey…»). Si la frase trae una orden («Hola, Canela, abre la calculadora») se vuelve a transcribir con el modelo principal y se envía directamente. Pausa mientras Canela graba, piensa o habla; indicador en Canela (clic = apagar) y en el chat; el audio se descarta al instante.
+- **Canela**: `listen` al grabar, `curious` al oír su nombre, `think`, `talk` al hablar, `sad` si falla; descansa/duerme y camina como antes.
 
 ## Visión de pantalla (v0.3)
 

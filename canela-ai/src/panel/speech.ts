@@ -105,3 +105,15 @@ export function spanishVoices(
         a.name.localeCompare(b.name),
     );
 }
+
+/**
+ * Motor de voz efectivo: la voz de OpenAI sólo si está permitida (con Ollama
+ * hace falta permiso expreso); si no, la voz de Windows.
+ */
+export function ttsEngineFor(
+  engine: "local" | "openai" | "piper",
+  cloudOk: boolean,
+): "local" | "openai" | "piper" {
+  if (engine === "openai" && !cloudOk) return "local";
+  return engine;
+}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, onMood, onSettingsChanged } from '../lib/ipc';
+import { api, onMood, onSettingsChanged, onWakeState, voice } from '../lib/ipc';
 import type { Activity } from './brain';
 import { BUBBLE_AREA, PetController, type PetLayout } from './controller';
 import { SpriteSheet } from './sprites';
@@ -18,6 +18,13 @@ export function PetApp() {
   const [bubble, setBubble] = useState<Bubble | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bubbleTimer = useRef<number>(undefined);
+  // «Hola, Canela» activo: indicador visible (clic = apagar).
+  const [wake, setWake] = useState(false);
+  useEffect(() => {
+    void voice.wakeStatus().then(setWake).catch(() => undefined);
+    const un = onWakeState((e) => setWake(e.active));
+    return () => void un.then((f) => f());
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -111,6 +118,21 @@ export function PetApp() {
         <div className="exclaim" style={{ left: layout.headX + (layout.flip ? -18 : 6), top: layout.headY - 34 }}>
           {activity === 'oops' ? '!' : '?'}
         </div>
+      )}
+
+      {layout && wake && activity !== 'listen' && (
+        <button
+          className="wake-badge"
+          data-hit
+          style={{ left: layout.headX - 30, top: layout.headY - 14 }}
+          title="Escuchando «Hola, Canela» (en este equipo). Clic para apagar."
+          aria-label="Apagar «Hola, Canela»"
+          onClick={() => void voice.wakeSet(false).then(setWake).catch(() => undefined)}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#111" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
+            <path d="M6 9a6 6 0 0 1 12 0c0 4-4 5-4 9a3 3 0 0 1-6 0" />
+          </svg>
+        </button>
       )}
 
       {layout && activity === 'listen' && (

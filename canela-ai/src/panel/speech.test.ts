@@ -38,3 +38,19 @@ describe("voz hablada", () => {
     ).toEqual(["a".repeat(100) + " " + "b".repeat(100), "c"]);
   });
 });
+
+import { ttsEngineFor } from "./speech";
+import { fmtMb } from "../lib/ipc";
+
+describe("motor de voz v0.5", () => {
+  it("Piper y Windows funcionan sin internet; OpenAI sólo si está permitido", () => {
+    expect(ttsEngineFor("piper", false)).toBe("piper");
+    expect(ttsEngineFor("local", false)).toBe("local");
+    expect(ttsEngineFor("openai", false)).toBe("local");
+    expect(ttsEngineFor("openai", true)).toBe("openai");
+  });
+  it("muestra tamaños de descarga", () => {
+    expect(fmtMb(190_085_487)).toBe("190 MB");
+    expect(fmtMb(1_200_000_000)).toBe("1,2 GB");
+  });
+});

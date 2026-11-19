@@ -113,7 +113,7 @@ pub struct Settings {
     pub tts_volume: f32,
     /// "voice" (sólo si le hablé), "always" o "never".
     pub speak_replies: String,
-    /// "Hola, Canela" (preparado; desactivado y aún no disponible).
+    /// «Hola, Canela»: escucha local continua (desactivada por defecto).
     pub wake_word: bool,
     /// Permite que Canela pida ver la pantalla (siempre con tu permiso).
     pub vision_enabled: bool,
@@ -236,8 +236,6 @@ impl Settings {
                 *v = def.clone();
             }
         }
-        // "Hola, Canela" todavía no está disponible: siempre desactivado.
-        self.wake_word = false;
         if let Some(folders) = self.allowed_folders.as_mut() {
             folders.retain(|f| !f.trim().is_empty());
             folders.dedup();
@@ -304,7 +302,9 @@ mod tests {
         assert_eq!(s.tts_rate, 2.0);
         assert_eq!(s.tts_volume, 0.0);
         assert_eq!(s.speak_replies, "voice");
-        assert!(!s.wake_word);
+        assert!(s.wake_word, "v0.5: «Hola, Canela» ya existe y se respeta si el usuario la activa");
+        assert!(!Settings::default().wake_word, "pero viene desactivada");
+        assert_eq!(Settings::default().stt_engine, "local", "la voz es local por defecto");
     }
 
     #[test]

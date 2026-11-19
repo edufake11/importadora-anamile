@@ -173,6 +173,10 @@ pub fn run() {
             let at_login = std::env::args().any(|a| a == "--autostart");
             reminders::spawn(app.handle().clone(), at_login);
             resources::spawn(app.handle().clone());
+            // «Hola, Canela» sólo si el usuario la dejó activada.
+            if let Err(e) = voice::wake_start_if_enabled(app.handle()) {
+                eprintln!("[canela] «Hola, Canela» no se pudo iniciar: {e}");
+            }
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
             for sc in [shortcut_toggle_pet(), shortcut_toggle_panel(), shortcut_voice()] {
@@ -212,6 +216,9 @@ pub fn run() {
             voice::tts_cloud_speak,
             voice::tts_cloud_stop,
             voice::tts_local_speak,
+            voice::wake_set,
+            voice::wake_status,
+            voice::wake_pause,
             voice::local_voice_status,
             voice::local_voice_download,
             voice::local_voice_cancel,

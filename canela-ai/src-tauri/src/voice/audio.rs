@@ -164,23 +164,18 @@ pub fn process_audio(rx: mpsc::Receiver<Vec<f32>>, ctrl: Arc<AtomicU8>, cfg: Vad
     }
 }
 
-/// Graba del micrófono hasta que termines de hablar, pulses detener o canceles.
-/// Bloquea el hilo que la llama: úsala desde `std::thread::spawn`.
-pub fn record(device: Option<String>, ctrl: Arc<AtomicU8>, emit: Arc<dyn Fn(RecEvent) + Send + Sync>) {
-    let Some(dev) = find_input(device.as_deref()) else {
-        return emit(RecEvent::Error(
-            "No encontré ningún micrófono. Conecta uno o elige otro en Ajustes › Voz.".into(),
-        ));
-    };
-    let config = match dev.default_input_config() {
-        Ok(c) => c,
-        Err(e) => return emit(RecEvent::Error(format!("No pude usar el micrófono: {e}"))),
-    };
+/// Abre el micrófono: devuelve el flujo (mientras exista, el micrófono está
+/// abierto) y un canal con audio mono a 16 kHz.
+pub fn open_input(
+    device: Option<&str>,
+    on_error: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<(cpal::Stream, mpsc::Receiver<Vec<f32>>), String> {
+    let dev = find_input(device).ok_or("No encontré ningún micrófono. Conecta uno o elige otro en Ajustes › Voz.")?;
+    let config = dev.default_input_config().map_err(|e| format!("No pude usar el micrófono: {e}"))?;
     let channels = config.channels() as usize;
     let rate = config.sample_rate();
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    let err_emit = emit.clone();
-    let on_err = move |e: cpal::StreamError| err_emit(RecEvent::Error(format!("Error del micrófono: {e}")));
+    let on_err = move |e: cpal::StreamError| on_error(format!("Error del micrófono: {e}"));
 
     fn mono<T: Copy>(data: &[T], channels: usize, conv: impl Fn(T) -> f32) -> Vec<f32> {
         data.chunks(channels.max(1))
@@ -215,19 +210,21 @@ pub fn record(device: Option<String>, ctrl: Arc<AtomicU8>, emit: Arc<dyn Fn(RecE
             on_err,
             None,
         ),
-        other => return emit(RecEvent::Error(format!("Formato de micrófono no compatible ({other:?})."))),
-    };
-    let stream = match stream {
-        Ok(s) => s,
-        Err(e) => {
-            return emit(RecEvent::Error(format!(
-                "No pude abrir el micrófono: {e}. Revisa Configuración de Windows › Privacidad › Micrófono."
-            )))
-        }
-    };
-    if let Err(e) = stream.play() {
-        return emit(RecEvent::Error(format!("No pude iniciar el micrófono: {e}")));
+        other => return Err(format!("Formato de micrófono no compatible ({other:?}).")),
     }
+    .map_err(|e| format!("No pude abrir el micrófono: {e}. Revisa Configuración de Windows › Privacidad › Micrófono."))?;
+    stream.play().map_err(|e| format!("No pude iniciar el micrófono: {e}"))?;
+    Ok((stream, rx))
+}
+
+/// Graba del micrófono hasta que termines de hablar, pulses detener o canceles.
+/// Bloquea el hilo que la llama: úsala desde `std::thread::spawn`.
+pub fn record(device: Option<String>, ctrl: Arc<AtomicU8>, emit: Arc<dyn Fn(RecEvent) + Send + Sync>) {
+    let err_emit = emit.clone();
+    let (stream, rx) = match open_input(device.as_deref(), Arc::new(move |e| err_emit(RecEvent::Error(e)))) {
+        Ok(x) => x,
+        Err(e) => return emit(RecEvent::Error(e)),
+    };
     process_audio(rx, ctrl, VadConfig::default(), &*emit);
     drop(stream); // cierra el micrófono en cuanto termina
 }

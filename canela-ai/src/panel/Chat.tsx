@@ -4,6 +4,8 @@ import {
   api,
   canChat,
   onMemoryWarning,
+  onWakeState,
+  voice,
   PROVIDER_NAMES,
   data,
   formatUsd,
@@ -151,6 +153,16 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const isLocal = settings.provider === "ollama";
   // Con Ollama: comprobar al abrir si está encendido y el modelo instalado.
   const [ollamaProblem, setOllamaProblem] = useState<string | null>(null);
+  // Indicador de «Hola, Canela».
+  const [wakeOn, setWakeOn] = useState(false);
+  useEffect(() => {
+    void voice
+      .wakeStatus()
+      .then(setWakeOn)
+      .catch(() => undefined);
+    const un = onWakeState((e) => setWakeOn(e.active));
+    return () => void un.then((f) => f());
+  }, []);
   // Avisos de RAM baja (del registro de memoria).
   const [memWarning, setMemWarning] = useState<string | null>(null);
   useEffect(() => {
@@ -621,6 +633,15 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         <span>
           {providerName}
           {isLocal && <span className="cost"> · en este equipo, gratis</span>}
+          {wakeOn && (
+            <button
+              className="wake-chip"
+              title="Canela escucha «Hola, Canela» en este equipo. Clic para apagar."
+              onClick={() => void voice.wakeSet(false).then(setWakeOn)}
+            >
+              👂 «Hola, Canela» · apagar
+            </button>
+          )}
           {!isLocal && conversationCost(messages) !== null && (
             <span className="cost">
               {" "}

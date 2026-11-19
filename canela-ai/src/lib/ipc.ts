@@ -48,7 +48,10 @@ export interface Settings {
   voiceInputDevice: string | null;
   voiceOutputDevice: string | null;
   sttModel: string;
-  ttsEngine: "local" | "openai";
+  ttsEngine: "local" | "openai" | "piper";
+  sttEngine: "local" | "openai";
+  sttLocalModel: string;
+  piperVoice: string;
   ttsVoice: string;
   ttsCloudModel: string;
   ttsCloudVoice: string;
@@ -471,7 +474,62 @@ export const voice = {
   cancel: () => invoke<boolean>("voice_cancel"),
   cloudSpeak: (text: string) => invoke<void>("tts_cloud_speak", { text }),
   cloudStop: () => invoke<void>("tts_cloud_stop"),
+  /** Piper: voz natural sin internet (usa la misma cola y se para con cloudStop). */
+  localSpeak: (text: string) => invoke<void>("tts_local_speak", { text }),
+  localStatus: () => invoke<LocalVoiceStatus>("local_voice_status"),
+  localDownload: (id: string) => invoke<void>("local_voice_download", { id }),
+  localCancel: () => invoke<void>("local_voice_cancel"),
+  localDelete: (id: string) => invoke<void>("local_voice_delete", { id }),
+  /** «Hola, Canela» (escucha local). */
+  wakeSet: (enabled: boolean) => invoke<boolean>("wake_set", { enabled }),
+  wakeStatus: () => invoke<boolean>("wake_status"),
+  wakePause: (paused: boolean) => invoke<void>("wake_pause", { paused }),
 };
+
+export const onWakeState = (
+  cb: (e: { active: boolean; error?: string | null }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ active: boolean; error?: string | null }>("wake-state", (e) =>
+    cb(e.payload),
+  );
+
+export interface LocalAsset {
+  id: string;
+  kind: "stt" | "voice" | "engine";
+  label: string;
+  note: string;
+  license: string;
+  size: number;
+  installed: boolean;
+  supported: boolean;
+}
+
+export interface LocalVoiceStatus {
+  sttAvailable: boolean;
+  assets: LocalAsset[];
+  loadedStt: string | null;
+  downloading: string | null;
+  dir: string;
+}
+
+export interface DownloadEvent {
+  id: string;
+  done?: number;
+  total?: number;
+  finished?: boolean;
+  error?: string | null;
+}
+
+export const onVoiceDownload = (
+  cb: (e: DownloadEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<DownloadEvent>("voice-download", (e) => cb(e.payload));
+
+/** 190085487 → «190 MB». */
+export const fmtMb = (b: number) =>
+  b >= 1e9
+    ? `${(b / 1e9).toLocaleString("es", { maximumFractionDigits: 1 })} GB`
+    : `${Math.round(b / 1e6)} MB`;
 
 export const onVoiceState = (
   cb: (e: VoiceStateEvent) => void,

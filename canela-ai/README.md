@@ -1,8 +1,8 @@
-# 🐾 CANELA AI — v0.4 (cerebro local con Ollama)
+# 🐾 CANELA AI — v0.5 (memoria optimizada y voz 100 % local)
 
-Canela es una perrita salchicha en pixel art que vive en tu escritorio de Windows 11 y es tu asistente personal: conversa contigo por escrito **o por voz** con un **modelo local en tu propia computadora (Ollama, gratis y privado)** o, si lo prefieres, con Claude o ChatGPT, **mira tu pantalla cuando tú se la muestras**, **lee tus PDF, Word e imágenes**, recuerda lo que le pidas, organiza tus tareas y recordatorios, abre aplicaciones y páginas, **encadena varias acciones en un plan** y trabaja con tus archivos **sólo en las carpetas que autorices y siempre pidiéndote permiso antes de cambiar algo**.
+Canela es una perrita salchicha en pixel art que vive en tu escritorio de Windows 11 y es tu asistente personal: conversa contigo por escrito **o por voz — escuchándote y hablándote sin internet —** con un **modelo local en tu propia computadora (Ollama, gratis y privado)** o, si lo prefieres, con Claude o ChatGPT, **mira tu pantalla cuando tú se la muestras**, **lee tus PDF, Word e imágenes**, recuerda lo que le pidas, organiza tus tareas y recordatorios, abre aplicaciones y páginas, **encadena varias acciones en un plan** y trabaja con tus archivos **sólo en las carpetas que autorices y siempre pidiéndote permiso antes de cambiar algo**.
 
-> ⚠ Esta versión se probó en Linux (con un micrófono virtual y con Ollama, OpenAI y Claude **simulados**) y se compiló y probó en Windows por GitHub Actions, **pero todavía no se ha probado en una PC real con Windows 11 ni con un Ollama real**. La lista de [qué probar](#qué-probar-cuando-llegues-a-tu-pc) está al final.
+> ⚠ Esta versión se probó en Linux (micrófono virtual, whisper.cpp **real** con modelos descargados, Ollama y Piper **simulados**) y se compiló y probó en Windows por GitHub Actions, **pero todavía no se ha probado en una PC real con Windows 11, ni con un Ollama real ni con Piper real**. La lista de [qué probar](#qué-probar-cuando-llegues-a-tu-pc) está al final.
 
 ---
 
@@ -17,9 +17,17 @@ Canela es una perrita salchicha en pixel art que vive en tu escritorio de Window
 
 ### 2. Instalar
 
-1. Doble clic en `Canela AI_0.4.0_x64-setup.exe`. Si tenías la v0.2 o la v0.3, se actualiza encima y conserva tus tareas, recuerdos, rutinas y claves.
+1. Doble clic en `Canela AI_0.5.0_x64-setup.exe`. Si tenías la v0.2 o la v0.3, se actualiza encima y conserva tus tareas, recuerdos, rutinas y claves.
 2. Windows mostrará "Windows protegió su PC" porque el instalador aún no tiene firma digital: pulsa **Más información → Ejecutar de todas formas**.
 3. Sigue el asistente (no necesita permisos de administrador). Al terminar, Canela aparece sobre la barra de tareas, abajo a la derecha.
+
+### Actualizar desde la v0.4 sin perder nada
+
+1. **No hace falta desinstalar.** Cierra Canela (clic derecho → *Salir*) y ejecuta el nuevo `-setup.exe`: se instala encima.
+2. Se conservan **todos tus datos**, que viven fuera de la carpeta del programa: ajustes (`%APPDATA%\com.canela.ai\settings.json`), tareas, recuerdos, rutinas e historial (`%APPDATA%\com.canela.ai\canela.db`), copias de seguridad y tus claves (Administrador de credenciales de Windows). Los ajustes nuevos toman valores por defecto.
+3. (Opcional) Antes de actualizar puedes copiar la carpeta `%APPDATA%\com.canela.ai` a otro sitio como respaldo (escribe esa ruta en la barra del Explorador).
+4. Lo nuevo de la v0.5 se guarda en la misma carpeta: modelos de voz en `voz\`, registro de memoria en `diagnostico\`.
+5. Tras actualizar: **Ajustes → Voz → «En este equipo»** y pulsa *Descargar* en el modelo recomendado (190 MB) para dictar sin internet; si quieres voz natural, elige **Piper** y descarga el programa (22 MB) y una voz (63 MB).
 
 ### 3. Configurar (una sola vez)
 
@@ -44,7 +52,9 @@ Canela es una perrita salchicha en pixel art que vive en tu escritorio de Window
 | Quiero… | Haz esto |
 |---|---|
 | Escribirle | Doble clic sobre Canela, o `Ctrl + Alt + Espacio` |
-| **Hablarle** | Botón 🎙 del chat, o `Ctrl + Alt + V` (aunque el panel esté cerrado). Habla y calla: Canela detecta sola cuándo terminaste |
+| **Hablarle** | Botón 🎙 del chat, o `Ctrl + Alt + V` (aunque el panel esté cerrado). Habla y calla: Canela detecta sola cuándo terminaste. Sin internet desde la v0.5 |
+| **«Hola, Canela»** | Actívalo en Ajustes → Voz (apagado por defecto). Verás una orejita junto a Canela: clic en ella para apagarlo |
+| **Liberar memoria** | Ajustes → Rendimiento y memoria → **Liberar memoria de IA** (o en el aviso de RAM baja del chat) |
 | Dejar de grabar / callarla | Vuelve a pulsar 🎙 o `Ctrl + Alt + V`; para cortar una respuesta, el botón ■ |
 | **Mostrarle la pantalla** | Botón 🖥 del chat → pantalla completa o una ventana → (opcional) arrastra para elegir una región → **Enviar** |
 | **Darle un PDF, Word o imagen** | Botón 📎 del chat, o dile «lee el PDF *contrato* de mis documentos» |
@@ -62,6 +72,19 @@ Cuando Canela necesite hacer algo importante te mostrará una **tarjeta con lo q
 ---
 
 ## Qué incluye esta versión
+
+**Memoria optimizada (nuevo en v0.5)**
+- **El modelo de IA se descarga solo tras 2 minutos sin uso** (`keep_alive`), nunca mientras Canela responde o usa herramientas, y se vuelve a cargar solo con tu siguiente mensaje (al abrir el micrófono empieza a cargarse para ganar tiempo).
+- **Botón «Liberar memoria de IA»** (si Canela está respondiendo, lo hace en cuanto termina).
+- **Modos**: *Equilibrado* (2 min, contexto a tu elección) y *Ahorro de recursos* (30 s, contexto 8 192, sin «pensar más», voz descargada al terminar).
+- **Diagnóstico** en Ajustes → Rendimiento y memoria: RAM, **memoria comprometida**, VRAM, modelo cargado (y cuándo se descarga), memoria de Canela, programas que más memoria privada usan (con PID y ruta) y un **registro de eventos** con hora: qué proceso aparece, crece o desaparece, RAM baja, memoria comprometida cerca del límite, y si la memoria comprometida sube **sin ningún modelo cargado** (nombra a quién creció). Informe exportable y registro de 7 días. Ver [docs/MEMORIA.md](docs/MEMORIA.md).
+- **Avisos** de RAM muy baja en el chat y en Canela. Canela nunca cierra programas ni toca el archivo de paginación.
+
+**Voz sin internet (nuevo en v0.5)**
+- **Te entiende en tu computadora** con whisper.cpp (sin créditos, sin enviar audio). Modelos a elegir: *recomendado* (190 MB), *rápido* (60 MB) o *máxima precisión* (574 MB).
+- **Te habla con voz natural en tu computadora** con Piper (voces en español de España y México) o, como respaldo, con las voces de Windows. Volumen, velocidad e interrupción.
+- **«Hola, Canela»**: activación por voz local, apagada por defecto, con permiso expreso, indicador visible y apagado con un clic. Si dices «Hola, Canela, abre la calculadora», hace la orden directamente.
+- **Nada se descarga sin que pulses «Descargar»** viendo el tamaño; cada archivo se comprueba con SHA-256.
 
 **Cerebro local con Ollama (nuevo en v0.4)**
 - Tercer proveedor junto a Claude y ChatGPT, y ahora el predeterminado: `qwen3:8b` en `http://127.0.0.1:11434`, sin clave y sin costo por uso.
@@ -105,8 +128,9 @@ Cuando Canela necesite hacer algo importante te mostrará una **tarjeta con lo q
 
 ## Lo que todavía NO hace
 
-- **«Hola, Canela» (activación por voz sin pulsar nada): no implementado.** Aparece desactivado en Ajustes. Requeriría un modelo local (~40 MB) que sólo se descargaría con tu permiso.
-- **Reconocimiento de voz sin internet (Whisper local) y voz neuronal local (Piper): evaluados, no implementados.** Con tu RTX 5060 Ti funcionarían bien, pero necesitan descargas grandes (Whisper *small* ≈ 0,5 GB, *large-v3-turbo* ≈ 1,6 GB) y por eso no se descargan solos.
+- **Reconocimiento de voz en la GPU:** whisper.cpp corre en el procesador (más que suficiente para frases cortas y deja la tarjeta gráfica libre para Qwen3). No usa CUDA.
+- **«Hola, Canela» con un modelo entrenado a medida:** usa un reconocedor general pequeño; puede confundirse con ruido fuerte o con nombres parecidos. Si molesta, apágalo con un clic.
+- **Piper sólo está disponible para Windows** en esta versión (en otros sistemas se usa la voz del sistema).
 - **PDF escaneados (OCR):** no; Canela te avisa y puedes mandarle una captura de la página.
 - **Google Calendar, Gmail y GitHub:** diseñados, no implementados.
 - Las automatizaciones no se programan por horario (se ejecutan cuando se lo pides) y no ejecutan comandos de consola (decisión de seguridad).
@@ -134,6 +158,19 @@ Canela muestra debajo de cada respuesta lo que costó aproximadamente. Consejo: 
 ---
 
 ## Qué probar cuando llegues a tu PC
+
+**Nuevo en v0.5 (no probado aún en Windows real):**
+
+1. **Memoria antes / durante / después**: abre Ajustes → Rendimiento y memoria y el Administrador de tareas. Anota RAM y «Confirmada» (memoria comprometida). Escribe a Canela: el modelo debe aparecer cargado (≈ 7,5 GB con 16 384). Espera 2 min sin usarla: debe pasar a «ninguno cargado» y la memoria comprometida bajar varios GB (como cuando hiciste `ollama stop`).
+2. **Liberar memoria**: con el modelo cargado, pulsa *Liberar memoria de IA*. Pide algo largo (p. ej. un plan) y pulsa el botón a mitad: debe decir que lo hará al terminar.
+3. **Modo Ahorro**: actívalo y comprueba que el modelo se descarga a los 30 s y que el contexto es 8 192 (`ollama ps`).
+4. **Investigación de tu saturación**: deja Canela abierta con el registro activado mientras usas el PC normalmente. Cuando la RAM suba al 99 %, mira el *Registro de eventos* (o *Exportar informe*): dirá qué proceso (PID y ruta) apareció o creció, incluido el Python de 7,3 GB.
+5. **Voz sin internet**: Ajustes → Voz → *En este equipo* → descarga el recomendado. **Desconecta internet** y dicta con `Ctrl+Alt+V`. Mide cuánto tarda en entenderte (debería ser ≈ 1 s) y si entiende bien tu español.
+6. **Piper**: elige *Piper*, descarga el programa y la voz «Claude (México)», pulsa *Probar voz*. Prueba velocidad, volumen y cortar con ■. Si Windows Defender pregunta por `piper.exe`, es el programa oficial descargado de GitHub (comprobado con SHA-256).
+7. **«Hola, Canela»**: descarga el detector (32 MB), actívalo, di «Hola, Canela» desde distintas distancias, con música y en silencio. Di «Hola, Canela, abre la calculadora». Comprueba que no se activa al decir «canela» en medio de una frase y que la orejita la apaga.
+8. **Regresiones**: chat con Ollama, herramientas con permisos (borrar sigue pidiendo confirmación), capturas, documentos, rutinas, música, tareas y recordatorios.
+
+**De la v0.4:**
 
 **Nuevo en v0.4 — Ollama (no probado aún con Ollama real ni en Windows real):**
 
@@ -165,6 +202,8 @@ J. **Volver a Claude/ChatGPT**: cambia de proveedor en Ajustes y comprueba que t
 Si algo falla, cuéntame qué hiciste y qué viste (una captura ayuda mucho).
 
 ### Volver a una versión anterior
+
+La v0.4 es el commit [`f5088ab`](https://github.com/edufake11/importadora-anamile/commit/f5088ab), con instalador en la ejecución [44444369958](https://github.com/edufake11/importadora-anamile/actions/runs/44444369958) (disponible hasta el 17/02/2027).
 
 La v0.3 completa es el commit [`900fda6`](https://github.com/edufake11/importadora-anamile/commit/900fda6), con instalador en la ejecución [44418845757](https://github.com/edufake11/importadora-anamile/actions/runs/44418845757) (disponible hasta el 16/02/2027).
 
@@ -199,12 +238,19 @@ npm run tauri build      # instaladores en src-tauri\target\release\bundle\{nsis
 
 ```powershell
 npm run typecheck        # TypeScript estricto
-npm test                 # 43 pruebas de interfaz
-cd src-tauri; cargo test # 113 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
+npm test                 # 47 pruebas de interfaz
+cd src-tauri; cargo test # 136 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
                          # voz (detector de fin de frase, WAV), visión, PDF/Word,
                          # defensa contra instrucciones inyectadas, planes,
                          # multimedia, información del sistema y Ollama (streaming
-                         # NDJSON, razonamiento oculto, sólo direcciones locales)
+                         # NDJSON, razonamiento oculto, sólo direcciones locales),
+                         # memoria (detector, descarga por inactividad, liberar),
+                         # whisper, Piper y «Hola, Canela»
+
+# Pruebas reales de voz sin internet (necesitan los modelos descargados):
+#   CANELA_WHISPER_DIR=<carpeta con ggml-small-q5_1.bin y ggml-tiny-q5_1.bin>
+#   CANELA_PHRASES_DIR=<fN.wav + fN.txt>  CANELA_WAKE_DIR=<wN.wav + wN.txt>
+#   cargo test real_ -- --nocapture
 ```
 
 Las pruebas nunca llaman a internet. GitHub Actions (`.github/workflows/canela-windows.yml`) repite todo en Windows y publica los instaladores.
@@ -225,3 +271,14 @@ canela-ai/
 Datos locales en Windows: ajustes en `%APPDATA%\com.canela.ai\settings.json`, base de datos y copias de seguridad en `%APPDATA%\com.canela.ai\` (`canela.db`, `copias\`). Claves API en el Administrador de credenciales (`com.canela.ai`).
 
 Detalles técnicos (APIs, permisos, seguridad, voz, visión): [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md).
+
+### Licencias de los componentes de voz
+
+| Componente | Licencia | Cómo llega |
+|---|---|---|
+| whisper.cpp / whisper-rs | MIT / Unlicense | Compilado dentro de Canela |
+| Modelos whisper (`ggerganov/whisper.cpp`) | MIT | Descarga opcional desde Hugging Face |
+| Piper 2023.11.14-2 (`rhasspy/piper`) | MIT | Descarga opcional desde GitHub (incluye espeak-ng, **GPL-3.0**; no se distribuye con el instalador) |
+| Voz «Dave» (es_ES) | CC0 | Descarga opcional |
+| Voz «Claude» (es_MX) | Apache-2.0 | Descarga opcional |
+| Voz «Ald» (es_MX) | Unlicense | Descarga opcional |

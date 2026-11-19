@@ -11,6 +11,7 @@
 pub mod audio;
 pub mod local;
 pub mod vad;
+pub mod wake;
 
 use crate::commands::AppState;
 use crate::secrets;
@@ -432,6 +433,91 @@ fn enqueue(app: AppHandle, state: State<'_, AppState>, text: String, engine: Tts
 pub fn tts_cloud_stop(state: State<'_, AppState>) {
     state.voice.tts_gen.fetch_add(1, Ordering::SeqCst);
     state.voice.tts_stop.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------- «Hola, Canela»
+
+/// La interfaz avisa cuando Canela está escuchando una orden, pensando o
+/// hablando: mientras tanto el detector ignora el audio.
+static WAKE_UI_BUSY: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn wake_pause(paused: bool) {
+    WAKE_UI_BUSY.store(paused, Ordering::SeqCst);
+}
+
+fn emit_wake_state(app: &AppHandle, error: Option<String>) {
+    let _ = app.emit("wake-state", serde_json::json!({ "active": wake::is_running(), "error": error }));
+}
+
+/// Arranca el detector si está activado en los ajustes.
+pub fn wake_start_if_enabled(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let s = state.current_settings();
+    if !(s.wake_word && s.voice_consent) {
+        return Ok(());
+    }
+    let app_w = app.clone();
+    let app_e = app.clone();
+    let app_p = app.clone();
+    let dir = local::voice_dir(&state.data_dir);
+    let main_model = local::asset(&s.stt_local_model)
+        .filter(|a| s.stt_engine == "local" && local::is_installed(&dir, a))
+        .map(|a| a.id.to_string());
+    let r = wake::start(
+        dir,
+        s.voice_input_device.clone(),
+        main_model,
+        Arc::new(move || WAKE_UI_BUSY.load(Ordering::SeqCst) || app_p.state::<AppState>().voice.recording.lock().unwrap().is_some()),
+        Arc::new(move |w| {
+            let _ = app_w.emit_to(
+                crate::windows::PET,
+                "canela-mood",
+                serde_json::json!({ "mood": "curious", "bubble": "¿Sí? 🐾" }),
+            );
+            match w {
+                wake::Wake::Command(text) => {
+                    let _ = app_w.emit("voice-transcript", TranscriptEvent { text });
+                }
+                _ => {
+                    let _ = app_w.emit_to(crate::windows::PANEL, "voice-toggle", ());
+                }
+            }
+        }),
+        Arc::new(move |e| emit_wake_state(&app_e, Some(e))),
+    );
+    emit_wake_state(app, r.as_ref().err().cloned());
+    r
+}
+
+/// Enciende o apaga «Hola, Canela» (y lo guarda en los ajustes).
+#[tauri::command]
+pub fn wake_set(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<bool, String> {
+    let mut s = state.current_settings();
+    if enabled && !s.voice_consent {
+        return Err("Primero activa la voz en Ajustes › Voz.".into());
+    }
+    s.wake_word = enabled;
+    let clean = s.sanitized();
+    crate::settings::save(&state.config_dir, &clean)?;
+    *state.settings.lock().unwrap() = clean.clone();
+    let _ = app.emit("settings-changed", &clean);
+    if enabled {
+        wake_start_if_enabled(&app)?;
+        state.db.log("voz", "Activaste «Hola, Canela» (escucha local)");
+    } else {
+        wake::stop();
+        // El hilo cierra el micrófono en menos de 0,1 s.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        emit_wake_state(&app, None);
+        state.db.log("voz", "Desactivaste «Hola, Canela»");
+    }
+    Ok(wake::is_running())
+}
+
+#[tauri::command]
+pub fn wake_status() -> bool {
+    wake::is_running()
 }
 
 // ---------------------------------------------------- modelos de voz locales

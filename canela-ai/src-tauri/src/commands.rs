@@ -102,6 +102,13 @@ pub fn save_settings(app: AppHandle, state: State<'_, AppState>, settings: Setti
     settings::save(&state.config_dir, &clean)?;
     *state.settings.lock().unwrap() = clean.clone();
     let _ = app.emit("settings-changed", &clean);
+    // «Hola, Canela»: encender o apagar la escucha local según el ajuste.
+    if clean.wake_word && clean.voice_consent && !crate::voice::wake::is_running() {
+        let _ = crate::voice::wake_start_if_enabled(&app);
+    } else if !(clean.wake_word && clean.voice_consent) && crate::voice::wake::is_running() {
+        crate::voice::wake::stop();
+        let _ = app.emit("wake-state", serde_json::json!({ "active": false }));
+    }
     Ok(clean)
 }
 

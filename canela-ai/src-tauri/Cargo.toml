@@ -1,6 +1,6 @@
 [package]
 name = "canela-ai"
-version = "0.4.0"
+version = "0.5.0"
 description = "CANELA AI — mascota virtual e asistente inteligente de escritorio"
 edition = "2021"
 rust-version = "1.82"

@@ -11,7 +11,12 @@ import {
   voice,
   type Settings,
 } from "../lib/ipc";
-import { groupSentences, SentenceSplitter, spanishVoices } from "./speech";
+import {
+  groupSentences,
+  SentenceSplitter,
+  spanishVoices,
+  ttsEngineFor,
+} from "./speech";
 
 export type VoicePhase = "idle" | "listening" | "processing" | "speaking";
 
@@ -25,6 +30,10 @@ export function useVoice(
   onTranscript: (text: string) => void,
 ) {
   const [phase, setPhase] = useState<VoicePhase>("idle");
+  // «Hola, Canela» no escucha mientras Canela atiende, piensa o habla.
+  useEffect(() => {
+    void voice.wakePause(phase !== "idle").catch(() => undefined);
+  }, [phase]);
   const [level, setLevel] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const settingsRef = useRef(settings);
@@ -73,26 +82,10 @@ export function useVoice(
     setPhase((p) => (p === "speaking" ? "idle" : p));
   }, []);
 
-  /** Dice una o varias frases con el motor elegido. */
-  const say = useCallback(
+  /** Voces de Windows (gratis, sin internet; también es el respaldo). */
+  const sayWindows = useCallback(
     (sentences: string[]) => {
       const s = settingsRef.current;
-      if (!sentences.length) return;
-      setPhase("speaking");
-      void sendMood({ mood: "talk" });
-      // Con Ollama no se envía nada a internet salvo permiso expreso.
-      const cloudOk = s.provider !== "ollama" || s.ollamaCloudVoice;
-      if (s.ttsEngine === "openai" && cloudOk) {
-        for (const chunk of groupSentences(sentences)) {
-          cloudPending.current += 1;
-          armWatchdog(60_000);
-          void voice.cloudSpeak(chunk).catch((e) => {
-            cloudPending.current = Math.max(0, cloudPending.current - 1);
-            setMessage(String(e));
-          });
-        }
-        return;
-      }
       if (typeof speechSynthesis === "undefined") {
         setMessage("Este equipo no tiene voces instaladas para hablar.");
         return;
@@ -115,6 +108,36 @@ export function useVoice(
       }
     },
     [speechDone, armWatchdog],
+  );
+
+  /** Dice una o varias frases con el motor elegido. */
+  const say = useCallback(
+    (sentences: string[]) => {
+      const s = settingsRef.current;
+      if (!sentences.length) return;
+      setPhase("speaking");
+      void sendMood({ mood: "talk" });
+      // Con Ollama no se envía nada a internet salvo permiso expreso.
+      const cloudOk = s.provider !== "ollama" || s.ollamaCloudVoice;
+      const engine = ttsEngineFor(s.ttsEngine, cloudOk);
+      if (engine === "openai" || engine === "piper") {
+        for (const chunk of groupSentences(sentences)) {
+          cloudPending.current += 1;
+          armWatchdog(60_000);
+          const speak =
+            engine === "piper" ? voice.localSpeak : voice.cloudSpeak;
+          void speak(chunk).catch((e) => {
+            cloudPending.current = Math.max(0, cloudPending.current - 1);
+            setMessage(String(e));
+            // Respaldo: si Piper no está disponible, habla con la voz de Windows.
+            if (engine === "piper") sayWindows([chunk]);
+          });
+        }
+        return;
+      }
+      sayWindows(sentences);
+    },
+    [armWatchdog, sayWindows],
   );
 
   /** Prepara la lectura en voz alta de una respuesta que llega en partes. */

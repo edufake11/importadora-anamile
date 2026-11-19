@@ -386,6 +386,9 @@ struct Loaded {
 
 #[cfg(feature = "local-stt")]
 static STT: Mutex<Option<Loaded>> = Mutex::new(None);
+/// Modelo pequeño del detector «Hola, Canela» (independiente del principal).
+#[cfg(feature = "local-stt")]
+static WAKE_STT: Mutex<Option<Loaded>> = Mutex::new(None);
 
 pub fn stt_available() -> bool {
     cfg!(feature = "local-stt")
@@ -418,6 +421,22 @@ pub fn audio_ctx_for(samples: usize) -> i32 {
 /// Transcribe audio mono a 16 kHz con el modelo local.
 #[cfg(feature = "local-stt")]
 pub fn transcribe(dir: &Path, model_id: &str, samples: &[f32], prompt: Option<&str>) -> Result<String, String> {
+    run_whisper(&STT, dir, model_id, samples, prompt)
+}
+
+/// Igual, con el modelo del detector de «Hola, Canela».
+#[cfg(feature = "local-stt")]
+pub fn transcribe_wake(dir: &Path, samples: &[f32]) -> Result<String, String> {
+    run_whisper(&WAKE_STT, dir, "stt-tiny", samples, Some("Hola, Canela."))
+}
+
+#[cfg(not(feature = "local-stt"))]
+pub fn transcribe_wake(_dir: &Path, _samples: &[f32]) -> Result<String, String> {
+    Err("Esta compilación no incluye el reconocimiento de voz local.".into())
+}
+
+#[cfg(feature = "local-stt")]
+fn run_whisper(slot: &Mutex<Option<Loaded>>, dir: &Path, model_id: &str, samples: &[f32], prompt: Option<&str>) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     let a = asset(model_id)
         .filter(|a| a.kind == Kind::Stt)
@@ -425,7 +444,7 @@ pub fn transcribe(dir: &Path, model_id: &str, samples: &[f32], prompt: Option<&s
     if !is_installed(dir, a) {
         return Err("Falta descargar el modelo de reconocimiento de voz (Ajustes › Voz).".into());
     }
-    let mut guard = STT.lock().unwrap();
+    let mut guard = slot.lock().unwrap();
     if guard.as_ref().is_none_or(|l| l.id != model_id) {
         *guard = None; // libera el anterior antes de cargar otro
         whisper_rs::install_logging_hooks();
@@ -516,11 +535,23 @@ pub fn maybe_unload(idle: Duration) -> bool {
     false
 }
 
-/// Libera los modelos de voz cargados. Devuelve `true` si había alguno.
-pub fn unload_all() -> bool {
+/// Libera el modelo del detector «Hola, Canela».
+pub fn unload_wake() {
     #[cfg(feature = "local-stt")]
-    return STT.lock().unwrap().take().is_some();
-    #[cfg(not(feature = "local-stt"))]
+    WAKE_STT.lock().unwrap().take();
+}
+
+/// Libera los modelos de voz cargados. Devuelve `true` si había alguno.
+/// (Si «Hola, Canela» está activo, su modelo se vuelve a cargar al oír voz.)
+#[cfg(feature = "local-stt")]
+pub fn unload_all() -> bool {
+    let a = STT.lock().unwrap().take().is_some();
+    let b = WAKE_STT.lock().unwrap().take().is_some();
+    a || b
+}
+
+#[cfg(not(feature = "local-stt"))]
+pub fn unload_all() -> bool {
     false
 }
 
@@ -584,8 +615,26 @@ pub fn piper_say(dir: &Path, voice: &Asset, text: &str, rate: f32, stop: &Atomic
         stdin.write_all(b"\n").map_err(|e| e.to_string())?;
     }
     let mut out = child.stdout.take().ok_or("Piper sin salida")?;
+    // La lectura va en otro hilo para poder interrumpir a Piper aunque
+    // todavía no haya producido audio.
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 16384];
+        loop {
+            match out.read(&mut buf) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(None);
+                    break;
+                }
+                Ok(n) => {
+                    if tx.send(Some(buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
     let mut bytes = Vec::new();
-    let mut buf = [0u8; 16384];
     let started = Instant::now();
     loop {
         if stop.load(Ordering::SeqCst) || started.elapsed() > Duration::from_secs(60) {
@@ -593,13 +642,10 @@ pub fn piper_say(dir: &Path, voice: &Asset, text: &str, rate: f32, stop: &Atomic
             let _ = child.wait();
             return Err("interrumpido".into());
         }
-        match out.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => bytes.extend_from_slice(&buf[..n]),
-            Err(e) => {
-                let _ = child.kill();
-                return Err(e.to_string());
-            }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
     let _ = child.wait();
@@ -745,5 +791,51 @@ mod tests {
             total_recall / n as f64 * 100.0
         );
         assert!(loaded_stt().is_none());
+    }
+
+    /// Piper simulado (mismo protocolo: texto por stdin, PCM por stdout).
+    #[cfg(unix)]
+    #[test]
+    fn piper_protocol_volume_rate_and_interruption() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("canela-piper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("piper")).unwrap();
+        let voice = asset("voice-davefx").unwrap();
+        // Archivos de la voz con el tamaño exacto (dispersos: no ocupan disco).
+        for f in voice.files {
+            std::fs::File::create(dir.join(f.name)).unwrap().set_len(f.size).unwrap();
+        }
+        let args_log = dir.join("args.txt");
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" > {}\nread line\necho \"$line\" >> {}\nif [ \"$line\" = lento ]; then sleep 30; fi\nhead -c 44100 /dev/zero\n",
+            args_log.display(),
+            args_log.display()
+        );
+        let exe = dir.join("piper").join("piper");
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_installed(&dir, asset("piper").unwrap()));
+
+        let stop = AtomicBool::new(false);
+        let pcm = piper_say(&dir, voice, "¡Guau!\nHola", 2.0, &stop).unwrap();
+        assert_eq!(pcm.len(), 22_050, "0,5 s de audio");
+        let args = std::fs::read_to_string(&args_log).unwrap();
+        assert!(args.contains("--output-raw") && args.contains("--length_scale 0.50"), "{args}");
+        assert!(args.contains("¡Guau! Hola"), "una sola línea: {args}");
+        assert_eq!(voice_rate(&dir, voice), 22_050);
+
+        // Interrupción: Canela corta a Piper aunque tarde.
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            s2.store(true, Ordering::SeqCst);
+        });
+        let t0 = Instant::now();
+        let r = piper_say(&dir, voice, "lento", 1.0, &stop);
+        assert!(r.is_err());
+        assert!(t0.elapsed() < Duration::from_secs(5), "se detuvo enseguida");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
