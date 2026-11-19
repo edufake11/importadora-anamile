@@ -167,6 +167,12 @@ pub fn plain_transcript(messages: &[ChatMessage], max_chars: usize) -> String {
 pub async fn summarize_conversation(state: State<'_, AppState>, messages: Vec<ChatMessage>, user_name: String) -> Result<String, String> {
     let settings = state.current_settings();
     let provider = settings.provider;
+    if provider.is_cloud() {
+        let spent = state.db.spend_month(&crate::router::month_key()).unwrap_or(0.0);
+        if settings.monthly_budget_usd <= 0.0 || spent >= settings.monthly_budget_usd {
+            return Err("Límite de gasto mensual alcanzado: no resumiré con un modelo de pago.".into());
+        }
+    }
     let key = tauri::async_runtime::spawn_blocking(move || key_for(provider))
         .await
         .map_err(|e| e.to_string())?
@@ -186,9 +192,10 @@ Máximo 350 palabras, en español, en viñetas.\n\n{}",
             sink.lock().unwrap().push_str(&text);
         }
     };
-    ai::complete(&state.http, &settings, &key, &system, &msgs, &[], &emit)
+    let outcome = ai::complete(&state.http, &settings, &key, &system, &msgs, &[], &emit)
         .await
         .map_err(|e| pricing::redact_secrets(&e))?;
+    crate::router::record_spend(&state.db, provider, &ai::model_of(&settings), &outcome.usage);
     let out = text.lock().unwrap().trim().to_string();
     if out.is_empty() {
         Err("No pude resumir la conversación.".into())

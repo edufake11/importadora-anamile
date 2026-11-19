@@ -31,6 +31,9 @@ export interface Settings {
   ollamaThink: boolean;
   ollamaCloudVoice: boolean;
   resourceMode: "balanced" | "saver";
+  routerAuto: boolean;
+  cloudPreference: ProviderId;
+  monthlyBudgetUsd: number;
   memoryLog: boolean;
   userName: string;
   petScale: number;
@@ -180,6 +183,10 @@ export const api = {
     invoke<{ pending: boolean; message: string }>("memory_release"),
   memoryExport: (path: string) => invoke<string>("memory_export", { path }),
   aiPreload: () => invoke<boolean>("ai_preload"),
+  /** Qué modelo usar para este mensaje (no envía nada a ninguna IA). */
+  routeDecide: (request: RouteRequest) =>
+    invoke<RouteDecision>("route_decide", { request }),
+  spendSummary: () => invoke<SpendSummary>("spend_summary"),
   ollamaStatus: (model?: string) =>
     invoke<OllamaStatus>("ollama_status", { model: model ?? null }),
   summarize: (messages: WireMessage[], userName: string) =>
@@ -200,6 +207,7 @@ export const api = {
     userName: string,
     context: string,
     onEvent: (ev: StreamEvent) => void,
+    providerOverride?: ProviderId,
   ): Promise<() => Promise<void>> {
     const channel = new Channel<StreamEvent>();
     channel.onmessage = onEvent;
@@ -208,6 +216,7 @@ export const api = {
       messages,
       userName,
       context,
+      providerOverride: providerOverride ?? null,
       onEvent: channel,
     });
     return async () => {
@@ -610,4 +619,60 @@ export async function askUser(message: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ------------------------- Enrutador de modelos (v0.6) ----------------------
+
+export interface RouteRequest {
+  text: string;
+  hasImages: boolean;
+  attachmentChars: number;
+  historyChars: number;
+}
+
+export interface CloudOffer {
+  provider: ProviderId;
+  model: string;
+  label: string;
+  estCostUsd: number | null;
+  why: string;
+}
+
+export interface RouteDecision {
+  provider: ProviderId;
+  complexity: "simple" | "medium" | "complex";
+  reasons: string[];
+  offer: CloudOffer | null;
+  blocked: string | null;
+  private: boolean;
+  spentMonthUsd: number;
+  budgetUsd: number;
+}
+
+export interface SpendSummary {
+  month: string;
+  spentUsd: number;
+  budgetUsd: number;
+  breakdown: { provider: string; model: string; calls: number; usd: number }[];
+}
+
+/** Qué hacer con la decisión del enrutador antes de enviar. */
+export type RouteAction =
+  | { kind: "send"; override?: ProviderId }
+  | { kind: "ask"; offer: CloudOffer; localPossible: boolean }
+  | { kind: "blocked"; message: string };
+
+export function routeAction(
+  d: RouteDecision,
+  cloudAllowedInConversation: boolean,
+): RouteAction {
+  if (d.offer) {
+    const localPossible = !d.blocked && d.provider === "ollama";
+    // Permitido para toda la conversación (y no hay datos privados).
+    if (cloudAllowedInConversation && !d.private)
+      return { kind: "send", override: d.offer.provider };
+    return { kind: "ask", offer: d.offer, localPossible };
+  }
+  if (d.blocked) return { kind: "blocked", message: d.blocked };
+  return { kind: "send" };
 }

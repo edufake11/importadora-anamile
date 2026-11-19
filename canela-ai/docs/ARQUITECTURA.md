@@ -19,6 +19,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │ vision_cmds.rs  ocultar mascota/panel, capturar, vista previa, recorte, adjuntos               │
 │ media.rs        teclas multimedia (lista fija) · system.rs  estado del equipo (sysinfo)       │
 │ memdiag.rs      lectura de memoria (RAM, commit, VRAM, procesos) y detector de anomalías      │
+│ router.rs       enrutador de modelos (v0.6 dev): complejidad, privacidad, costo, límite     │
 │ resources.rs    modos Equilibrado/Ahorro, descarga por inactividad, liberar memoria, registro │
 │ voice/local.rs  whisper.cpp en proceso + Piper por frase + catálogo verificado por SHA-256   │
 │ voice/wake.rs   «Hola, Canela»: segmentador + whisper tiny + detección de la frase           │

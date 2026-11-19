@@ -12,6 +12,7 @@ mod memdiag;
 mod model_cmds;
 mod reminders;
 mod resources;
+mod router;
 mod secrets;
 mod settings;
 mod system;
@@ -235,6 +236,8 @@ pub fn run() {
             resources::memory_release,
             resources::memory_export,
             resources::ai_preload,
+            router::route_decide,
+            router::spend_summary,
             model_cmds::summarize_conversation,
             data_cmds::memory_set_temporary,
             data_cmds::memory_list,

@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   canChat,
+  routeAction,
+  type CloudOffer,
+  type ProviderId,
   onMemoryWarning,
   onWakeState,
   voice,
@@ -119,6 +122,9 @@ function ConfirmCard({
   );
 }
 
+/** Respuesta a la propuesta del enrutador. */
+type RouteChoice = "local" | "cloud" | "cloud-always" | "cancel";
+
 export function Chat({ settings, keys, onOpenSettings }: Props) {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
@@ -153,6 +159,16 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const isLocal = settings.provider === "ollama";
   // Con Ollama: comprobar al abrir si está encendido y el modelo instalado.
   const [ollamaProblem, setOllamaProblem] = useState<string | null>(null);
+  // Enrutador: propuesta pendiente de usar un modelo externo.
+  const [routeAsk, setRouteAsk] = useState<{
+    offer: CloudOffer;
+    localPossible: boolean;
+    resolve: (c: RouteChoice) => void;
+  } | null>(null);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  // «Permitir en esta conversación» (se reinicia con «Nueva»).
+  const cloudAllowedRef = useRef(false);
+
   // Indicador de «Hola, Canela».
   const [wakeOn, setWakeOn] = useState(false);
   useEffect(() => {
@@ -281,6 +297,40 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
       onOpenSettings();
       return;
     }
+    // Enrutador (v0.6): ¿local o un modelo externo con tu permiso?
+    let override: ProviderId | undefined;
+    try {
+      const d = await api.routeDecide({
+        text,
+        hasImages: images.length > 0,
+        attachmentChars: attachments.reduce((n, a) => n + a.content.length, 0),
+        historyChars: wireSize(messagesRef.current),
+      });
+      const action = routeAction(d, cloudAllowedRef.current);
+      if (action.kind === "blocked") {
+        setRouteNotice(action.message);
+        return;
+      }
+      if (action.kind === "ask") {
+        const choice = await new Promise<RouteChoice>((resolve) =>
+          setRouteAsk({
+            offer: action.offer,
+            localPossible: action.localPossible,
+            resolve,
+          }),
+        );
+        setRouteAsk(null);
+        if (choice === "cancel") return;
+        if (choice === "cloud-always") cloudAllowedRef.current = true;
+        if (choice !== "local") override = action.offer.provider;
+      } else {
+        override = action.override;
+      }
+    } catch {
+      /* si el enrutador falla, se usa el proveedor principal como antes */
+    }
+    setRouteNotice(null);
+
     // Nombre y contexto (memoria, fecha) se fijan al empezar la conversación
     // para que el prompt de sistema no cambie a mitad de ella.
     const conv = await ensureConversation();
@@ -299,7 +349,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
       text: "",
       status: "streaming",
       thinking: true,
-      provider: settings.provider,
+      provider: override ?? settings.provider,
       tools: [],
       confirms: [],
     };
@@ -492,6 +542,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         conv.userName,
         conv.context,
         onEvent,
+        override,
       );
     } catch (e) {
       finish((m) => ({
@@ -525,6 +576,8 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   sendRef.current = send;
 
   async function newConversation() {
+    cloudAllowedRef.current = false;
+    setRouteNotice(null);
     if (busyId) await stop();
     setMessages([]);
     convRef.current = null;
@@ -747,6 +800,61 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {routeAsk && (
+        <div className="route-card" role="dialog" aria-label="Elegir modelo">
+          <div className="route-title">
+            {routeAsk.localPossible
+              ? "Esta tarea parece compleja"
+              : `Necesito ${routeAsk.offer.label} para esto`}
+          </div>
+          <p className="muted">
+            {routeAsk.offer.why.charAt(0).toUpperCase() +
+              routeAsk.offer.why.slice(1)}
+            .{" "}
+            {routeAsk.localPossible
+              ? "Puedo intentarlo con el modelo local (gratis, no sale de tu equipo) o usar "
+              : "Puedo usar "}
+            {routeAsk.offer.label}: tu mensaje se enviará a su servicio en
+            internet
+            {routeAsk.offer.estCostUsd != null
+              ? ` (≈ ${formatUsd(routeAsk.offer.estCostUsd)})`
+              : " (costo desconocido)"}
+            .
+          </p>
+          <div className="row">
+            {routeAsk.localPossible && (
+              <button className="btn" onClick={() => routeAsk.resolve("local")}>
+                Seguir en local
+              </button>
+            )}
+            <button
+              className="btn primary"
+              onClick={() => routeAsk.resolve("cloud")}
+            >
+              Usar {routeAsk.offer.label}
+            </button>
+            <button className="btn" onClick={() => routeAsk.resolve("cancel")}>
+              Cancelar
+            </button>
+          </div>
+          <button
+            className="text-button"
+            onClick={() => routeAsk.resolve("cloud-always")}
+          >
+            Usar {routeAsk.offer.label} cuando haga falta en esta conversación
+          </button>
+        </div>
+      )}
+
+      {routeNotice && (
+        <div className="banner">
+          {routeNotice}
+          <button className="btn" onClick={() => setRouteNotice(null)}>
+            Cerrar
+          </button>
         </div>
       )}
 

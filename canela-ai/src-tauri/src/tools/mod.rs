@@ -28,6 +28,8 @@ pub struct LlmAccess {
     pub http: reqwest::Client,
     pub settings: Settings,
     pub api_key: String,
+    /// Para apuntar el gasto si el modelo es de pago.
+    pub db: Option<Arc<Db>>,
 }
 
 pub struct ToolCtx {
@@ -1508,7 +1510,10 @@ posibles problemas y 3-5 mejoras concretas priorizadas.{}\n\n{snapshot}",
             sink.lock().unwrap().push_str(&text);
         }
     };
-    ai::complete(&llm.http, &llm.settings, &llm.api_key, &system, &messages, &[], &emit).await?;
+    let outcome = ai::complete(&llm.http, &llm.settings, &llm.api_key, &system, &messages, &[], &emit).await?;
+    if let Some(db) = &llm.db {
+        crate::router::record_spend(db, llm.settings.provider, &ai::model_of(&llm.settings), &outcome.usage);
+    }
     let out = text.lock().unwrap().clone();
     if out.trim().is_empty() {
         Err("La IA no devolvió ningún informe.".into())

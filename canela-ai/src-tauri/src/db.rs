@@ -261,6 +261,30 @@ CREATE TABLE IF NOT EXISTS routines (
 );
 ";
 
+/// v4 (v0.6): registro de gasto en modelos de pago (para el límite mensual).
+const SCHEMA_V4: &str = "
+CREATE TABLE IF NOT EXISTS api_spend (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  month TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  usd REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS api_spend_month ON api_spend(month);
+";
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendRow {
+    pub provider: String,
+    pub model: String,
+    pub calls: i64,
+    pub usd: f64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Routine {
@@ -327,6 +351,10 @@ impl Db {
         if version < 3 {
             conn.execute_batch(SCHEMA_V3).map_err(err)?;
             conn.execute_batch("PRAGMA user_version = 3").map_err(err)?;
+        }
+        if version < 4 {
+            conn.execute_batch(SCHEMA_V4).map_err(err)?;
+            conn.execute_batch("PRAGMA user_version = 4").map_err(err)?;
         }
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -817,6 +845,50 @@ impl Db {
         })
     }
 
+    /// Apunta el costo de una respuesta de un modelo de pago.
+    pub fn spend_add(&self, month: &str, provider: &str, model: &str, input: u64, output: u64, usd: f64) -> DbResult<()> {
+        if usd <= 0.0 {
+            return Ok(());
+        }
+        let ts = now_str();
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO api_spend (ts, month, provider, model, input_tokens, output_tokens, usd) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![ts, month, provider, model, input as i64, output as i64, usd],
+            )
+        })
+        .map(|_| ())
+    }
+
+    /// Gasto total de un mes («AAAA-MM»).
+    pub fn spend_month(&self, month: &str) -> DbResult<f64> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(usd), 0) FROM api_spend WHERE month = ?1",
+                params![month],
+                |r| r.get(0),
+            )
+        })
+    }
+
+    /// Gasto del mes por proveedor y modelo.
+    pub fn spend_breakdown(&self, month: &str) -> DbResult<Vec<SpendRow>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT provider, model, COUNT(*), SUM(usd) FROM api_spend WHERE month = ?1 GROUP BY provider, model ORDER BY SUM(usd) DESC",
+            )?;
+            let rows = st.query_map(params![month], |r| {
+                Ok(SpendRow {
+                    provider: r.get(0)?,
+                    model: r.get(1)?,
+                    calls: r.get(2)?,
+                    usd: r.get(3)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
     pub fn routine_delete(&self, name: &str) -> DbResult<bool> {
         self.with(|c| c.execute("DELETE FROM routines WHERE lower(name) = lower(?1)", params![name.trim()]))
             .map(|n| n > 0)
@@ -1079,5 +1151,22 @@ mod tests {
         let s = d.context_summary().unwrap();
         assert!(s.contains("App de Canela"));
         assert!(s.contains("pendientes"));
+    }
+
+    #[test]
+    fn spend_is_recorded_per_month() {
+        let db = Db::open_in_memory().unwrap();
+        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 6000, 800, 0.04).unwrap();
+        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 9000, 1200, 0.06).unwrap();
+        db.spend_add("2026-11", "openai", "gpt-5", 5000, 500, 0.01).unwrap();
+        db.spend_add("2026-10", "openai", "gpt-5", 5000, 500, 3.0).unwrap();
+        db.spend_add("2026-11", "ollama", "qwen3:8b", 5000, 500, 0.0).unwrap(); // gratis: no se apunta
+        assert!((db.spend_month("2026-11").unwrap() - 0.11).abs() < 1e-9);
+        assert!((db.spend_month("2026-10").unwrap() - 3.0).abs() < 1e-9);
+        assert_eq!(db.spend_month("2027-01").unwrap(), 0.0);
+        let b = db.spend_breakdown("2026-11").unwrap();
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].provider, "anthropic");
+        assert_eq!(b[0].calls, 2);
     }
 }

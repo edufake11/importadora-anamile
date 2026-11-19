@@ -12,6 +12,7 @@ import {
 import { MemoryManager } from "./MemoryManager";
 import { OllamaSettings } from "./OllamaSettings";
 import { PerformanceSettings } from "./PerformanceSettings";
+import { RouterSettings } from "./RouterSettings";
 import { RoutineManager } from "./RoutineManager";
 import { VoiceSettings } from "./VoiceSettings";
 
@@ -342,6 +343,7 @@ export function SettingsView({
             )}
           </details>
         )}
+        <RouterSettings form={form} set={set} keys={keys} />
       </section>
 
       <VoiceSettings form={form} set={set} keys={keys} onSaved={onSaved} />

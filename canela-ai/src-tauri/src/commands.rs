@@ -164,6 +164,9 @@ pub async fn chat_send(
     messages: Vec<ChatMessage>,
     user_name: Option<String>,
     context: Option<String>,
+    // v0.6: modelo elegido para ESTE mensaje (p. ej. aceptaste usar Claude
+    // para una tarea compleja). Se valida aquí: presupuesto y privacidad.
+    provider_override: Option<ProviderId>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     if messages.last().map(|m| m.role) != Some(Role::User) {
@@ -174,7 +177,22 @@ pub async fn chat_send(
         return Err("La conversación es demasiado larga. Empieza una nueva.".into());
     }
 
-    let settings = state.current_settings();
+    let mut settings = state.current_settings();
+    let spent = state.db.spend_month(&crate::router::month_key()).unwrap_or(0.0);
+    let last_text = messages.last().map(|m| m.text.clone()).unwrap_or_default();
+    match provider_override {
+        Some(p) => {
+            crate::router::check_cloud_use(p, &last_text, spent, settings.monthly_budget_usd)?;
+            settings.provider = p;
+        }
+        None if settings.provider.is_cloud() && (settings.monthly_budget_usd <= 0.0 || spent >= settings.monthly_budget_usd) => {
+            return Err(format!(
+                "Alcanzaste tu límite de gasto mensual ({spent:.2} US$ de {:.2} US$). Súbelo en Ajustes › Asistente o usa el modelo local.",
+                settings.monthly_budget_usd
+            ));
+        }
+        None => {}
+    }
     let provider = settings.provider;
     // Sólo en desarrollo: clave simulada para probar con un servidor local.
     #[cfg(debug_assertions)]
@@ -210,6 +228,7 @@ pub async fn chat_send(
             http: state.http.clone(),
             settings: settings.clone(),
             api_key: key.clone(),
+            db: Some(state.db.clone()),
         }),
         notify: Arc::new(move |kind| crate::data_cmds::notify(&notify_app, kind)),
         screen: Some(Arc::new(crate::vision_cmds::AppCapturer { app: app.clone() })),
@@ -225,10 +244,31 @@ pub async fn chat_send(
     };
 
     let channel = on_event.clone();
+    let spend_db = state.db.clone();
     let handle = tauri::async_runtime::spawn(async move {
         agent::run(
             env,
             Arc::new(move |ev| {
+                // Gasto real de cada respuesta de pago (para el límite mensual).
+                if let StreamEvent::Done {
+                    provider,
+                    cost_usd: Some(c),
+                    usage,
+                    model,
+                    ..
+                } = &ev
+                {
+                    if provider.is_cloud() && *c > 0.0 {
+                        let _ = spend_db.spend_add(
+                            &crate::router::month_key(),
+                            provider.as_str(),
+                            model.as_deref().unwrap_or("?"),
+                            usage.input + usage.cache_read + usage.cache_write,
+                            usage.output,
+                            *c,
+                        );
+                    }
+                }
                 let _ = channel.send(ev);
             }),
         )

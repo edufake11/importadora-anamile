@@ -1278,3 +1278,16 @@ details.fold summary {
 .wake-chip:hover {
   color: var(--text);
 }
+
+.route-card {
+  margin: 8px 12px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  display: grid;
+  gap: 8px;
+}
+.route-title {
+  font-weight: 600;
+}

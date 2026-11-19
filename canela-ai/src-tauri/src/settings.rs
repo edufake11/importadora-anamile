@@ -58,6 +58,13 @@ pub struct Settings {
     pub ollama_cloud_voice: bool,
     /// «balanced» (Equilibrado) o «saver» (Ahorro de recursos).
     pub resource_mode: String,
+    /// v0.6: con Ollama como principal, proponer Claude/ChatGPT (con permiso)
+    /// para tareas complejas, imágenes o si Ollama no está disponible.
+    pub router_auto: bool,
+    /// Proveedor externo preferido para esas propuestas.
+    pub cloud_preference: ProviderId,
+    /// Límite de gasto mensual en modelos de pago (US$). 0 = no gastar nada.
+    pub monthly_budget_usd: f64,
     /// Guardar el registro de memoria en archivos (7 días) para diagnosticar.
     pub memory_log: bool,
     /// Cómo quiere el usuario que Canela le llame.
@@ -136,6 +143,9 @@ impl Default for Settings {
             ollama_think: false,
             ollama_cloud_voice: false,
             resource_mode: "balanced".into(),
+            router_auto: true,
+            cloud_preference: ProviderId::Anthropic,
+            monthly_budget_usd: 5.0,
             memory_log: true,
             user_name: String::new(),
             pet_scale: 3,
@@ -193,6 +203,14 @@ impl Settings {
         self.ollama_model = self.ollama_model.trim().chars().take(120).collect();
         if self.ollama_model.is_empty() {
             self.ollama_model = d.ollama_model.clone();
+        }
+        self.monthly_budget_usd = if self.monthly_budget_usd.is_finite() {
+            (self.monthly_budget_usd.clamp(0.0, 10_000.0) * 100.0).round() / 100.0
+        } else {
+            d.monthly_budget_usd
+        };
+        if self.cloud_preference == ProviderId::Ollama {
+            self.cloud_preference = d.cloud_preference;
         }
         if !["balanced", "saver"].contains(&self.resource_mode.as_str()) {
             self.resource_mode = d.resource_mode.clone();
