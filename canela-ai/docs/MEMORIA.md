@@ -46,7 +46,29 @@ Canela v0.5 muestra todas en **Ajustes → Rendimiento y memoria**.
 
 ## 5. Mediciones en el entorno de pruebas (Linux, no tu PC)
 
-- **Canela en reposo (v0.4, 15 min)**: proceso principal estable (175 MB residentes, 76 MB privados, −0,3 MB en 15 min); ventanas web 523 → 540 MB (+17 MB, se va estabilizando). Total ≈ 0,7 GB residente.
-- **whisper small cargado**: +≈ 250 MB mientras está en memoria; al liberarlo el proceso vuelve cerca del inicio.
-- **whisper tiny («Hola, Canela»)**: ≈ 0,2–0,3 s por ráfaga de voz en una CPU de 4 núcleos lentos.
-- Las cifras de Windows (WebView2) serán distintas: compruébalas en Ajustes → Rendimiento y memoria («Canela (con sus ventanas)»).
+Compilación de desarrollo en Linux (WebKitGTK en vez de WebView2): **las cifras de Windows serán distintas**; compruébalas en Ajustes → Rendimiento y memoria.
+
+**Canela en reposo, 30 minutos (v0.5, medido cada minuto, por proceso):**
+
+| Proceso | Memoria privada inicio → fin | Conclusión |
+|---|---|---|
+| Canela (proceso principal) | 82 → 83 MB | Estable |
+| Ventana web 1 | 158 → 199 → 178 MB | Sube y baja (el recolector de memoria de la web libera); **no es una fuga** |
+| Ventana web 2 | 59 → 58 MB | Estable |
+| Proceso de red web | 10 → 10 MB | Estable |
+
+**Voz (proceso principal, memoria residente):**
+
+| Situación | RAM |
+|---|---|
+| Canela recién abierta | ≈ 200 MB |
+| Tras dictar (modelo de voz *small* cargado) | ≈ 400 MB |
+| Tras «Liberar memoria de IA» | ≈ 216 MB |
+| Modo Ahorro: mientras transcribe | ≈ 530 MB (pico) |
+| Modo Ahorro: 3 s después (modelo descargado solo) | ≈ 276 MB |
+| «Hola, Canela» activo + orden (modelos tiny y small cargados) | ≈ 450 MB |
+| Tras apagar «Hola, Canela» y liberar | ≈ 300 MB, de los cuales ≈ 150 MB son el propio programa leído del disco (compartido y recuperable por el sistema) |
+
+**Velocidad del reconocimiento local** (CPU de 4 núcleos lentos del entorno de pruebas; tu Core Ultra 7 debería ser más rápido): ≈ 1,6 s por frase con el modelo recomendado; «Hola, Canela» ≈ 0,2–0,3 s por ráfaga de voz.
+
+**Privacidad en modo local:** registrando todas las conexiones del programa durante un chat y un dictado, las únicas conexiones de red fueron a `127.0.0.1:11434` (Ollama en el mismo equipo); el resto, al sistema de sonido local.

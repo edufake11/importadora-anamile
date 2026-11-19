@@ -1,5 +1,6 @@
 // Envoltorios tipados de los comandos Rust y de los eventos entre ventanas.
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type ProviderId = "anthropic" | "openai" | "ollama";
@@ -592,4 +593,21 @@ export const imageUrl = (i: ImageData) =>
 export function formatUsd(v: number): string {
   if (v > 0 && v < 0.0001) return "< 0,0001 US$";
   return `${v.toLocaleString("es", { minimumFractionDigits: v < 1 ? 4 : 2, maximumFractionDigits: v < 1 ? 4 : 2 })} US$`;
+}
+
+/**
+ * Pregunta «Sí / No» con el diálogo nativo del sistema. Si el diálogo no se
+ * puede mostrar, responde NO (nunca se borra ni se descarga sin permiso).
+ */
+export async function askUser(message: string): Promise<boolean> {
+  try {
+    return await ask(message, {
+      title: "Canela",
+      kind: "warning",
+      okLabel: "Sí",
+      cancelLabel: "No",
+    });
+  } catch {
+    return false;
+  }
 }

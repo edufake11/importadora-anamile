@@ -1,6 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import {
+  askUser,
   api,
   data,
   type KeyStatus,
@@ -60,7 +61,8 @@ function KeyField({
   }
 
   async function remove() {
-    if (!confirm(`¿Eliminar la clave de ${label} de este equipo?`)) return;
+    if (!(await askUser(`¿Eliminar la clave de ${label} de este equipo?`)))
+      return;
     try {
       await api.deleteApiKey(provider);
       setMsg({ ok: true, text: "Clave eliminada." });
@@ -425,8 +427,11 @@ export function SettingsView({
         <button
           className="text-button"
           onClick={() =>
-            confirm("¿Borrar todas las conversaciones guardadas?") &&
-            void data.conversationClear()
+            void askUser("¿Borrar todas las conversaciones guardadas?").then(
+              (ok) => {
+                if (ok) void data.conversationClear();
+              },
+            )
           }
         >
           Borrar historial de chats
@@ -440,12 +445,14 @@ export function SettingsView({
           <button
             className="text-button"
             onClick={() =>
-              confirm(
+              void askUser(
                 "¿Borrar el índice de documentos? Tus archivos no se tocan.",
-              ) &&
-              void data
-                .docIndexClear()
-                .then(() => setDocStats({ files: 0, updatedAt: null }))
+              ).then((ok) => {
+                if (ok)
+                  void data
+                    .docIndexClear()
+                    .then(() => setDocStats({ files: 0, updatedAt: null }));
+              })
             }
           >
             Borrar índice de documentos

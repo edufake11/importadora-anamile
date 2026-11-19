@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { data, MEMORY_KINDS, onDataChanged, type Memory } from "../lib/ipc";
+import {
+  askUser,
+  data,
+  MEMORY_KINDS,
+  onDataChanged,
+  type Memory,
+} from "../lib/ipc";
 
 const kindLabel = (k: string) =>
   MEMORY_KINDS.find((m) => m.id === k)?.label ?? "Otro";
@@ -90,8 +96,10 @@ function MemoryRow({
         title="Olvidar"
         aria-label="Olvidar"
         onClick={() =>
-          confirm("¿Olvidar este recuerdo?") &&
-          void data.memoryDelete(m.id).catch((e) => onError(String(e)))
+          void askUser("¿Olvidar este recuerdo?").then((ok) => {
+            if (ok)
+              void data.memoryDelete(m.id).catch((e) => onError(String(e)));
+          })
         }
       >
         ✕
@@ -198,9 +206,11 @@ export function MemoryManager() {
         <button
           className="text-button"
           onClick={() =>
-            confirm(
+            void askUser(
               "¿Borrar TODA la memoria de Canela? No se puede deshacer.",
-            ) && void data.memoryClear()
+            ).then((ok) => {
+              if (ok) void data.memoryClear();
+            })
           }
         >
           Borrar toda la memoria

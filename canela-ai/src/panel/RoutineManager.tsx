@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { data, onDataChanged, routineSteps, type Routine } from "../lib/ipc";
+import {
+  askUser,
+  data,
+  onDataChanged,
+  routineSteps,
+  type Routine,
+} from "../lib/ipc";
 
 /** Lista de rutinas guardadas: ver sus pasos y borrarlas. */
 export function RoutineManager() {
@@ -51,10 +57,14 @@ export function RoutineManager() {
                   title="Borrar rutina"
                   aria-label={`Borrar rutina ${r.name}`}
                   onClick={() =>
-                    confirm(`¿Borrar la rutina «${r.name}»?`) &&
-                    void data
-                      .routineDelete(r.name)
-                      .catch((e) => setError(String(e)))
+                    void askUser(`¿Borrar la rutina «${r.name}»?`).then(
+                      (ok) => {
+                        if (ok)
+                          void data
+                            .routineDelete(r.name)
+                            .catch((e) => setError(String(e)));
+                      },
+                    )
                   }
                 >
                   ✕

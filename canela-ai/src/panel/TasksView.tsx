@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  askUser,
   data,
   onDataChanged,
   type ActivityItem,
@@ -106,7 +107,7 @@ function TaskRow({
   }
 
   async function remove() {
-    if (!confirm(`¿Eliminar la tarea «${task.title}»?`)) return;
+    if (!(await askUser(`¿Eliminar la tarea «${task.title}»?`))) return;
     await data.taskDelete(task.id).catch((e) => onError(String(e)));
   }
 

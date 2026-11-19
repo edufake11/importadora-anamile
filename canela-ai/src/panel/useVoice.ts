@@ -62,11 +62,11 @@ export function useVoice(
       deadline.current = Math.max(deadline.current, Date.now() + ms);
       window.clearTimeout(watchdog.current);
       watchdog.current = window.setTimeout(() => {
-        if (pendingLocal.current > 0 || cloudPending.current > 0) {
-          pendingLocal.current = 0;
-          cloudPending.current = 0;
-          speechDone();
-        }
+        // Pase lo que pase con el motor de voz, Canela no se queda
+        // «hablando» para siempre (eso también pausaría «Hola, Canela»).
+        pendingLocal.current = 0;
+        cloudPending.current = 0;
+        speechDone();
       }, deadline.current - Date.now());
     },
     [speechDone],
@@ -88,6 +88,8 @@ export function useVoice(
       const s = settingsRef.current;
       if (typeof speechSynthesis === "undefined") {
         setMessage("Este equipo no tiene voces instaladas para hablar.");
+        if (pendingLocal.current === 0 && cloudPending.current === 0)
+          speechDone();
         return;
       }
       const voices = spanishVoices(speechSynthesis.getVoices());

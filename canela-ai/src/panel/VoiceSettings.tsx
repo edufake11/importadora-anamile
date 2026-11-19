@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  askUser,
   api,
   fmtMb,
   onVoiceDownload,
@@ -129,12 +130,12 @@ export function VoiceSettings({ form, set, keys, onSaved }: Props) {
     return () => void un.then((f) => f());
   }, [loadLocal]);
 
-  function download(a: LocalAsset) {
+  async function download(a: LocalAsset) {
     // Consentimiento explícito: se muestra el tamaño antes de descargar.
     if (
-      !confirm(
+      !(await askUser(
         `¿Descargar «${a.label}» (${fmtMb(a.size)}) desde ${a.kind === "engine" ? "GitHub" : "Hugging Face"}? Se comprobará con SHA-256 y quedará en este equipo.`,
-      )
+      ))
     )
       return;
     setDlMsg(null);
@@ -145,11 +146,11 @@ export function VoiceSettings({ form, set, keys, onSaved }: Props) {
     });
   }
 
-  function remove(a: LocalAsset) {
+  async function remove(a: LocalAsset) {
     if (
-      !confirm(
+      !(await askUser(
         `¿Borrar «${a.label}» de este equipo? Podrás descargarlo de nuevo.`,
-      )
+      ))
     )
       return;
     void voice
@@ -175,9 +176,9 @@ export function VoiceSettings({ form, set, keys, onSaved }: Props) {
   async function toggleWake(on: boolean) {
     if (
       on &&
-      !confirm(
+      !(await askUser(
         "¿Activar «Hola, Canela»? El micrófono quedará abierto y Canela analizará el sonido EN ESTE EQUIPO sólo para reconocer la frase. Nada se guarda ni se envía. Puedes apagarlo cuando quieras con la orejita junto a Canela.",
-      )
+      ))
     )
       return;
     try {
@@ -203,8 +204,8 @@ export function VoiceSettings({ form, set, keys, onSaved }: Props) {
       onSelect={onSelect}
       progress={dl?.id === a.id ? dl : null}
       busy={!!dl}
-      onDownload={() => download(a)}
-      onDelete={() => remove(a)}
+      onDownload={() => void download(a)}
+      onDelete={() => void remove(a)}
     />
   );
 
