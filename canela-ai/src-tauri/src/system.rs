@@ -35,6 +35,9 @@ pub struct Snapshot {
     pub cpu_usage: f32,
     pub mem_total: u64,
     pub mem_used: u64,
+    /// Memoria comprometida (RAM + archivo de paginación) y su límite.
+    pub commit_used: u64,
+    pub commit_limit: u64,
     pub uptime_secs: u64,
     pub disks: Vec<DiskInfo>,
     pub battery: Option<Battery>,
@@ -113,6 +116,8 @@ pub fn snapshot(with_processes: bool) -> Result<Snapshot, String> {
         cpu_usage: sys.global_cpu_usage(),
         mem_total: sys.total_memory(),
         mem_used: sys.used_memory(),
+        commit_used: crate::memdiag::read_sys().map(|m| m.commit_used).unwrap_or(0),
+        commit_limit: crate::memdiag::read_sys().map(|m| m.commit_limit).unwrap_or(0),
         uptime_secs: System::uptime().unwrap_or(0),
         disks,
         battery: battery(),
@@ -190,6 +195,11 @@ pub fn report(s: &Snapshot) -> String {
             gb(s.mem_total),
             pct(s.mem_used, s.mem_total)
         ),
+        format!(
+            "Memoria comprometida: {} de {} (RAM + archivo de paginación; incluye reservas de la GPU)",
+            gb(s.commit_used),
+            gb(s.commit_limit)
+        ),
         format!("Encendido desde hace: {}", uptime_text(s.uptime_secs)),
     ];
     for d in &s.disks {
@@ -229,6 +239,9 @@ pub fn report(s: &Snapshot) -> String {
     if pct(s.mem_used, s.mem_total) >= 90 {
         notes.push("la memoria RAM está casi llena");
     }
+    if s.commit_limit > 0 && s.commit_used * 100 >= s.commit_limit * 90 {
+        notes.push("la memoria comprometida está cerca de su límite");
+    }
     if s.cpu_usage >= 85.0 {
         notes.push("el procesador está muy ocupado");
     }
@@ -259,6 +272,8 @@ mod tests {
             cpu_usage: 92.0,
             mem_total: 16 * 1024 * 1024 * 1024,
             mem_used: 15 * 1024 * 1024 * 1024,
+            commit_used: 46 * 1024 * 1024 * 1024,
+            commit_limit: 50 * 1024 * 1024 * 1024,
             uptime_secs: 9 * 86_400,
             disks: vec![DiskInfo {
                 name: "C:\\".into(),
@@ -283,6 +298,8 @@ mod tests {
         assert!(r.contains("chrome (24 procesos): 3.0 GB RAM, 12 % CPU"));
         assert!(r.contains("memoria RAM está casi llena"));
         assert!(r.contains("procesador está muy ocupado"));
+        assert!(r.contains("Memoria comprometida: 46.0 GB de 50.0 GB"));
+        assert!(r.contains("cerca de su límite"));
         assert!(r.contains("a un disco le queda menos del 10 %"));
         assert!(r.contains("más de una semana"));
         assert!(r.contains("no tiene"));
@@ -301,6 +318,7 @@ mod tests {
         let mut s = sample();
         s.cpu_usage = 10.0;
         s.mem_used = 6 * 1024 * 1024 * 1024;
+        s.commit_used = 20 * 1024 * 1024 * 1024;
         s.uptime_secs = 3700;
         s.disks[0].free = 600 * 1024 * 1024 * 1024;
         s.battery = Some(Battery {

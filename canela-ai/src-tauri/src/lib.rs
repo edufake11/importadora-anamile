@@ -8,8 +8,10 @@ mod docs;
 mod fullscreen;
 mod jobs;
 mod media;
+mod memdiag;
 mod model_cmds;
 mod reminders;
+mod resources;
 mod secrets;
 mod settings;
 mod system;
@@ -170,6 +172,7 @@ pub fn run() {
             spawn_fullscreen_watch(app.handle().clone());
             let at_login = std::env::args().any(|a| a == "--autostart");
             reminders::spawn(app.handle().clone(), at_login);
+            resources::spawn(app.handle().clone());
 
             // Si otra app ya usa el atajo, Canela sigue funcionando sin él.
             for sc in [shortcut_toggle_pet(), shortcut_toggle_panel(), shortcut_voice()] {
@@ -208,6 +211,11 @@ pub fn run() {
             voice::voice_cancel,
             voice::tts_cloud_speak,
             voice::tts_cloud_stop,
+            voice::tts_local_speak,
+            voice::local_voice_status,
+            voice::local_voice_download,
+            voice::local_voice_cancel,
+            voice::local_voice_delete,
             vision_cmds::screen_sources,
             vision_cmds::screen_capture,
             vision_cmds::screen_finalize,
@@ -215,6 +223,11 @@ pub fn run() {
             vision_cmds::prepare_attachment,
             model_cmds::model_info,
             model_cmds::ollama_status,
+            resources::memory_status,
+            resources::memory_measure_now,
+            resources::memory_release,
+            resources::memory_export,
+            resources::ai_preload,
             model_cmds::summarize_conversation,
             data_cmds::memory_set_temporary,
             data_cmds::memory_list,

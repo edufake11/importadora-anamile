@@ -23,8 +23,6 @@ pub const DEFAULT_MODEL: &str = "qwen3:8b";
 pub const DEFAULT_NUM_CTX: u32 = 16_384;
 pub const MIN_NUM_CTX: u32 = 4_096;
 pub const MAX_NUM_CTX: u32 = 131_072;
-/// Cuánto tiempo mantiene Ollama el modelo cargado en la GPU tras usarlo.
-const KEEP_ALIVE: &str = "30m";
 
 /// ¿Es una dirección de este mismo equipo? Devuelve la URL base normalizada.
 pub fn loopback_url(raw: &str) -> Option<String> {
@@ -136,17 +134,20 @@ pub fn tool_results_messages(results: &[ToolResult]) -> Vec<Value> {
 
 pub fn build_body(settings: &Settings, system: &str, messages: &[Value], tools: &[ToolDef]) -> Value {
     let model = settings.ollama_model.trim();
+    let params = crate::resources::mode(settings);
     let mut msgs = vec![json!({ "role": "system", "content": system })];
     msgs.extend(messages.iter().cloned());
     let mut body = json!({
         "model": model,
         "messages": msgs,
         "stream": true,
-        "keep_alive": KEEP_ALIVE,
-        "options": { "num_ctx": settings.ollama_num_ctx.clamp(MIN_NUM_CTX, MAX_NUM_CTX) },
+        // Ollama descarga el modelo solo tras este tiempo sin peticiones
+        // (2 min en Equilibrado, 30 s en Ahorro de recursos).
+        "keep_alive": params.keep_alive,
+        "options": { "num_ctx": settings.ollama_num_ctx.clamp(MIN_NUM_CTX, MAX_NUM_CTX).min(params.max_ctx) },
     });
     if !in_set(&NO_THINK, model) {
-        body["think"] = json!(settings.ollama_think);
+        body["think"] = json!(settings.ollama_think && params.allow_think);
     }
     if !tools.is_empty() && !in_set(&NO_TOOLS, model) {
         body["tools"] = Value::Array(

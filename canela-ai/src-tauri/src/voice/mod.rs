@@ -9,6 +9,7 @@
 //!   al terminar la frase. El audio nunca se guarda en disco.
 
 pub mod audio;
+pub mod local;
 pub mod vad;
 
 use crate::commands::AppState;
@@ -145,7 +146,7 @@ pub struct TranscriptEvent {
 #[derive(Default)]
 pub struct VoiceRuntime {
     recording: Mutex<Option<Arc<AtomicU8>>>,
-    tts_tx: Mutex<Option<mpsc::Sender<(u64, String)>>>,
+    tts_tx: Mutex<Option<mpsc::Sender<(u64, String, TtsEngine)>>>,
     tts_gen: Arc<AtomicU64>,
     tts_stop: Arc<AtomicBool>,
 }
@@ -187,10 +188,30 @@ pub async fn voice_start(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if !settings.voice_consent {
         return Err("Primero acepta el aviso de privacidad de la voz en Ajustes › Voz.".into());
     }
-    cloud_voice_allowed(&settings)?;
-    let key = tauri::async_runtime::spawn_blocking(openai_key)
-        .await
-        .map_err(|e| e.to_string())??;
+    // Reconocimiento local (whisper.cpp): nada sale del equipo.
+    let use_local = settings.stt_engine == "local";
+    let voice_dir = local::voice_dir(&state.data_dir);
+    let key = if use_local {
+        if !local::stt_available() {
+            return Err("Esta versión no incluye el reconocimiento de voz local.".into());
+        }
+        let a = local::asset(&settings.stt_local_model).ok_or("Modelo de voz desconocido.")?;
+        if !local::is_installed(&voice_dir, a) {
+            return Err(format!(
+                "Para entender tu voz sin internet falta descargar «{}» ({} MB) en Ajustes › Voz.",
+                a.label,
+                local::total_size(a) / 1_000_000
+            ));
+        }
+        String::new()
+    } else {
+        cloud_voice_allowed(&settings)?;
+        tauri::async_runtime::spawn_blocking(openai_key)
+            .await
+            .map_err(|e| e.to_string())??
+    };
+    let local_model = settings.stt_local_model.clone();
+    let voice_idle = crate::resources::mode(&settings).voice_idle;
     let ctrl = Arc::new(AtomicU8::new(CTRL_RUN));
     {
         let mut rec = state.voice.recording.lock().unwrap();
@@ -217,13 +238,43 @@ pub async fn voice_start(app: AppHandle, state: State<'_, AppState>) -> Result<(
                 }
                 emit_state(&app, "processing", None, None);
                 let (http, key, model, db) = (http.clone(), key.clone(), model.clone(), db.clone());
+                let (voice_dir, local_model) = (voice_dir.clone(), local_model.clone());
                 tauri::async_runtime::spawn(async move {
                     let seconds = samples.len() as f32 / audio::TARGET_RATE as f32;
-                    let wav = encode_wav(&samples, audio::TARGET_RATE);
-                    drop(samples);
-                    match transcribe(&http, &key, &model, wav).await {
+                    let result = if use_local {
+                        let started = std::time::Instant::now();
+                        let r = tokio::task::spawn_blocking(move || {
+                            let r = local::transcribe(&voice_dir, &local_model, &samples, Some("Hola, Canela."));
+                            // Modo Ahorro: el modelo de voz se descarga al terminar.
+                            if voice_idle.is_zero() {
+                                local::unload_all();
+                            }
+                            r
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r);
+                        if r.is_ok() {
+                            db.log(
+                                "voz",
+                                &format!(
+                                    "Transcribí {seconds:.0} s de audio en este equipo ({:.1} s)",
+                                    started.elapsed().as_secs_f32()
+                                ),
+                            );
+                        }
+                        r
+                    } else {
+                        let wav = encode_wav(&samples, audio::TARGET_RATE);
+                        drop(samples);
+                        let r = transcribe(&http, &key, &model, wav).await;
+                        if r.is_ok() {
+                            db.log("voz", &format!("Transcribí {seconds:.0} s de audio con OpenAI"));
+                        }
+                        r
+                    };
+                    match result {
                         Ok(text) if !text.is_empty() => {
-                            db.log("voz", &format!("Transcribí {seconds:.0} s de audio"));
                             let _ = app.emit("voice-transcript", TranscriptEvent { text });
                             emit_state(&app, "idle", None, None);
                         }
@@ -282,45 +333,82 @@ pub fn voice_cancel(state: State<'_, AppState>) -> bool {
 
 // -------------------------------------------------- voz de OpenAI (opcional)
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TtsEngine {
+    /// Voz de OpenAI (internet).
+    Cloud,
+    /// Piper (este equipo).
+    Piper,
+}
+
 /// Encola un fragmento para decirlo con la voz de OpenAI.
 #[tauri::command]
 pub fn tts_cloud_speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), String> {
     cloud_voice_allowed(&state.current_settings())?;
+    enqueue(app, state, text, TtsEngine::Cloud)
+}
+
+/// Encola un fragmento para decirlo con Piper (voz natural sin internet).
+#[tauri::command]
+pub fn tts_local_speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), String> {
+    let s = state.current_settings();
+    let dir = local::voice_dir(&state.data_dir);
+    let voice = local::asset(&s.piper_voice).ok_or("Voz desconocida.")?;
+    if !local::piper_exe(&dir).exists() || !local::is_installed(&dir, voice) {
+        return Err("Para la voz natural sin internet descarga Piper y una voz en Ajustes › Voz.".into());
+    }
+    enqueue(app, state, text, TtsEngine::Piper)
+}
+
+fn enqueue(app: AppHandle, state: State<'_, AppState>, text: String, engine: TtsEngine) -> Result<(), String> {
     let text: String = text.chars().take(4000).collect();
     if text.trim().is_empty() {
         return Ok(());
     }
     let mut tx = state.voice.tts_tx.lock().unwrap();
     if tx.is_none() {
-        let (sender, rx) = mpsc::channel::<(u64, String)>();
+        let (sender, rx) = mpsc::channel::<(u64, String, TtsEngine)>();
         let gen = state.voice.tts_gen.clone();
         let stop = state.voice.tts_stop.clone();
         let app2 = app.clone();
         std::thread::spawn(move || {
-            while let Ok((g, text)) = rx.recv() {
+            while let Ok((g, text, engine)) = rx.recv() {
                 if g != gen.load(Ordering::SeqCst) {
                     continue; // se pidió silencio después de encolarlo
                 }
                 let state = app2.state::<AppState>();
                 let s = state.current_settings();
                 let http = state.http.clone();
-                let key = match openai_key() {
-                    Ok(k) => k,
-                    Err(e) => {
-                        let _ = app2.emit("tts-state", serde_json::json!({ "speaking": false, "error": e }));
-                        continue;
+                stop.store(false, Ordering::SeqCst);
+                let synth: Result<(Vec<i16>, u32), String> = match engine {
+                    TtsEngine::Piper => {
+                        let dir = local::voice_dir(&state.data_dir);
+                        match local::asset(&s.piper_voice) {
+                            Some(v) => local::piper_say(&dir, v, &text, s.tts_rate, &stop).map(|pcm| (pcm, local::voice_rate(&dir, v))),
+                            None => Err("Voz desconocida.".into()),
+                        }
                     }
+                    TtsEngine::Cloud => match openai_key() {
+                        Ok(key) => tauri::async_runtime::block_on(synthesize(
+                            &http,
+                            &key,
+                            &s.tts_cloud_model,
+                            &s.tts_cloud_voice,
+                            &text,
+                            s.tts_rate,
+                        ))
+                        .map(|pcm| (pcm, TTS_RATE)),
+                        Err(e) => Err(e),
+                    },
                 };
-                let pcm =
-                    tauri::async_runtime::block_on(synthesize(&http, &key, &s.tts_cloud_model, &s.tts_cloud_voice, &text, s.tts_rate));
                 if g != gen.load(Ordering::SeqCst) {
                     continue;
                 }
-                match pcm {
-                    Ok(pcm) => {
+                match synth {
+                    Ok((pcm, rate)) => {
                         stop.store(false, Ordering::SeqCst);
                         let _ = app2.emit("tts-state", serde_json::json!({ "speaking": true }));
-                        if let Err(e) = audio::play_pcm(s.voice_output_device.as_deref(), &pcm, TTS_RATE, s.tts_volume, stop.clone()) {
+                        if let Err(e) = audio::play_pcm(s.voice_output_device.as_deref(), &pcm, rate, s.tts_volume, stop.clone()) {
                             let _ = app2.emit("tts-state", serde_json::json!({ "speaking": false, "error": e }));
                             continue;
                         }
@@ -336,7 +424,7 @@ pub fn tts_cloud_speak(app: AppHandle, state: State<'_, AppState>, text: String)
         *tx = Some(sender);
     }
     let g = state.voice.tts_gen.load(Ordering::SeqCst);
-    tx.as_ref().unwrap().send((g, text)).map_err(|e| e.to_string())
+    tx.as_ref().unwrap().send((g, text, engine)).map_err(|e| e.to_string())
 }
 
 /// Calla a Canela (voz de OpenAI) y descarta lo pendiente.
@@ -344,6 +432,101 @@ pub fn tts_cloud_speak(app: AppHandle, state: State<'_, AppState>, text: String)
 pub fn tts_cloud_stop(state: State<'_, AppState>) {
     state.voice.tts_gen.fetch_add(1, Ordering::SeqCst);
     state.voice.tts_stop.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------- modelos de voz locales
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAsset {
+    pub id: &'static str,
+    pub kind: local::Kind,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub license: &'static str,
+    pub size: u64,
+    pub installed: bool,
+    /// El programa Piper sólo existe para Windows en esta versión.
+    pub supported: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalVoiceStatus {
+    pub stt_available: bool,
+    pub assets: Vec<LocalAsset>,
+    pub loaded_stt: Option<String>,
+    pub downloading: Option<String>,
+    pub dir: String,
+}
+
+#[tauri::command]
+pub fn local_voice_status(state: State<'_, AppState>) -> LocalVoiceStatus {
+    let dir = local::voice_dir(&state.data_dir);
+    LocalVoiceStatus {
+        stt_available: local::stt_available(),
+        assets: local::CATALOG
+            .iter()
+            .map(|a| LocalAsset {
+                id: a.id,
+                kind: a.kind,
+                label: a.label,
+                note: a.note,
+                license: a.license,
+                size: local::total_size(a),
+                installed: local::is_installed(&dir, a),
+                supported: a.kind != local::Kind::Engine || cfg!(windows),
+            })
+            .collect(),
+        loaded_stt: local::loaded_stt(),
+        downloading: local::downloading(),
+        dir: dir.display().to_string(),
+    }
+}
+
+/// Descarga un modelo de voz. Sólo se llama cuando el usuario pulsa
+/// «Descargar» viendo el tamaño (consentimiento explícito).
+#[tauri::command]
+pub async fn local_voice_download(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let a = local::asset(&id).ok_or("Recurso desconocido.")?;
+    if a.kind == local::Kind::Engine && !cfg!(windows) {
+        return Err("El programa Piper descargable es sólo para Windows.".into());
+    }
+    let dir = local::voice_dir(&state.data_dir);
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let last = Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    let progress = move |done: u64, total: u64| {
+        let mut l = last.lock().unwrap();
+        if l.elapsed() >= std::time::Duration::from_millis(250) || done == total {
+            *l = std::time::Instant::now();
+            let _ = app2.emit("voice-download", serde_json::json!({ "id": id2, "done": done, "total": total }));
+        }
+    };
+    let r = local::download(&state.http, &dir, a, &progress).await;
+    let _ = app.emit(
+        "voice-download",
+        serde_json::json!({ "id": id, "finished": true, "error": r.as_ref().err() }),
+    );
+    if r.is_ok() {
+        state
+            .db
+            .log("voz", &format!("Descargué {} ({} MB)", a.label, local::total_size(a) / 1_000_000));
+    }
+    r
+}
+
+#[tauri::command]
+pub fn local_voice_cancel() {
+    local::cancel_download();
+}
+
+#[tauri::command]
+pub fn local_voice_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let a = local::asset(&id).ok_or("Recurso desconocido.")?;
+    local::remove(&local::voice_dir(&state.data_dir), a)?;
+    state.db.log("voz", &format!("Borré {}", a.label));
+    Ok(())
 }
 
 #[cfg(test)]

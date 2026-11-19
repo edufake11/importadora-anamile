@@ -355,6 +355,11 @@ pub async fn complete(
     emit: &(dyn Fn(StreamEvent) + Send + Sync),
 ) -> Result<TurnOutcome, String> {
     let model = model_of(settings);
+    // Mientras dure esta vuelta, el modelo local no se descarga.
+    let _busy = crate::resources::busy();
+    if settings.provider == ProviderId::Ollama {
+        crate::resources::ACTIVITY.note_model(&model);
+    }
     for attempt in 0..3 {
         let (req, parser) = build_turn(http, settings, api_key, system, messages, tools);
         match run_turn_inner(settings, &model, req, parser, emit).await {

@@ -56,6 +56,10 @@ pub struct Settings {
     pub ollama_think: bool,
     /// Con Ollama, permitir igualmente la voz de OpenAI (envía audio/texto a internet).
     pub ollama_cloud_voice: bool,
+    /// «balanced» (Equilibrado) o «saver» (Ahorro de recursos).
+    pub resource_mode: String,
+    /// Guardar el registro de memoria en archivos (7 días) para diagnosticar.
+    pub memory_log: bool,
     /// Cómo quiere el usuario que Canela le llame.
     pub user_name: String,
     /// Escala entera del pixel art (1..=6).
@@ -89,10 +93,16 @@ pub struct Settings {
     pub voice_input_device: Option<String>,
     /// Altavoz para la voz de OpenAI. `None` = el predeterminado.
     pub voice_output_device: Option<String>,
+    /// Reconocimiento de voz: "local" (whisper.cpp en este equipo) u "openai".
+    pub stt_engine: String,
+    /// Modelo local de reconocimiento (id del catálogo de voz).
+    pub stt_local_model: String,
     /// Modelo de transcripción de OpenAI.
     pub stt_model: String,
-    /// "local" (voces de Windows) u "openai".
+    /// "local" (voces de Windows), "piper" (voz natural local) u "openai".
     pub tts_engine: String,
+    /// Voz de Piper (id del catálogo de voz).
+    pub piper_voice: String,
     /// Nombre de la voz de Windows ("" = la primera en español).
     pub tts_voice: String,
     pub tts_cloud_model: String,
@@ -125,6 +135,8 @@ impl Default for Settings {
             ollama_num_ctx: crate::ai::ollama::DEFAULT_NUM_CTX,
             ollama_think: false,
             ollama_cloud_voice: false,
+            resource_mode: "balanced".into(),
+            memory_log: true,
             user_name: String::new(),
             pet_scale: 3,
             wander: true,
@@ -141,8 +153,11 @@ impl Default for Settings {
             voice_consent: false,
             voice_input_device: None,
             voice_output_device: None,
+            stt_engine: "local".into(),
+            stt_local_model: "stt-small".into(),
             stt_model: "gpt-transcribe".into(),
             tts_engine: "local".into(),
+            piper_voice: "voice-claude".into(),
             tts_voice: String::new(),
             tts_cloud_model: "gpt-4o-mini-tts".into(),
             tts_cloud_voice: "coral".into(),
@@ -179,6 +194,9 @@ impl Settings {
         if self.ollama_model.is_empty() {
             self.ollama_model = d.ollama_model.clone();
         }
+        if !["balanced", "saver"].contains(&self.resource_mode.as_str()) {
+            self.resource_mode = d.resource_mode.clone();
+        }
         self.ollama_num_ctx = self
             .ollama_num_ctx
             .clamp(crate::ai::ollama::MIN_NUM_CTX, crate::ai::ollama::MAX_NUM_CTX);
@@ -196,8 +214,18 @@ impl Settings {
         if !["voice", "always", "never"].contains(&self.speak_replies.as_str()) {
             self.speak_replies = d.speak_replies.clone();
         }
-        if !["local", "openai"].contains(&self.tts_engine.as_str()) {
+        if !["local", "openai", "piper"].contains(&self.tts_engine.as_str()) {
             self.tts_engine = d.tts_engine.clone();
+        }
+        if !["local", "openai"].contains(&self.stt_engine.as_str()) {
+            self.stt_engine = d.stt_engine.clone();
+        }
+        let kind_ok = |id: &str, k: crate::voice::local::Kind| crate::voice::local::asset(id).is_some_and(|a| a.kind == k);
+        if !kind_ok(&self.stt_local_model, crate::voice::local::Kind::Stt) {
+            self.stt_local_model = d.stt_local_model.clone();
+        }
+        if !kind_ok(&self.piper_voice, crate::voice::local::Kind::Voice) {
+            self.piper_voice = d.piper_voice.clone();
         }
         for (v, def) in [
             (&mut self.stt_model, &d.stt_model),

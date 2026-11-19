@@ -29,6 +29,8 @@ export interface Settings {
   ollamaNumCtx: number;
   ollamaThink: boolean;
   ollamaCloudVoice: boolean;
+  resourceMode: "balanced" | "saver";
+  memoryLog: boolean;
   userName: string;
   petScale: number;
   wander: boolean;
@@ -168,6 +170,12 @@ export const api = {
   jobCancel: (id: string) => invoke<boolean>("job_cancel", { id }),
   allowedFolders: () => invoke<string[]>("allowed_folders"),
   modelInfo: () => invoke<ModelInfo>("model_info"),
+  memoryStatus: () => invoke<MemStatus>("memory_status"),
+  memoryMeasureNow: () => invoke<MemStatus>("memory_measure_now"),
+  memoryRelease: () =>
+    invoke<{ pending: boolean; message: string }>("memory_release"),
+  memoryExport: (path: string) => invoke<string>("memory_export", { path }),
+  aiPreload: () => invoke<boolean>("ai_preload"),
   ollamaStatus: (model?: string) =>
     invoke<OllamaStatus>("ollama_status", { model: model ?? null }),
   summarize: (messages: WireMessage[], userName: string) =>
@@ -364,6 +372,79 @@ export const onDataChanged = (
   cb: (kind: string) => void,
 ): Promise<UnlistenFn> =>
   listen<{ kind: string }>("data-changed", (e) => cb(e.payload.kind));
+
+export interface MemProcess {
+  pid: number;
+  name: string;
+  path: string | null;
+  private: number;
+  workingSet: number;
+}
+
+export interface MemSample {
+  ts: string;
+  sys: {
+    total: number;
+    available: number;
+    commitUsed: number;
+    commitLimit: number;
+    commitPeak: number | null;
+    cache: number | null;
+  };
+  gpu: { name: string; used: number; total: number } | null;
+  ai:
+    | {
+        name: string;
+        size: number;
+        sizeVram: number;
+        contextLength: number | null;
+        expiresAt: string | null;
+      }[]
+    | null;
+  canelaPrivate: number;
+  canelaWorkingSet: number;
+  top: MemProcess[];
+}
+
+export interface MemEvent {
+  ts: string;
+  kind: string;
+  message: string;
+  pid: number | null;
+  name: string | null;
+  bytes: number | null;
+}
+
+export interface MemStatus {
+  mode: string;
+  latest: MemSample | null;
+  events: MemEvent[];
+  history: {
+    ts: string;
+    available: number;
+    commitUsed: number;
+    vramUsed: number | null;
+    aiLoaded: boolean;
+    canela: number;
+  }[];
+  busy: boolean;
+  lowRam: boolean;
+  idleUnloadSecs: number;
+  logDir: string;
+  logging: boolean;
+}
+
+/** Bytes → «7,5 GB». */
+export const fmtGb = (b: number) =>
+  `${(b / 1024 ** 3).toLocaleString("es", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GB`;
+
+export const onMemoryWarning = (
+  cb: (e: MemEvent | null) => void,
+): Promise<UnlistenFn> =>
+  Promise.all([
+    listen<MemEvent>("memory-warning", (e) => cb(e.payload)),
+    listen("memory-warning-clear", () => cb(null)),
+  ]).then((fs) => () => fs.forEach((f) => f()));
 
 export const onJobsChanged = (
   cb: (jobs: JobInfo[]) => void,

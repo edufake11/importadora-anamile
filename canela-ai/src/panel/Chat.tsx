@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   canChat,
+  onMemoryWarning,
   PROVIDER_NAMES,
   data,
   formatUsd,
@@ -150,6 +151,19 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
   const isLocal = settings.provider === "ollama";
   // Con Ollama: comprobar al abrir si está encendido y el modelo instalado.
   const [ollamaProblem, setOllamaProblem] = useState<string | null>(null);
+  // Avisos de RAM baja (del registro de memoria).
+  const [memWarning, setMemWarning] = useState<string | null>(null);
+  useEffect(() => {
+    const un = onMemoryWarning((e) => {
+      setMemWarning(e ? e.message : null);
+      if (e)
+        void sendMood({
+          mood: "sad",
+          bubble: "¡Guau! Tu PC se está quedando sin memoria libre.",
+        });
+    });
+    return () => void un.then((f) => f());
+  }, []);
   useEffect(() => {
     if (!isLocal) {
       setOllamaProblem(null);
@@ -712,6 +726,23 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {memWarning && (
+        <div className="banner">
+          ⚠ {memWarning}
+          <button
+            className="btn"
+            onClick={() =>
+              void api.memoryRelease().then((r) => setMemWarning(r.message))
+            }
+          >
+            Liberar memoria de IA
+          </button>
+          <button className="btn" onClick={() => setMemWarning(null)}>
+            Cerrar
+          </button>
         </div>
       )}
 

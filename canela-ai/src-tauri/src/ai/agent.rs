@@ -291,6 +291,9 @@ async fn run_plan(env: &AgentEnv, ctx: &ToolCtx, call_id: &str, title: &str, ste
 
 /// Ejecuta una respuesta completa. Siempre termina con Done o Error.
 pub async fn run(env: AgentEnv, emit: Emit) {
+    // Toda la respuesta (incluidas las herramientas) cuenta como actividad:
+    // el modelo local no se descarga hasta que termine.
+    let _busy = crate::resources::busy();
     let provider = env.settings.provider;
     let model = model_of(&env.settings);
     let base = native_history(provider, &env.history);

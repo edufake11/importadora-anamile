@@ -2,6 +2,7 @@
 // reacciones de Canela. El panel coordina todo, incluso si está oculto.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  api,
   onTtsState,
   onVoiceState,
   onVoiceToggle,
@@ -141,6 +142,8 @@ export function useVoice(
     if (phase === "processing") return;
     try {
       await voice.start();
+      // Mientras hablas, el modelo local empieza a cargarse (modo Equilibrado).
+      void api.aiPreload().catch(() => undefined);
       setPhase("listening");
       void sendMood({ mood: "listen", bubble: "🎙 Te escucho…" });
     } catch (e) {

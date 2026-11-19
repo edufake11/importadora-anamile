@@ -10,6 +10,7 @@ import {
 } from "../lib/ipc";
 import { MemoryManager } from "./MemoryManager";
 import { OllamaSettings } from "./OllamaSettings";
+import { PerformanceSettings } from "./PerformanceSettings";
 import { RoutineManager } from "./RoutineManager";
 import { VoiceSettings } from "./VoiceSettings";
 
@@ -342,6 +343,8 @@ export function SettingsView({
       </section>
 
       <VoiceSettings form={form} set={set} keys={keys} onSaved={onSaved} />
+
+      <PerformanceSettings form={form} set={set} />
 
       <section>
         <h3>Canela</h3>

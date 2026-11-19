@@ -1186,3 +1186,56 @@ details.fold summary {
   background: transparent;
   border: 1px solid var(--muted);
 }
+
+.mem-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.mem-bar-label,
+.mem-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.mem-line span:last-child,
+.mem-bar-label span:last-child {
+  color: var(--muted);
+  text-align: right;
+}
+.mem-bar-track {
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.mem-bar-fill {
+  height: 100%;
+  background: var(--muted);
+}
+.mem-bar-fill.high {
+  background: var(--text);
+}
+.mem-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.mem-table th,
+.mem-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.mem-events {
+  margin: 6px 0;
+  padding-left: 16px;
+  font-size: 12px;
+  display: grid;
+  gap: 4px;
+}

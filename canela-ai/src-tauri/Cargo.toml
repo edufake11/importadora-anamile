@@ -32,13 +32,22 @@ xcap = "0.9"
 base64 = "0.23.1"
 pdf-extract = { version = "0.12.1", default-features = false }
 url = "2"
+# Reconocimiento de voz local (whisper.cpp, licencia MIT; enlaces Unlicense).
+whisper-rs = { version = "0.16", optional = true }
+sha2 = "0.10"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Llavero del sistema: Administrador de credenciales en Windows.
+[features]
+default = ["local-stt"]
+# Compila whisper.cpp dentro de Canela (CPU). Sin esta función la voz local
+# no está disponible (útil para comprobaciones rápidas de tipos).
+local-stt = ["dep:whisper-rs"]
+
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Power"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Power", "Win32_System_ProcessStatus"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
@@ -57,6 +66,12 @@ strip = true
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
 
 # Compilaciones de desarrollo más ligeras en disco (no afecta al instalador).
+# whisper.cpp se compila en modo «Release» aunque Canela esté en desarrollo
+# (si no, el reconocimiento de voz sería ~10 veces más lento).
+[profile.dev.build-override]
+debug-assertions = false
+opt-level = 2
+
 [profile.dev]
 debug = "line-tables-only"
 
