@@ -1189,15 +1189,11 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<ToolOutput, String
 }
 
 fn web_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(concat!(
-            "canela-ai/",
-            env!("CARGO_PKG_VERSION"),
-            " (asistente personal de escritorio)"
-        ))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default()
+    web::client(concat!(
+        "canela-ai/",
+        env!("CARGO_PKG_VERSION"),
+        " (asistente personal de escritorio)"
+    ))
 }
 
 async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {

@@ -63,7 +63,7 @@ Mensaje ─► Enrutador (modelo, privacidad, presupuesto)
 
 ## 5. Herramientas nuevas (investigación y sistema)
 
-- `buscar_wikipedia` (API pública de Wikipedia) y `leer_pagina`: sólo `http/https` públicos; se rechazan `localhost`, redes privadas (10.x, 192.168.x, 172.16–31.x, 169.254.x, `::1`, `fc00::/7`, `.local`, `.internal`), direcciones con usuario/contraseña y, tras redirecciones, también la dirección final. Máx. 2 MB y 15 s; se quita el HTML (scripts, estilos) y se recorta a 20 000 caracteres. El contenido se trata como **externo** (no puede dar órdenes) y la consulta se revisa con el filtro de privacidad. Piden confirmación salvo que hayas activado abrir webs sin preguntar.
+- `buscar_wikipedia` (API pública de Wikipedia) y `leer_pagina`: sólo `http/https` públicos; se rechazan `localhost`, redes privadas (10.x, 192.168.x, 172.16–31.x, 169.254.x, `::1`, `fc00::/7`, `.local`, `.internal`), direcciones con usuario/contraseña; la comprobación se repite en cada redirección (máx. 5) y **al resolver el nombre**: un dominio público que apunte a tu red local (técnica de «DNS rebinding») también se bloquea. Máx. 2 MB y 15 s; se quita el HTML (scripts, estilos) y se recorta a 20 000 caracteres. El contenido se trata como **externo** (no puede dar órdenes) y la consulta se revisa con el filtro de privacidad. Piden confirmación salvo que hayas activado abrir webs sin preguntar.
 - `diagnostico_memoria`: lee la última muestra del diagnóstico de la v0.5 (RAM, commit, procesos por nombre, sin rutas) y los últimos eventos. Sólo lectura.
 
 ## 6. Evaluación (automática, Linux, modelos simulados)
@@ -79,7 +79,7 @@ Mensaje ─► Enrutador (modelo, privacidad, presupuesto)
 | «Ya creé la tarea» sin acción → aviso | ✔ |
 | Fuente citada sin consultar → aviso | ✔ |
 | Datos internos de otro agente no se comparten; los del mismo, sí | ✔ |
-| Seguridad de `leer_pagina` (12 direcciones peligrosas rechazadas) | ✔ |
+| Seguridad de `leer_pagina` (15 direcciones peligrosas rechazadas; nombre que resuelve a 127.0.0.1 bloqueado) | ✔ |
 | **En la app (Linux, Ollama simulado)**: «crea una tarea…» → «asistente de productividad», 14 herramientas enviadas, «✓ Crear tarea · comprobado», «Qué hice: 1 acción hecha · 1 comprobada» | ✔ |
 | **En la app**: respuesta que dice «ya guardé el informe» sin acción → «agente de archivos» + aviso visible | ✔ |
 

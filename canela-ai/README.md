@@ -241,7 +241,7 @@ npm run tauri build      # instaladores en src-tauri\target\release\bundle\{nsis
 ```powershell
 npm run typecheck        # TypeScript estricto
 npm test                 # 57 pruebas de interfaz
-cd src-tauri; cargo test # 174 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
+cd src-tauri; cargo test # 175 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
                          # voz (detector de fin de frase, WAV), visión, PDF/Word,
                          # defensa contra instrucciones inyectadas, planes,
                          # multimedia, información del sistema y Ollama (streaming

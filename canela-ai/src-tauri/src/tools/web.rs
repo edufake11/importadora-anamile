@@ -24,24 +24,85 @@ pub fn public_url(raw: &str) -> Result<reqwest::Url, String> {
         return Err("No leo direcciones con usuario o contraseña.".into());
     }
     let host = url.host_str().ok_or("La dirección no tiene servidor.")?.to_lowercase();
-    let private = |ip: IpAddr| match ip {
-        IpAddr::V4(v) => {
-            v.is_loopback() || v.is_private() || v.is_link_local() || v.is_unspecified() || v.is_broadcast() || v.octets()[0] == 0
-        }
-        IpAddr::V6(v) => {
-            v.is_loopback() || v.is_unspecified() || (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80
-        }
-    };
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal") {
         return Err("Por seguridad no leo direcciones de tu red local.".into());
     }
     if let Ok(ip) = bare.parse::<IpAddr>() {
-        if private(ip) {
+        if is_private(ip) {
             return Err("Por seguridad no leo direcciones de tu red local.".into());
         }
     }
     Ok(url)
+}
+
+/// ¿Es una dirección de la red local, del propio equipo o reservada?
+pub fn is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || v.is_multicast()
+                || o[0] == 0
+                // 100.64.0.0/10 (red compartida de operadores)
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v) => {
+            if let Some(v4) = v.to_ipv4_mapped() {
+                return is_private(IpAddr::V4(v4));
+            }
+            v.is_loopback()
+                || v.is_unspecified()
+                || v.is_multicast()
+                || (v.segments()[0] & 0xfe00) == 0xfc00
+                || (v.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Resolución DNS que descarta direcciones privadas: un nombre público que
+/// apunte a tu red local (p. ej. «rebinding» de DNS) no sirve para entrar.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|a| !is_private(a.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err(format!("«{host}» apunta a una dirección de tu red local o no existe; por seguridad no la abro.").into());
+            }
+            let it: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(it)
+        })
+    }
+}
+
+/// Cliente HTTP para las herramientas web: sólo direcciones públicas, también
+/// tras redirecciones (máx. 5) y al resolver nombres.
+pub fn client(user_agent: &str) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .connect_timeout(Duration::from_secs(10))
+        .dns_resolver(std::sync::Arc::new(PublicOnly))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("demasiadas redirecciones");
+            }
+            match public_url(attempt.url().as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(e) => attempt.error(e),
+            }
+        }))
+        .build()
+        .unwrap_or_default()
 }
 
 fn decode_entities(s: &str) -> String {
@@ -268,6 +329,9 @@ mod tests {
             "http://172.16.0.1/",
             "http://169.254.169.254/latest/meta-data",
             "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://100.64.1.1/",
+            "http://0.0.0.0/",
             "http://router.local/",
             "file:///etc/passwd",
             "ftp://example.com/x",
@@ -276,6 +340,17 @@ mod tests {
         ] {
             assert!(public_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn names_resolving_to_private_addresses_are_blocked() {
+        use reqwest::dns::Resolve;
+        use std::str::FromStr;
+        let r = PublicOnly.resolve(reqwest::dns::Name::from_str("localhost").unwrap()).await;
+        assert!(r.is_err(), "localhost resuelve a 127.0.0.1 y debe bloquearse");
+        assert!(is_private("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(!is_private("8.8.8.8".parse().unwrap()));
+        assert!(!is_private("2606:4700::1111".parse().unwrap()));
     }
 
     #[test]
