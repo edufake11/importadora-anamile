@@ -590,6 +590,18 @@ kbd {
 .tool-why {
   color: var(--muted);
 }
+.tool-check {
+  color: var(--text-2);
+}
+.tool-check.bad {
+  color: var(--text);
+  font-weight: 600;
+}
+.action-summary {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
 .confirm {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);

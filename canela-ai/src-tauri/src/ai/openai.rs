@@ -261,6 +261,7 @@ mod tests {
                 provider: None,
                 transcript: None,
                 images: vec![],
+                agent: None,
             },
             ChatMessage {
                 role: Role::Assistant,
@@ -268,6 +269,7 @@ mod tests {
                 provider: Some(ProviderId::Openai),
                 transcript: None,
                 images: vec![],
+                agent: None,
             },
         ]);
         let tools = vec![ToolDef {

@@ -736,6 +736,7 @@ mod tests {
                 provider: None,
                 transcript: None,
                 images: vec![img.clone()],
+                agent: None,
             },
             ChatMessage {
                 role: Role::Assistant,
@@ -743,6 +744,7 @@ mod tests {
                 provider: Some(ProviderId::Anthropic),
                 transcript: Some(vec![json!({"role":"assistant","content":[{"type":"thinking"}]})]),
                 images: vec![],
+                agent: None,
             },
         ];
         let n = native_messages(&h);

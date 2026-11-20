@@ -11,15 +11,17 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │ fullscreen.rs   [Windows] detecta juegos/videos a pantalla completa → oculta a Canela          │
 │ commands.rs     comandos IPC: ajustes, claves, chat, confirmaciones, trabajos, carpetas        │
 │ data_cmds.rs    comandos de memoria, tareas, actividad y conversaciones                        │
-│ db.rs           SQLite local (migraciones v1–v3): memories (+caducidad), tasks, activity,     │
-│                 conversations, doc_files + doc_chunks (FTS5), routines                         │
+│ db.rs           SQLite local (migraciones v1–v5): memories (+caducidad), tasks, activity,     │
+│                 conversations, doc_files + doc_chunks (FTS5), routines, api_spend (gasto)     │
 │ voice/          vad.rs (fin de frase), audio.rs (cpal, remuestreo, reproducción),              │
 │                 mod.rs (grabar → WAV en memoria → transcribir; voz de OpenAI)                  │
 │ vision.rs       capturas (xcap), redimensionado, ventanas sensibles excluidas                  │
 │ vision_cmds.rs  ocultar mascota/panel, capturar, vista previa, recorte, adjuntos               │
 │ media.rs        teclas multimedia (lista fija) · system.rs  estado del equipo (sysinfo)       │
 │ memdiag.rs      lectura de memoria (RAM, commit, VRAM, procesos) y detector de anomalías      │
-│ router.rs       enrutador de modelos (v0.6 dev): complejidad, privacidad, costo, límite     │
+│ router.rs       enrutador de modelos (v0.6 dev): complejidad, candidatos, reservas, gasto   │
+│ privacy.rs      detector de datos sensibles (v0.6.1): Luhn, IBAN, DNI, claves, entropía      │
+│ agents.rs       agentes (v0.7 dev): perfiles, orquestador, verificación, informe «Qué hice» │
 │ resources.rs    modos Equilibrado/Ahorro, descarga por inactividad, liberar memoria, registro │
 │ voice/local.rs  whisper.cpp en proceso + Piper por frase + catálogo verificado por SHA-256   │
 │ voice/wake.rs   «Hola, Canela»: segmentador + whisper tiny + detección de la frase           │
@@ -38,6 +40,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │   pricing.rs      uso de tokens → costo aproximado; ocultar claves en mensajes de error        │
 │ tools/          herramientas                                                                   │
 │   mod.rs          definiciones, validación (prepare), permisos y ejecución (run)               │
+│   web.rs          (v0.7) Wikipedia y lectura de páginas públicas (sin red local, 2 MB, 15 s)   │
 │   files.rs        archivos limitados a carpetas autorizadas                                    │
 │   apps.rs         abrir apps del menú Inicio, webs http(s) y rutas                             │
 └───────────────▲────────────────────────────────────────────────────▲────────────────────────────┘

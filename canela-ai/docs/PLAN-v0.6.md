@@ -50,7 +50,7 @@ Mensaje ─► [Enrutador] ─► elige modelo (local / externo con permiso) y l
 | Versión | Módulo | Qué aporta | Cómo se verifica |
 |---|---|---|---|
 | **v0.6** | **Enrutador de modelos + límite de gasto** | Lo sencillo se queda en Qwen3 (gratis, privado); lo difícil propone Claude/ChatGPT **con tu permiso y su costo estimado**; datos privados nunca salen; límite mensual real | Pruebas unitarias de la política, conjunto etiquetado de mensajes (exactitud del clasificador), registro de gasto, pruebas de bloqueo |
-| v0.7 | Orquestador de agentes | Perfiles programador / productividad / archivos / sistemas (el investigador llega en v0.9) con herramientas acotadas | Pruebas: cada perfil sólo ve sus herramientas; el orquestador elige bien en un conjunto etiquetado |
+| v0.7 | Orquestador de agentes | Perfiles programador / investigador (Wikipedia y páginas públicas) / productividad / archivos / sistemas con herramientas acotadas, verificación e informe — ver [PLAN-v0.7](PLAN-v0.7.md) | Pruebas: cada perfil sólo ve sus herramientas; el orquestador elige bien en un conjunto etiquetado nuevo |
 | v0.8 | Verificación y recuperación | Tras cada paso, comprobaciones objetivas (¿se creó el archivo?, ¿compila?, ¿pasan las pruebas?); reintento acotado de errores recuperables; resumen final | Planes simulados con fallos inyectados |
 | v0.9 | Memoria 2 | Búsqueda semántica con un modelo local de *embeddings* (descarga con permiso), duplicados y contradicciones, memoria de proyectos | Conjunto de consultas con respuestas esperadas |
 | v0.10 | Investigador | Búsqueda web con fuentes citadas (proveedor a elegir), contenido tratado como externo | Respuestas con enlaces comprobables; nada se ejecuta por lo que diga una web |

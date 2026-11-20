@@ -36,6 +36,7 @@ import {
   newId,
   type PendingConfirm,
   toWire,
+  actionSummary,
   type UiMessage,
   wireSize,
 } from "./chatModel";
@@ -473,6 +474,27 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
                 ];
             return { ...m, tools };
           });
+          break;
+        case "agent":
+          patch(reply.id, (m) => ({
+            ...m,
+            agent: ev.id,
+            agentName: ev.name,
+            agentReason: ev.reason,
+          }));
+          break;
+        case "toolVerified":
+          patch(reply.id, (m) => ({
+            ...m,
+            tools: (m.tools ?? []).map((t) =>
+              t.callId === ev.callId
+                ? { ...t, verified: ev.ok, verifyDetail: ev.detail }
+                : t,
+            ),
+          }));
+          break;
+        case "report":
+          patch(reply.id, (m) => ({ ...m, actions: ev.actions }));
           break;
         case "confirmRequest":
           patch(reply.id, (m) => ({
@@ -1002,6 +1024,12 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               {m.role === "assistant" && (
                 <div className="msg-author">
                   Canela
+                  {m.agent && m.agent !== "general" && m.agentName && (
+                    <span className="cost" title={m.agentReason}>
+                      {" "}
+                      · {m.agentName}
+                    </span>
+                  )}
                   {m.provider === "ollama" && (
                     <span
                       className="cost"
@@ -1057,10 +1085,27 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
                       {t.summary && (
                         <span className="tool-why"> — {t.summary}</span>
                       )}
+                      {t.verified !== undefined && (
+                        <span
+                          className={`tool-check ${t.verified ? "" : "bad"}`}
+                          title={t.verifyDetail}
+                        >
+                          {t.verified
+                            ? " · comprobado"
+                            : " · la comprobación falló"}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>
               )}
+              {m.status !== "streaming" &&
+                m.actions &&
+                m.actions.length > 0 && (
+                  <div className="action-summary">
+                    {actionSummary(m.actions)}
+                  </div>
+                )}
               {m.confirms?.map((c) => (
                 <ConfirmCard
                   key={c.confirmId}

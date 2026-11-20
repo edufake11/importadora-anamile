@@ -1,11 +1,21 @@
 // Modelo de datos del chat (puro, sin React) para poder probarlo.
-import type { ImageData, ProviderId, Usage, WireMessage } from "../lib/ipc";
+import type {
+  ActionRecord,
+  AgentId,
+  ImageData,
+  ProviderId,
+  Usage,
+  WireMessage,
+} from "../lib/ipc";
 
 export interface ToolActivity {
   callId: string;
   label: string;
   status: "running" | "ok" | "error";
   summary?: string;
+  /** v0.7: resultado de la comprobación objetiva (si la acción la admite). */
+  verified?: boolean;
+  verifyDetail?: string;
 }
 
 export interface PendingConfirm {
@@ -41,6 +51,12 @@ export interface UiMessage {
   summary?: boolean;
   usage?: Usage;
   costUsd?: number | null;
+  /** v0.7: agente que respondió y por qué se eligió. */
+  agent?: AgentId;
+  agentName?: string;
+  agentReason?: string;
+  /** v0.7: lo que hizo de verdad (registrado por el backend). */
+  actions?: ActionRecord[];
 }
 
 export interface Conversation {
@@ -164,8 +180,13 @@ export function toWire(messages: UiMessage[]): WireMessage[] {
             text: m.text,
             provider: m.provider,
             transcript: m.transcript,
+            ...(m.agent ? { agent: m.agent } : {}),
           }
-        : { role: "assistant", text: m.text.trim() },
+        : {
+            role: "assistant",
+            text: m.text.trim(),
+            ...(m.agent ? { agent: m.agent } : {}),
+          },
     );
   }
   return out;
@@ -215,14 +236,12 @@ export function compactWith(
   summary: string,
   id: string,
 ): UiMessage[] {
-  const recent = messages
-    .slice(-KEEP_RECENT)
-    .map((m) => ({
-      ...m,
-      transcript: undefined,
-      images: undefined,
-      confirms: undefined,
-    }));
+  const recent = messages.slice(-KEEP_RECENT).map((m) => ({
+    ...m,
+    transcript: undefined,
+    images: undefined,
+    confirms: undefined,
+  }));
   return [
     {
       id,
@@ -240,4 +259,31 @@ export function conversationCost(messages: UiMessage[]): number | null {
     .map((m) => m.costUsd)
     .filter((c): c is number => typeof c === "number");
   return costs.length ? costs.reduce((a, b) => a + b, 0) : null;
+}
+
+/**
+ * v0.7: resumen de una línea de lo que se hizo de verdad en una respuesta
+ * (sólo con lo que registró el backend; nunca con lo que dijo el modelo).
+ */
+export function actionSummary(actions: ActionRecord[] | undefined): string {
+  if (!actions || actions.length === 0) return "";
+  const done = actions.filter((a) => a.status === "ok");
+  const verified = done.filter((a) => a.verified === true).length;
+  const failedCheck = done.filter((a) => a.verified === false).length;
+  const notDone = actions.length - done.length;
+  const parts: string[] = [];
+  parts.push(
+    done.length === 1 ? "1 acción hecha" : `${done.length} acciones hechas`,
+  );
+  if (verified > 0)
+    parts.push(verified === 1 ? "1 comprobada" : `${verified} comprobadas`);
+  if (failedCheck > 0)
+    parts.push(
+      failedCheck === 1
+        ? "1 no superó la comprobación"
+        : `${failedCheck} no superaron la comprobación`,
+    );
+  if (notDone > 0)
+    parts.push(notDone === 1 ? "1 no se hizo" : `${notDone} no se hicieron`);
+  return `Qué hice: ${parts.join(" · ")}`;
 }

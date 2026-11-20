@@ -3,6 +3,7 @@
 //! que el modelo termine, con un límite de pasos.
 
 use super::{model_of, native_history, tool_results, ChatMessage, StreamEvent, ToolCall, ToolResult};
+use crate::agents::ActionRecord;
 use crate::settings::Settings;
 use crate::tools::{self, Permission, ToolCtx};
 use serde_json::Value;
@@ -50,29 +51,52 @@ pub struct AgentEnv {
     /// Freno de gasto: máximo (US$) que puede costar esta respuesta, con
     /// tokens reales. `None` = sin límite (modelo local).
     pub max_cost_usd: Option<f64>,
+    /// v0.7: agente especializado (None = general, todas las herramientas).
+    pub agent: Option<&'static crate::agents::Profile>,
 }
 
 type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 
 /// Ejecuta una llamada. `tainted` = ya se leyó contenido externo en esta respuesta.
 /// Devuelve el resultado y si trae contenido externo.
-async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, tainted: bool) -> (ToolResult, bool) {
-    let fail = |text: String| {
+async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, tainted: bool) -> (ToolResult, bool, ActionRecord) {
+    let record = |status: &str, label: &str, verified: Option<bool>, detail: Option<String>| ActionRecord {
+        tool: call.name.clone(),
+        label: label.to_string(),
+        status: status.to_string(),
+        verified,
+        detail,
+    };
+    let fail = |text: String, status: &str| {
         (
             ToolResult {
                 id: call.id.clone(),
                 name: call.name.clone(),
-                text,
+                text: text.clone(),
                 is_error: true,
                 images: vec![],
             },
             false,
+            record(status, &call.name, None, Some(text)),
         )
     };
     let input = match &call.input {
         Ok(v) => v.clone(),
-        Err(e) => return fail(e.clone()),
+        Err(e) => return fail(e.clone(), "error"),
     };
+    // v0.7: cada agente sólo puede usar sus herramientas (control en el backend).
+    if let Some(agent) = env.agent.filter(|a| !a.allows(&call.name)) {
+        let msg = format!(
+            "La {} no tiene permiso para usar «{}». No se ejecutó. Dile al usuario qué haría falta.",
+            agent.name, call.name
+        );
+        emit(StreamEvent::ToolEnd {
+            call_id: call.id.clone(),
+            ok: false,
+            summary: format!("No permitido para la {}", agent.name),
+        });
+        return fail(msg, "no permitida");
+    }
     let mut prepared = match tools::prepare_async(ctx, &call.name, &input).await {
         Ok(p) => p,
         Err(e) => {
@@ -81,7 +105,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 ok: false,
                 summary: e.clone(),
             });
-            return fail(e);
+            return fail(e, "error");
         }
     };
     emit(StreamEvent::ToolStart {
@@ -128,16 +152,35 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 ok: false,
                 summary: "No autorizado".into(),
             });
-            return fail("El usuario NO autorizó esta acción; no se realizó. No la repitas salvo que te lo pida.".into());
+            return fail(
+                "El usuario NO autorizó esta acción; no se realizó. No la repitas salvo que te lo pida.".into(),
+                "denegada",
+            );
         }
     }
     if let Some((title, steps)) = prepared.take_plan() {
+        // Un plan o rutina tampoco puede usar herramientas ajenas al agente.
+        if let Some(agent) = env.agent {
+            if let Some(bad) = steps.iter().find(|st| !agent.allows(&st.herramienta)) {
+                let msg = format!(
+                    "El plan usa «{}», que la {} no tiene permitido. No se ejecutó.",
+                    bad.herramienta, agent.name
+                );
+                emit(StreamEvent::ToolEnd {
+                    call_id: call.id.clone(),
+                    ok: false,
+                    summary: msg.clone(),
+                });
+                return fail(msg, "no permitida");
+            }
+        }
         let (text, untrusted) = run_plan(env, ctx, &call.id, &title, &steps, emit).await;
         emit(StreamEvent::ToolEnd {
             call_id: call.id.clone(),
             ok: true,
-            summary: label,
+            summary: label.clone(),
         });
+        let first_line = text.lines().next().unwrap_or("").to_string();
         return (
             ToolResult {
                 id: call.id.clone(),
@@ -147,6 +190,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 images: vec![],
             },
             untrusted,
+            record("ok", &label, None, Some(first_line)),
         );
     }
     match tools::run(ctx, prepared).await {
@@ -154,8 +198,18 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
             emit(StreamEvent::ToolEnd {
                 call_id: call.id.clone(),
                 ok: true,
-                summary: label,
+                summary: label.clone(),
             });
+            // v0.7: comprobación objetiva del efecto (si es comprobable).
+            let check = crate::agents::verify(ctx, &call.name, &input, &out.text);
+            if let Some(c) = &check {
+                emit(StreamEvent::ToolVerified {
+                    call_id: call.id.clone(),
+                    ok: c.ok,
+                    detail: c.detail.clone(),
+                });
+            }
+            let rec = record("ok", &label, check.as_ref().map(|c| c.ok), check.map(|c| c.detail));
             (
                 ToolResult {
                     id: call.id.clone(),
@@ -165,6 +219,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                     images: out.images,
                 },
                 out.untrusted,
+                rec,
             )
         }
         Err(e) => {
@@ -173,7 +228,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 ok: false,
                 summary: e.clone(),
             });
-            fail(e)
+            fail(e, "error")
         }
     }
 }
@@ -292,6 +347,41 @@ async fn run_plan(env: &AgentEnv, ctx: &ToolCtx, call_id: &str, title: &str, ste
     )
 }
 
+/// Resumen final (v0.7): qué se hizo, qué se comprobó y avisos honestos.
+fn final_report(actions: &[ActionRecord], answer: &str, fetched: &str) -> (Vec<String>, Option<String>) {
+    let mut warnings = Vec::new();
+    let did_something = actions.iter().any(|a| a.status == "ok");
+    if !did_something && crate::agents::claims_action(answer) {
+        warnings.push(
+            "Canela dijo haber hecho algo, pero en esta respuesta no ejecutó ninguna acción. Pídeselo de nuevo si lo necesitas."
+                .to_string(),
+        );
+    }
+    for a in actions.iter().filter(|a| a.verified == Some(false)) {
+        warnings.push(format!(
+            "La comprobación de «{}» falló: {}.",
+            a.label,
+            a.detail.clone().unwrap_or_default()
+        ));
+    }
+    let uncited = crate::agents::uncited_sources(answer, fetched);
+    if !uncited.is_empty() {
+        warnings.push(format!(
+            "Cita fuentes que no consultó en esta respuesta: {}. Compruébalas antes de fiarte.",
+            uncited.join(", ")
+        ));
+    }
+    let notice = (!warnings.is_empty()).then(|| format!("⚠ {}", warnings.join(" ")));
+    (warnings, notice)
+}
+
+fn merge_notice(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(format!("{x}\n{y}")),
+        (x, y) => x.or(y),
+    }
+}
+
 /// Ejecuta una respuesta completa. Siempre termina con Done o Error.
 pub async fn run(env: AgentEnv, emit: Emit) {
     // Toda la respuesta (incluidas las herramientas) cuenta como actividad:
@@ -299,12 +389,79 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     let _busy = crate::resources::busy();
     let provider = env.settings.provider;
     let model = model_of(&env.settings);
-    let base = native_history(provider, &env.history);
-    let defs = if env.tools.is_some() { tools::definitions() } else { vec![] };
+    let agent_id = env.agent.map(|a| a.id);
+    let agent_name = env.agent.map(|a| a.name).unwrap_or("Canela").to_string();
+    // Contexto compartido controlado: de las respuestas de OTRO agente sólo
+    // pasa el texto final, no los datos internos de sus herramientas.
+    let history: Vec<ChatMessage> = env
+        .history
+        .iter()
+        .cloned()
+        .map(|mut m| {
+            if m.agent.is_some() && m.agent != agent_id {
+                m.transcript = None;
+            }
+            m
+        })
+        .collect();
+    let base = native_history(provider, &history);
+    // Cada agente sólo VE sus herramientas.
+    let defs: Vec<_> = if env.tools.is_some() {
+        tools::definitions()
+            .into_iter()
+            .filter(|d| env.agent.is_none_or(|a| a.allows(d.name)))
+            .collect()
+    } else {
+        vec![]
+    };
     let mut transcript: Vec<Value> = Vec::new();
     let mut tainted = false;
     let mut usage = super::pricing::Usage::default();
     let mut last_model = None;
+    let mut actions: Vec<ActionRecord> = Vec::new();
+    let mut fetched = String::new();
+    // Texto visible de la respuesta (para el informe final).
+    let answer = Arc::new(Mutex::new(String::new()));
+    let sink = answer.clone();
+    let outer = emit.clone();
+    let emit: Emit = Arc::new(move |e| {
+        if let StreamEvent::Delta { text } = &e {
+            sink.lock().unwrap().push_str(text);
+        }
+        outer(e)
+    });
+    let finish = |emit: &Emit, actions: &[ActionRecord], fetched: &str, done: StreamEvent| {
+        let text = answer.lock().unwrap().clone();
+        let (warnings, notice) = final_report(actions, &text, fetched);
+        if !actions.is_empty() || !warnings.is_empty() {
+            emit(StreamEvent::Report {
+                agent: agent_name.clone(),
+                actions: actions.to_vec(),
+                warnings,
+            });
+        }
+        let done = match done {
+            StreamEvent::Done {
+                stop_reason,
+                model,
+                notice: n,
+                provider,
+                transcript,
+                usage,
+                cost_usd,
+            } => StreamEvent::Done {
+                stop_reason,
+                model,
+                notice: merge_notice(n, notice),
+                provider,
+                transcript,
+                usage,
+                cost_usd,
+            },
+            other => other,
+        };
+        emit(done);
+    };
 
     for step in 0..MAX_STEPS {
         let mut messages = base.clone();
@@ -329,38 +486,53 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         let ctx = match (&env.tools, outcome.tool_calls.is_empty()) {
             (Some(_), false) if over_budget => {
                 // Seguir llamando al modelo superaría el límite de gasto.
-                emit(StreamEvent::Done {
-                    stop_reason: Some("budget".into()),
-                    model: last_model,
-                    notice: Some(format!(
-                        "Me detuve para no superar tu límite de gasto mensual (esta respuesta ya costó ≈ {:.3} US$ según los tokens que informó el proveedor). Súbelo en Ajustes si quieres que continúe.",
-                        spent_here.unwrap_or(0.0)
-                    )),
-                    provider,
-                    transcript,
-                    usage,
-                    cost_usd: spent_here,
-                });
+                finish(
+                    &emit,
+                    &actions,
+                    &fetched,
+                    StreamEvent::Done {
+                        stop_reason: Some("budget".into()),
+                        model: last_model,
+                        notice: Some(format!(
+                            "Me detuve para no superar tu límite de gasto mensual (esta respuesta ya costó ≈ {:.3} US$ según los tokens que informó el proveedor). Súbelo en Ajustes si quieres que continúe.",
+                            spent_here.unwrap_or(0.0)
+                        )),
+                        provider,
+                        transcript,
+                        usage,
+                        cost_usd: spent_here,
+                    },
+                );
                 return;
             }
             (Some(ctx), false) => ctx.clone(),
             _ => {
-                emit(StreamEvent::Done {
-                    stop_reason: outcome.stop_reason,
-                    model: last_model,
-                    notice: outcome.notice,
-                    provider,
-                    transcript,
-                    usage,
-                    cost_usd: super::pricing::price(provider, &model).map(|p| super::pricing::cost(p, &usage)),
-                });
+                finish(
+                    &emit,
+                    &actions,
+                    &fetched,
+                    StreamEvent::Done {
+                        stop_reason: outcome.stop_reason,
+                        model: last_model,
+                        notice: outcome.notice,
+                        provider,
+                        transcript,
+                        usage,
+                        cost_usd: spent_here,
+                    },
+                );
                 return;
             }
         };
         let mut results = Vec::new();
         for call in &outcome.tool_calls {
-            let (mut result, untrusted) = execute(&env, &ctx, call, &emit, tainted).await;
+            let (mut result, untrusted, rec) = execute(&env, &ctx, call, &emit, tainted).await;
             tainted |= untrusted;
+            actions.push(rec);
+            if !result.is_error && matches!(call.name.as_str(), "buscar_wikipedia" | "leer_pagina") {
+                fetched.push_str(&result.text);
+                fetched.push('\n');
+            }
             // Con un modelo externo, lo que leen las herramientas (archivos,
             // documentos) se revisa antes de enviarlo: los secretos no salen.
             if provider.is_cloud() {
@@ -373,15 +545,20 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         }
         transcript.extend(tool_results(provider, &results));
         if step + 1 == MAX_STEPS {
-            emit(StreamEvent::Done {
-                stop_reason: Some("max_steps".into()),
-                model: last_model,
-                notice: Some("Me detuve tras varios pasos seguidos para no excederme. Dime si quieres que continúe.".into()),
-                provider,
-                transcript,
-                usage,
-                cost_usd: super::pricing::price(provider, &model).map(|p| super::pricing::cost(p, &usage)),
-            });
+            finish(
+                &emit,
+                &actions,
+                &fetched,
+                StreamEvent::Done {
+                    stop_reason: Some("max_steps".into()),
+                    model: last_model,
+                    notice: Some("Me detuve tras varios pasos seguidos para no excederme. Dime si quieres que continúe.".into()),
+                    provider,
+                    transcript,
+                    usage,
+                    cost_usd: spent_here,
+                },
+            );
             return;
         }
         emit(StreamEvent::Delta { text: "\n\n".into() });

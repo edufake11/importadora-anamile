@@ -251,7 +251,20 @@ pub async fn chat_send(
     };
 
     let user_name = user_name.unwrap_or_else(|| settings.user_name.clone());
-    let system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
+    // v0.7: el orquestador elige el agente (perfil) para este mensaje.
+    let previous_agent = messages.iter().rev().find(|m| m.role == Role::Assistant).and_then(|m| m.agent);
+    let selection = crate::agents::select(&last.text, previous_agent);
+    let profile = crate::agents::profile(selection.agent);
+    let mut system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
+    if !profile.prompt.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(profile.prompt);
+    }
+    let _ = on_event.send(StreamEvent::Agent {
+        id: selection.agent,
+        name: selection.name.clone(),
+        reason: selection.reason.clone(),
+    });
     let notify_app = app.clone();
     let tools = ToolCtx {
         db: state.db.clone(),
@@ -277,6 +290,7 @@ pub async fn chat_send(
         tools: Some(Arc::new(tools)),
         confirms: state.confirms.clone(),
         max_cost_usd,
+        agent: Some(profile),
     };
 
     let channel = on_event.clone();

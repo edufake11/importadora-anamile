@@ -239,6 +239,7 @@ mod tests {
                 provider: None,
                 transcript: None,
                 images: vec![],
+                agent: None,
             })
             .collect();
         let t = plain_transcript(&msgs, 1000);

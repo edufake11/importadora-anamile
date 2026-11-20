@@ -394,6 +394,7 @@ mod tests {
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }
     }
 
@@ -460,6 +461,7 @@ mod tests {
             provider: Some(ProviderId::Anthropic),
             transcript: Some(transcript.clone()),
             images: vec![],
+            agent: None,
         };
         let msgs = native_messages(&[user("abre algo"), a.clone(), user("gracias")]);
         assert_eq!(msgs.len(), 5);
@@ -598,6 +600,7 @@ mod tests {
             provider: None,
             transcript: None,
             images: vec![img()],
+            agent: None,
         };
         let msgs = native_messages(&[u]);
         assert_eq!(msgs[0]["content"][0]["type"], "image");

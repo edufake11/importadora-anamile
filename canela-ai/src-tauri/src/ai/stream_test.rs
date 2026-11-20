@@ -178,10 +178,12 @@ async fn agent_runs_tool_and_continues() {
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms: Arc::new(Confirmations::default()),
         max_cost_usd: None,
+        agent: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -265,10 +267,12 @@ async fn claude_agent_respects_denied_confirmation() {
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
         max_cost_usd: None,
+        agent: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -358,10 +362,12 @@ async fn injected_instructions_require_confirmation() {
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
         max_cost_usd: None,
+        agent: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -450,10 +456,12 @@ async fn plan_runs_steps_and_rechecks_destructive_ones() {
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
         max_cost_usd: None,
+        agent: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -530,10 +538,12 @@ fn ollama_env(base: &str, model: &str, db: Arc<Db>, confirms: Arc<Confirmations>
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms,
         max_cost_usd: None,
+        agent: None,
     }
 }
 
@@ -725,10 +735,12 @@ fn openai_env(root: &std::path::Path, db: Arc<Db>, text: &str, max_cost_usd: Opt
             provider: None,
             transcript: None,
             images: vec![],
+            agent: None,
         }],
         tools: Some(Arc::new(tools)),
         confirms: Arc::new(Confirmations::default()),
         max_cost_usd,
+        agent: None,
     }
 }
 
@@ -800,4 +812,206 @@ async fn secrets_read_by_tools_are_not_sent_to_external_models() {
     assert!(!b[1].contains("Sup3rGat0Secreto"), "la contraseña no salió del equipo");
     assert!(b[1].contains("omitido por privacidad"), "{}", &b[1][..b[1].len().min(400)]);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ------------------------------------------------------------ v0.7 agentes
+
+fn ollama_final(m: &str, text: &str) -> String {
+    use serde_json::json;
+    ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":text},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":100,"eval_count":10}),
+    ])
+}
+
+fn ollama_tool(m: &str, name: &str, args: serde_json::Value) -> String {
+    use serde_json::json;
+    ndjson(&[
+        json!({"model":m,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":name,"arguments":args}}]},"done":false}),
+        json!({"model":m,"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":100,"eval_count":10}),
+    ])
+}
+
+fn report_of(evs: &[StreamEvent]) -> Option<(Vec<crate::agents::ActionRecord>, Vec<String>)> {
+    evs.iter().find_map(|e| match e {
+        StreamEvent::Report { actions, warnings, .. } => Some((actions.clone(), warnings.clone())),
+        _ => None,
+    })
+}
+
+/// La investigadora sólo VE sus herramientas y, si el modelo intenta usar
+/// otra (crear una tarea), el backend lo rechaza y lo informa.
+#[tokio::test]
+async fn agent_only_sees_and_can_only_use_its_tools() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let r1 = ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "intrusa"}));
+    let r2 = ollama_final(m, "No puedo crear tareas desde aquí.");
+    let (url, bodies) = serve(vec![("200 OK", r1), ("200 OK", r2)]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "investiga y crea tarea");
+    env.agent = Some(profile(AgentId::Investigador));
+    let evs = run_collect(env, true).await;
+
+    let b = bodies.lock().unwrap().clone();
+    let first: serde_json::Value = serde_json::from_str(&b[0]).unwrap();
+    let names: Vec<String> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"buscar_wikipedia".to_string()), "{names:?}");
+    assert!(!names.contains(&"crear_tarea".to_string()), "{names:?}");
+    assert!(names.iter().all(|n| profile(AgentId::Investigador).allows(n)));
+    assert!(db.task_list(crate::db::TaskFilter::All).unwrap().is_empty(), "no se creó la tarea");
+    let (actions, _) = report_of(&evs).expect("informe");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].tool, "crear_tarea");
+    assert_eq!(actions[0].status, "no permitida");
+}
+
+/// Productividad crea una tarea: la acción se comprueba en la base de datos y
+/// el informe dice qué se hizo y que quedó verificado.
+#[tokio::test]
+async fn real_actions_are_verified_and_reported() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let r1 = ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Pagar la luz"}));
+    let r2 = ollama_final(m, "Creé la tarea «Pagar la luz».");
+    let (url, _) = serve(vec![("200 OK", r1), ("200 OK", r2)]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "crea tarea pagar la luz");
+    env.agent = Some(profile(AgentId::Productividad));
+    let evs = run_collect(env, true).await;
+
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1);
+    assert!(
+        evs.iter().any(|e| matches!(e, StreamEvent::ToolVerified { ok: true, .. })),
+        "{evs:?}"
+    );
+    let (actions, warnings) = report_of(&evs).expect("informe");
+    assert_eq!(actions[0].status, "ok");
+    assert_eq!(actions[0].verified, Some(true));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    match evs.last() {
+        Some(StreamEvent::Done { notice, .. }) => assert!(notice.is_none(), "{notice:?}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Si el modelo dice «ya la creé» sin ejecutar ninguna herramienta, Canela
+/// lo advierte en vez de dejar que parezca hecho.
+#[tokio::test]
+async fn fake_claims_are_flagged() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let (url, _) = serve(vec![("200 OK", ollama_final(m, "Listo, ya creé la tarea y la guardé."))]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "crea una tarea");
+    env.agent = Some(profile(AgentId::Productividad));
+    let evs = run_collect(env, true).await;
+    let (actions, warnings) = report_of(&evs).expect("informe con aviso");
+    assert!(actions.is_empty());
+    assert!(warnings[0].contains("no ejecutó ninguna acción"), "{warnings:?}");
+    match evs.last() {
+        Some(StreamEvent::Done { notice, .. }) => assert!(notice.as_deref().unwrap().contains("no ejecutó")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// La investigadora cita una página que no consultó: se avisa.
+#[tokio::test]
+async fn uncited_sources_are_flagged() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let answer = "El teckel nació en Alemania.\nFuente: https://ejemplo-inventado.org/teckel";
+    let (url, _) = serve(vec![("200 OK", ollama_final(m, answer))]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "investiga el teckel");
+    env.agent = Some(profile(AgentId::Investigador));
+    let evs = run_collect(env, true).await;
+    let (_, warnings) = report_of(&evs).expect("informe con aviso");
+    assert!(warnings.iter().any(|w| w.contains("ejemplo-inventado.org")), "{warnings:?}");
+}
+
+/// Un plan no puede colar herramientas que el agente no tiene.
+#[tokio::test]
+async fn plans_cannot_include_tools_of_other_agents() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let plan = serde_json::json!({
+        "titulo": "plan",
+        "pasos": [
+            {"herramienta": "crear_carpeta", "parametros": {"ruta": std::env::temp_dir().join("canela-plan-x").to_string_lossy()}, "descripcion": "carpeta"},
+            {"herramienta": "eliminar_tarea", "parametros": {"id": 1}, "descripcion": "borrar"}
+        ]
+    });
+    let r1 = ollama_tool(m, "ejecutar_plan", plan);
+    let r2 = ollama_final(m, "No pude ejecutar el plan.");
+    let (url, _) = serve(vec![("200 OK", r1), ("200 OK", r2)]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "haz el plan");
+    env.agent = Some(profile(AgentId::Programador));
+    let evs = run_collect(env, true).await;
+    assert!(!std::env::temp_dir().join("canela-plan-x").exists(), "ningún paso se ejecutó");
+    let (actions, _) = report_of(&evs).expect("informe");
+    assert_eq!(actions[0].status, "no permitida", "{actions:?}");
+}
+
+/// Contexto compartido controlado: los datos internos de las herramientas de
+/// OTRO agente no pasan; los del mismo agente sí.
+#[tokio::test]
+async fn other_agents_tool_data_is_not_shared() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let history = |agent: AgentId| {
+        vec![
+            ChatMessage {
+                role: Role::User,
+                text: "lee main.rs".into(),
+                provider: None,
+                transcript: None,
+                images: vec![],
+                agent: None,
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                text: "El archivo define main.".into(),
+                provider: Some(ProviderId::Ollama),
+                transcript: Some(vec![
+                    serde_json::json!({"role":"assistant","content":"","tool_calls":[{"function":{"name":"leer_archivo","arguments":{}}}]}),
+                    serde_json::json!({"role":"tool","tool_name":"leer_archivo","content":"DATO_INTERNO_DEL_ARCHIVO"}),
+                    serde_json::json!({"role":"assistant","content":"El archivo define main."}),
+                ]),
+                images: vec![],
+                agent: Some(agent),
+            },
+            ChatMessage {
+                role: Role::User,
+                text: "sigue".into(),
+                provider: None,
+                transcript: None,
+                images: vec![],
+                agent: None,
+            },
+        ]
+    };
+    for (previous, expect_shared) in [(AgentId::Programador, true), (AgentId::Investigador, false)] {
+        let (url, bodies) = serve(vec![("200 OK", ollama_final(m, "Ok."))]).await;
+        let base = url.trim_end_matches("/v1/messages").to_string();
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let mut env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x");
+        env.history = history(previous);
+        env.agent = Some(profile(AgentId::Programador));
+        run_collect(env, true).await;
+        let b = bodies.lock().unwrap()[0].clone();
+        assert_eq!(b.contains("DATO_INTERNO_DEL_ARCHIVO"), expect_shared, "{previous:?}");
+        assert!(b.contains("El archivo define main."), "la respuesta final siempre se comparte");
+    }
 }

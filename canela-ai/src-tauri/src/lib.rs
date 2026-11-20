@@ -1,5 +1,6 @@
 //! CANELA AI — núcleo nativo (Tauri 2).
 
+mod agents;
 mod ai;
 mod commands;
 mod data_cmds;

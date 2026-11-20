@@ -86,6 +86,27 @@ export interface WireMessage {
   provider?: ProviderId;
   transcript?: unknown[];
   images?: ImageData[];
+  /** v0.7: agente que dio esta respuesta (para la continuidad). */
+  agent?: AgentId;
+}
+
+export type AgentId =
+  | "general"
+  | "programador"
+  | "investigador"
+  | "productividad"
+  | "archivos"
+  | "sistema";
+
+/** v0.7: acción ejecutada por un agente, tal como la registró el backend. */
+export interface ActionRecord {
+  tool: string;
+  label: string;
+  /** "ok" | "error" | "denegada" | "no permitida" */
+  status: string;
+  /** true = comprobado; false = la comprobación falló; null = no comprobable. */
+  verified: boolean | null;
+  detail: string | null;
 }
 
 export type StreamEvent =
@@ -94,6 +115,14 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "toolStart"; callId: string; name: string; label: string }
   | { type: "toolEnd"; callId: string; ok: boolean; summary: string }
+  | { type: "agent"; id: AgentId; name: string; reason: string }
+  | { type: "toolVerified"; callId: string; ok: boolean; detail: string }
+  | {
+      type: "report";
+      agent: string;
+      actions: ActionRecord[];
+      warnings: string[];
+    }
   | {
       type: "confirmRequest";
       confirmId: string;

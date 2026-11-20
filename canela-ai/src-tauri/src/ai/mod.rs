@@ -47,6 +47,9 @@ pub struct ChatMessage {
     /// Imágenes adjuntas por el usuario (capturas o archivos) ya autorizadas.
     #[serde(default)]
     pub images: Vec<crate::vision::ImageData>,
+    /// v0.7: agente que generó esta respuesta (sólo asistente).
+    #[serde(default)]
+    pub agent: Option<crate::agents::AgentId>,
 }
 
 /// Resultado de una herramienta para devolver al modelo.
@@ -107,6 +110,24 @@ pub enum StreamEvent {
         message: String,
     },
     Cancelled,
+    /// v0.7: agente elegido para esta respuesta.
+    Agent {
+        id: crate::agents::AgentId,
+        name: String,
+        reason: String,
+    },
+    /// v0.7: comprobación objetiva del efecto de una acción.
+    ToolVerified {
+        call_id: String,
+        ok: bool,
+        detail: String,
+    },
+    /// v0.7: resumen de lo que se hizo (antes de Done).
+    Report {
+        agent: String,
+        actions: Vec<crate::agents::ActionRecord>,
+        warnings: Vec<String>,
+    },
 }
 
 /// Definición de herramienta independiente del proveedor.

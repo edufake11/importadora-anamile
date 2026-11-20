@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionSummary,
   bubbleSnippet,
   compactWith,
   composeUserText,
@@ -155,5 +156,76 @@ describe("conversaciones largas", () => {
       ]),
     ).toBeCloseTo(0.03);
     expect(conversationCost([])).toBeNull();
+  });
+});
+
+describe("agentes (v0.7)", () => {
+  it("el historial conserva qué agente respondió", () => {
+    const wire = toWire([
+      { id: "1", role: "user", text: "lee main.rs", status: "done" },
+      {
+        id: "2",
+        role: "assistant",
+        text: "Listo",
+        status: "done",
+        provider: "ollama",
+        transcript: [{ role: "assistant", content: "Listo" }],
+        agent: "programador",
+      },
+      {
+        id: "3",
+        role: "assistant",
+        text: "parcial",
+        status: "cancelled",
+        agent: "investigador",
+      },
+      { id: "4", role: "user", text: "sigue", status: "done" },
+    ]);
+    expect(wire[1].agent).toBe("programador");
+    expect(wire[2].agent).toBe("investigador");
+    expect(wire[3].agent).toBeUndefined();
+  });
+
+  it("el resumen sólo cuenta lo que el backend registró", () => {
+    expect(actionSummary(undefined)).toBe("");
+    expect(actionSummary([])).toBe("");
+    expect(
+      actionSummary([
+        {
+          tool: "crear_tarea",
+          label: "Crear tarea",
+          status: "ok",
+          verified: true,
+          detail: null,
+        },
+        {
+          tool: "escribir_archivo",
+          label: "Escribir archivo",
+          status: "ok",
+          verified: false,
+          detail: "el contenido no coincide",
+        },
+        {
+          tool: "eliminar_tarea",
+          label: "Eliminar tarea",
+          status: "denegada",
+          verified: null,
+          detail: null,
+        },
+      ]),
+    ).toBe(
+      "Qué hice: 2 acciones hechas · 1 comprobada · 1 no superó la comprobación · 1 no se hizo",
+    );
+    expect(
+      actionSummary([
+        {
+          tool: "crear_tarea",
+          label: "x",
+          status: "no permitida",
+          verified: null,
+          detail: null,
+        },
+      ]),
+    ).toBe("Qué hice: 0 acciones hechas · 1 no se hizo");
   });
 });

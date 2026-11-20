@@ -11,6 +11,7 @@
 
 pub mod apps;
 pub mod files;
+pub mod web;
 
 use crate::ai::{self, ToolDef};
 use crate::db::{looks_sensitive, normalize_kind, Db, TaskFilter, TaskInput};
@@ -64,7 +65,8 @@ pub struct ToolOutput {
 
 /// Herramientas que sólo leen. Tras leer contenido externo, todas las demás
 /// pasan a pedir confirmación (defensa contra instrucciones escondidas).
-pub const READ_ONLY: [&str; 14] = [
+pub const READ_ONLY: [&str; 15] = [
+    "diagnostico_memoria",
     "info_sistema",
     "listar_rutinas",
     "buscar_recuerdos",
@@ -218,6 +220,12 @@ fn plan_permission(title: &str, steps: &[PlanStep]) -> Permission {
 }
 
 enum Action {
+    Wikipedia {
+        query: String,
+        lang: String,
+    },
+    ReadPage(String),
+    MemDiag,
     Media {
         action: crate::media::MediaAction,
         steps: u32,
@@ -426,6 +434,27 @@ pub fn definitions() -> Vec<ToolDef> {
                 }),
                 &["accion"],
             ),
+        },
+        ToolDef {
+            name: "buscar_wikipedia",
+            description: "Busca en Wikipedia (fuente verificable) y devuelve títulos, extractos y la URL de cada artículo. Úsala para investigar y cita las URLs. Envía la búsqueda a internet.",
+            schema: obj(
+                json!({
+                    "consulta": { "type": "string" },
+                    "idioma": { "type": "string", "description": "Código de idioma de Wikipedia: es (por defecto), en…" }
+                }),
+                &["consulta"],
+            ),
+        },
+        ToolDef {
+            name: "leer_pagina",
+            description: "Lee el texto de una página web pública (http/https) para investigar; devuelve su URL como fuente. No accede a direcciones locales.",
+            schema: obj(json!({ "url": { "type": "string" } }), &["url"]),
+        },
+        ToolDef {
+            name: "diagnostico_memoria",
+            description: "Últimas mediciones de memoria del equipo registradas por Canela (RAM, memoria comprometida, VRAM, modelo de IA cargado) y eventos recientes (procesos que crecieron, RAM baja).",
+            schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "info_sistema",
@@ -867,6 +896,35 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             };
             p(label, perm, Action::Media { action, steps })
         }
+        "buscar_wikipedia" => {
+            let q = req(input, "consulta")?;
+            if crate::privacy::redact_for_external(&q, "Wikipedia").is_some() {
+                return Err("La búsqueda contiene datos privados; no la enviaré a internet.".into());
+            }
+            let lang = s(input, "idioma").unwrap_or_else(|| "es".into()).to_lowercase();
+            let label = format!("Buscar en Wikipedia: «{q}»");
+            let perm = if ctx.settings.auto_open_web {
+                Permission::Auto
+            } else {
+                confirm(label.clone(), "Se enviará esta búsqueda a Wikipedia (internet).", None)
+            };
+            p(label, perm, Action::Wikipedia { query: q, lang })
+        }
+        "leer_pagina" => {
+            let raw = req(input, "url")?;
+            let url = web::public_url(&raw)?;
+            if crate::privacy::redact_for_external(url.as_str(), "esa página").is_some() {
+                return Err("La dirección contiene datos privados; no la abriré.".into());
+            }
+            let label = format!("Leer la página {}", url.host_str().unwrap_or(""));
+            let perm = if ctx.settings.auto_open_web {
+                Permission::Auto
+            } else {
+                confirm(label.clone(), format!("Canela se conectará a {url} para leerla."), None)
+            };
+            p(label, perm, Action::ReadPage(url.to_string()))
+        }
+        "diagnostico_memoria" => p("Ver el registro de memoria".into(), Permission::Auto, Action::MemDiag),
         "info_sistema" => {
             let procs = input.get("procesos").and_then(Value::as_bool).unwrap_or(false);
             p("Ver el estado del equipo".into(), Permission::Auto, Action::SystemInfo { procs })
@@ -1116,13 +1174,30 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<ToolOutput, String
     }
     let untrusted = matches!(
         prepared.action,
-        Action::Read(_) | Action::ReadDoc { .. } | Action::SearchDocs { .. } | Action::SearchConversations { .. }
+        Action::Read(_)
+            | Action::ReadDoc { .. }
+            | Action::SearchDocs { .. }
+            | Action::SearchConversations { .. }
+            | Action::Wikipedia { .. }
+            | Action::ReadPage(_)
     );
     run_text(ctx, prepared).await.map(|text| ToolOutput {
         text,
         images: vec![],
         untrusted,
     })
+}
+
+fn web_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!(
+            "canela-ai/",
+            env!("CARGO_PKG_VERSION"),
+            " (asistente personal de escritorio)"
+        ))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default()
 }
 
 async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
@@ -1347,6 +1422,45 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
                 .map_err(|e| e.to_string())??;
             db.log("multimedia", &action.label(steps));
             Ok(format!("Hecho: {}.", action.label(steps).to_lowercase()))
+        }
+        Action::Wikipedia { query, lang } => {
+            let text = web::wikipedia(&web_client(), &query, &lang).await?;
+            db.log("investigación", &format!("Buscó en Wikipedia: {query}"));
+            Ok(wrap_untrusted("Wikipedia", &text))
+        }
+        Action::ReadPage(url) => {
+            let text = web::read_page(&web_client(), &url).await?;
+            db.log("investigación", &format!("Leyó {url}"));
+            Ok(wrap_untrusted(&url, &text))
+        }
+        Action::MemDiag => {
+            let st = crate::resources::DIAG.store.lock().unwrap();
+            let Some(last) = st.samples.back() else {
+                return Ok("Todavía no hay mediciones de memoria (Canela mide cada minuto).".into());
+            };
+            // Sólo nombres de programas (sin rutas: pueden contener el usuario).
+            let top: Vec<String> = last
+                .top
+                .iter()
+                .take(6)
+                .map(|p| {
+                    format!(
+                        "{} (PID {}): {} privada, {} en RAM",
+                        p.name,
+                        p.pid,
+                        crate::memdiag::gb(p.private),
+                        crate::memdiag::gb(p.working_set)
+                    )
+                })
+                .collect();
+            let events: Vec<String> = st.events.iter().rev().take(8).map(|e| format!("{} {}", e.ts, e.message)).collect();
+            Ok(format!(
+                "Medición de {}:\n{}\nProgramas con más memoria privada:\n{}\nEventos recientes:\n{}",
+                last.ts,
+                crate::memdiag::sample_summary(last),
+                top.join("\n"),
+                if events.is_empty() { "ninguno".into() } else { events.join("\n") }
+            ))
         }
         Action::SystemInfo { procs } => {
             let snap = tokio::task::spawn_blocking(move || crate::system::snapshot(procs))

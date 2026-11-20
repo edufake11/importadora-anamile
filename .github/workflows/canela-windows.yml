@@ -31,6 +31,19 @@ jobs:
         with:
           workspaces: canela-ai/src-tauri
 
+      # whisper.cpp se configura con CMake, que guarda la ruta absoluta del
+      # compilador. Si GitHub actualiza Visual Studio en la imagen de Windows,
+      # la caché restaurada apunta a un compilador que ya no existe: se borra
+      # esa configuración para que CMake la regenere (el resto de la caché se
+      # conserva).
+      - name: Limpiar configuración de CMake en caché (whisper.cpp)
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path src-tauri/target -Directory -Recurse -Filter "whisper-rs-sys-*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Parent.Name -eq "build" } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "Configuración de whisper.cpp en caché eliminada (si existía)."
+
       - name: Instalar dependencias
         run: npm ci
 
