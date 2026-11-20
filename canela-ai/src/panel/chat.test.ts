@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   actionSummary,
+  planReport,
   bubbleSnippet,
   compactWith,
   composeUserText,
@@ -227,5 +228,115 @@ describe("agentes (v0.7)", () => {
         },
       ]),
     ).toBe("Qué hice: 0 acciones hechas · 1 no se hizo");
+  });
+});
+
+describe("plan coordinado (v0.7.1)", () => {
+  const base = { attempts: 1, warnings: [] as string[], error: null };
+  it("separa lo hecho, lo pendiente y los errores", () => {
+    const r = planReport([
+      {
+        ...base,
+        index: 1,
+        agent: "programador",
+        name: "programadora",
+        task: "Revisa el proyecto",
+        status: "hecho",
+        actions: [],
+      },
+      {
+        ...base,
+        index: 2,
+        agent: "productividad",
+        name: "asistente de productividad",
+        task: "Organiza las tareas",
+        status: "incompleto",
+        actions: [
+          {
+            tool: "crear_tarea",
+            label: "Crear tarea: Validar login",
+            status: "ok",
+            verified: true,
+            detail: null,
+          },
+          {
+            tool: "eliminar_tarea",
+            label: "Eliminar tarea #3",
+            status: "denegada",
+            verified: null,
+            detail: null,
+          },
+        ],
+      },
+      {
+        ...base,
+        index: 3,
+        agent: "archivos",
+        name: "agente de archivos",
+        task: "Guarda el informe",
+        status: "error",
+        attempts: 2,
+        error: "Ollama tuvo un problema interno (500).",
+        actions: [],
+      },
+      {
+        ...base,
+        index: 4,
+        agent: "general",
+        name: "Canela (informe)",
+        task: "Prepara un informe",
+        status: "pendiente",
+        actions: [],
+      },
+    ]);
+    expect(r.done).toEqual([
+      "Paso 1 · programadora: Revisa el proyecto",
+      "Paso 2 · asistente de productividad: Crear tarea: Validar login (comprobado)",
+    ]);
+    expect(r.pending).toEqual([
+      "Paso 2 · asistente de productividad: Eliminar tarea #3 (no lo autorizaste)",
+      "Paso 4 · Canela (informe): Prepara un informe",
+    ]);
+    expect(r.errors).toEqual([
+      "Paso 3 · agente de archivos: Ollama tuvo un problema interno (500).",
+    ]);
+  });
+
+  it("una comprobación fallida y los pasos cancelados no cuentan como hechos", () => {
+    const r = planReport([
+      {
+        ...base,
+        index: 1,
+        agent: "archivos",
+        name: "agente de archivos",
+        task: "Escribe el informe",
+        status: "incompleto",
+        actions: [
+          {
+            tool: "escribir_archivo",
+            label: "Escribir informe.md",
+            status: "ok",
+            verified: false,
+            detail: "el contenido no coincide",
+          },
+        ],
+      },
+      {
+        ...base,
+        index: 2,
+        agent: "productividad",
+        name: "asistente de productividad",
+        task: "Crea la tarea",
+        status: "cancelado",
+        actions: [],
+      },
+    ]);
+    expect(r.done).toEqual([]);
+    expect(r.pending).toEqual([
+      "Paso 2 · asistente de productividad: Crea la tarea (cancelado)",
+    ]);
+    expect(r.errors).toEqual([
+      "Paso 1 · agente de archivos: Escribir informe.md — la comprobación falló: el contenido no coincide",
+    ]);
   });
 });

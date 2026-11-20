@@ -89,3 +89,47 @@ Mensaje ─► Enrutador (modelo, privacidad, presupuesto)
 - Que la investigadora funcione con internet real (en las pruebas, Wikipedia está simulada).
 - Mejorar el orquestador con los fallos del conjunto nuevo (en un conjunto distinto para volver a medir sin trampa).
 - v0.8 (siguiente del plan): verificación más amplia (¿compila?, ¿pasan las pruebas?) y reintentos acotados.
+
+---
+
+# v0.7.1 — Coordinación de varios agentes (rama de desarrollo)
+
+Para encargos como **«Canela, revisa mi proyecto web, identifica errores, organiza las tareas pendientes y prepara un informe»**, ya no hace falta elegir agentes: Canela arma un plan y reparte el trabajo. Código: `src-tauri/src/coordination.rs`.
+
+## Cómo funciona
+
+1. **Plan** (reglas explicables, sin llamar a un modelo para decidir): divide el encargo en partes sólo donde empieza una orden nueva («revisa…», «organiza…», «que busques…»), elige el agente de cada parte y junta las partes seguidas del mismo agente. Si pide «informe», «resumen» o «conclusiones», añade un paso final de redacción **sin herramientas**. Sólo se crea un plan si hacen falta **al menos dos agentes distintos** (máx. 6 pasos); si no, responde un agente como en la v0.7.
+   - Ejemplo → 1. programadora: «Revisa mi proyecto web; identifica errores» · 2. productividad: «Organiza las tareas pendientes» · 3. Canela (informe): «Prepara un informe».
+2. **Permiso**: una tarjeta muestra el plan completo y pide aprobarlo una vez. Dentro de cada paso, lo delicado (escribir, borrar, mover, capturas, pasar un archivo a la IA) se vuelve a preguntar como siempre.
+3. **Delegación**: cada paso usa **el mismo modelo** (no se cargan otros) y **sólo las herramientas de su agente**.
+4. **Contexto mínimo**: cada paso recibe el objetivo, su parte, el texto reciente de la conversación (sin datos de herramientas) y los **resúmenes** de los pasos anteriores (máx. 1 500 caracteres cada uno). El contenido de los archivos que leyó un paso no llega a los demás.
+5. **Comprobación**: las acciones se verifican como en la v0.7; un paso con una acción denegada, no permitida o cuya comprobación falló queda **«incompleto»**.
+6. **Recuperación ante errores**: un error temporal (servidor ocupado, red, conexión cortada) se **reintenta una vez**, salvo que ese intento ya hubiera hecho cambios: entonces **no se repite** (para no duplicar tareas, archivos…) y se informa qué se llegó a hacer. Un paso con error no detiene a los demás: los siguientes saben que falló y el informe lo dice.
+7. **Presupuesto**: el gasto real se suma paso a paso; al llegar al límite, los pasos restantes quedan pendientes sin más llamadas de pago. Antes de empezar se reserva el costo estimado de todos los pasos.
+8. **Detener**: si pulsas Detener en cualquier momento, no se hace nada más y el informe muestra qué se hizo, qué se canceló y qué quedó pendiente.
+9. **Informe final** bajo la respuesta: estado de cada paso y tres listas — **Hecho**, **Pendiente** y **Errores** — construidas sólo con lo que registró el programa (no con lo que dice el modelo).
+
+## Evaluación (automática, Linux, modelos simulados)
+
+| Prueba | Resultado |
+|---|---|
+| Planificador, conjunto usado para ajustarlo (8 encargos) | 8/8 (optimista; antes del ajuste 5/8) |
+| **Planificador, conjunto nuevo escrito después y medido una vez (15 encargos, 4 de un solo agente)** | **12/15 (80 %)**. En los 3 fallos no se creó plan y respondió un solo agente, como en la v0.7; ninguno produjo un plan equivocado. Causas: el planificador no reconoce verbos con pronombre pegado («guárdala», «explícame»), así que no corta ahí, y tampoco corta en «y que agendes» (el «que» entre «y» y el verbo) |
+| Ejemplo completo: 1 permiso de plan + permiso para pasar el archivo a la IA, 3 agentes en orden, mismo modelo en las 5 llamadas, herramientas correctas por paso, informe sin herramientas, el contenido del archivo no llega a otros pasos, tarea comprobada, una sola respuesta en el chat | ✔ |
+| Plan denegado → ninguna llamada al modelo, todo pendiente | ✔ |
+| Acción denegada dentro de un paso → no se hace, paso «incompleto», el informe lo sabe | ✔ |
+| Detener a mitad (mientras pide permiso para crear una carpeta) → carpeta no creada, informe «hecho / cancelado / pendiente», sin más llamadas | ✔ |
+| Error 500 → reintento con éxito; error 500 dos veces → paso con error y el plan continúa | ✔ |
+| Error después de crear una tarea → no se reintenta (la tarea no se duplica) | ✔ |
+| Límite de gasto superado en el paso 1 → el paso 2 queda pendiente sin llamada de pago | ✔ |
+| Suite completa repetida 8 veces seguidas sin fallos (para descartar pruebas inestables) | ✔ |
+| **En la app (Linux, Ollama simulado)**: el ejemplo del usuario → tarjeta del plan, permiso, 3 pasos con su agente (14, 14 y 0 herramientas), «✓ comprobado», informe «Hecho» y «Plan: 3 de 3 pasos hechos» | ✔ |
+| **En la app**: Detener mientras pide aprobar el plan → 0 llamadas al modelo e informe con los 2 pasos pendientes | ✔ |
+
+Consumo medido en la app de prueba (versión de depuración): proceso principal ≈ 86 MB, igual que en la v0.7; CPU en reposo ≈ 4 %. Los pasos se ejecutan uno tras otro con el mismo modelo, así que no aumenta la memoria del modelo.
+
+## Pendiente
+
+- Probar en Windows 11 real con Qwen3 y con Claude/ChatGPT: que el modelo real haga bien su parte y resuma lo necesario.
+- Planes propuestos por el propio modelo para encargos que las reglas no detectan (hoy esos los atiende un solo agente).
+- Corregir los 3 fallos del conjunto nuevo (verbos con pronombre pegado, «y que …») y medir con otro conjunto distinto.

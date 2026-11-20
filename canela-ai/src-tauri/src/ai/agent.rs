@@ -55,7 +55,7 @@ pub struct AgentEnv {
     pub agent: Option<&'static crate::agents::Profile>,
 }
 
-type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
+pub type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 
 /// Ejecuta una llamada. `tainted` = ya se leyó contenido externo en esta respuesta.
 /// Devuelve el resultado y si trae contenido externo.
@@ -470,6 +470,14 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         let outcome = match super::complete(&env.http, &env.settings, &env.api_key, &env.system, &messages, &defs, emit_ref).await {
             Ok(o) => o,
             Err(message) => {
+                // Lo ya hecho antes del error también se informa.
+                if !actions.is_empty() {
+                    emit(StreamEvent::Report {
+                        agent: agent_name.clone(),
+                        actions: actions.clone(),
+                        warnings: vec![],
+                    });
+                }
                 emit(StreamEvent::Error {
                     message: super::pricing::redact_secrets(&message),
                 });

@@ -3,6 +3,7 @@ import type {
   ActionRecord,
   AgentId,
   ImageData,
+  PlanStep,
   ProviderId,
   Usage,
   WireMessage,
@@ -57,6 +58,9 @@ export interface UiMessage {
   agentReason?: string;
   /** v0.7: lo que hizo de verdad (registrado por el backend). */
   actions?: ActionRecord[];
+  /** v0.7.1: plan coordinado entre varios agentes. */
+  plan?: PlanStep[];
+  planFinished?: boolean;
 }
 
 export interface Conversation {
@@ -287,3 +291,54 @@ export function actionSummary(actions: ActionRecord[] | undefined): string {
     parts.push(notDone === 1 ? "1 no se hizo" : `${notDone} no se hicieron`);
   return `Qué hice: ${parts.join(" · ")}`;
 }
+
+export interface PlanSummary {
+  done: string[];
+  pending: string[];
+  errors: string[];
+}
+
+/**
+ * v0.7.1: informe final de un plan (hechas, pendientes y errores), sólo con
+ * lo que registró el backend.
+ */
+export function planReport(steps: PlanStep[]): PlanSummary {
+  const out: PlanSummary = { done: [], pending: [], errors: [] };
+  for (const s of steps) {
+    const who = `Paso ${s.index} · ${s.name}`;
+    for (const a of s.actions) {
+      if (a.status === "ok" && a.verified === false)
+        out.errors.push(
+          `${who}: ${a.label} — la comprobación falló${a.detail ? `: ${a.detail}` : ""}`,
+        );
+      else if (a.status === "ok")
+        out.done.push(`${who}: ${a.label}${a.verified ? " (comprobado)" : ""}`);
+      else if (a.status === "denegada")
+        out.pending.push(`${who}: ${a.label} (no lo autorizaste)`);
+      else if (a.status === "no permitida")
+        out.pending.push(`${who}: ${a.label} (no permitida a este agente)`);
+      else out.errors.push(`${who}: ${a.label} falló`);
+    }
+    if (
+      (s.status === "hecho" || s.status === "incompleto") &&
+      !s.actions.some((a) => a.status === "ok")
+    )
+      out.done.push(`${who}: ${s.task}`);
+    if (s.status === "pendiente") out.pending.push(`${who}: ${s.task}`);
+    if (s.status === "cancelado")
+      out.pending.push(`${who}: ${s.task} (cancelado)`);
+    if (s.status === "error")
+      out.errors.push(`${who}: ${s.error ?? "error desconocido"}`);
+    for (const w of s.warnings) out.errors.push(`${who}: ${w}`);
+  }
+  return out;
+}
+
+export const PLAN_ICON: Record<PlanStep["status"], string> = {
+  pendiente: "○",
+  en_curso: "…",
+  hecho: "✓",
+  incompleto: "◐",
+  error: "✕",
+  cancelado: "–",
+};

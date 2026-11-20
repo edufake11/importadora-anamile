@@ -183,6 +183,12 @@ pub async fn chat_send(
     let mut settings = state.current_settings();
     let spent = state.db.spend_month(&crate::router::month_key()).unwrap_or(0.0);
     let last = messages.last().cloned().unwrap();
+    // v0.7.1: ¿la petición necesita varios agentes? (sin imágenes adjuntas)
+    let plan = if last.images.is_empty() {
+        crate::coordination::propose(&last.text)
+    } else {
+        None
+    };
     let switching = provider_override.is_some_and(|p| p != settings.provider);
     if let Some(p) = provider_override {
         settings.provider = p;
@@ -221,7 +227,9 @@ pub async fn chat_send(
             ..Default::default()
         };
         let (level, _) = crate::router::complexity(&req);
-        let est = crate::router::estimate_cost(provider, &ai::model_of(&settings), &req, level).unwrap_or(0.01);
+        // Un plan hace una respuesta por paso: se reserva el costo de todos.
+        let est = crate::router::estimate_cost(provider, &ai::model_of(&settings), &req, level).unwrap_or(0.01)
+            * plan.as_ref().map_or(1.0, |p| p.steps.len() as f64);
         crate::router::RESERVATIONS.reserve(&request_id, est, spent, settings.monthly_budget_usd)?;
         reservation = Some((request_id.clone(), est));
     }
@@ -252,19 +260,26 @@ pub async fn chat_send(
 
     let user_name = user_name.unwrap_or_else(|| settings.user_name.clone());
     // v0.7: el orquestador elige el agente (perfil) para este mensaje.
-    let previous_agent = messages.iter().rev().find(|m| m.role == Role::Assistant).and_then(|m| m.agent);
-    let selection = crate::agents::select(&last.text, previous_agent);
-    let profile = crate::agents::profile(selection.agent);
     let mut system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
-    if !profile.prompt.is_empty() {
-        system.push_str("\n\n");
-        system.push_str(profile.prompt);
-    }
-    let _ = on_event.send(StreamEvent::Agent {
-        id: selection.agent,
-        name: selection.name.clone(),
-        reason: selection.reason.clone(),
-    });
+    // v0.7: el orquestador elige el agente (perfil) para este mensaje; si la
+    // petición necesita varios, el coordinador (v0.7.1) los reparte.
+    let profile = if plan.is_some() {
+        None
+    } else {
+        let previous_agent = messages.iter().rev().find(|m| m.role == Role::Assistant).and_then(|m| m.agent);
+        let selection = crate::agents::select(&last.text, previous_agent);
+        let profile = crate::agents::profile(selection.agent);
+        if !profile.prompt.is_empty() {
+            system.push_str("\n\n");
+            system.push_str(profile.prompt);
+        }
+        let _ = on_event.send(StreamEvent::Agent {
+            id: selection.agent,
+            name: selection.name.clone(),
+            reason: selection.reason.clone(),
+        });
+        Some(profile)
+    };
     let notify_app = app.clone();
     let tools = ToolCtx {
         db: state.db.clone(),
@@ -290,7 +305,7 @@ pub async fn chat_send(
         tools: Some(Arc::new(tools)),
         confirms: state.confirms.clone(),
         max_cost_usd,
-        agent: Some(profile),
+        agent: profile,
     };
 
     let channel = on_event.clone();
@@ -308,39 +323,39 @@ pub async fn chat_send(
     let (started, recorded) = (guard.started.clone(), guard.recorded.clone());
     let handle = tauri::async_runtime::spawn(async move {
         let _guard = guard;
-        agent::run(
-            env,
-            Arc::new(move |ev| {
-                use std::sync::atomic::Ordering;
-                if matches!(ev, StreamEvent::Started { .. }) {
-                    started.store(true, Ordering::SeqCst);
+        let emit: agent::Emit = Arc::new(move |ev| {
+            use std::sync::atomic::Ordering;
+            if matches!(ev, StreamEvent::Started { .. }) {
+                started.store(true, Ordering::SeqCst);
+            }
+            // Gasto con los tokens REALES que informó el proveedor.
+            if let StreamEvent::Done {
+                provider,
+                cost_usd: Some(c),
+                usage,
+                model,
+                ..
+            } = &ev
+            {
+                if provider.is_cloud() && *c > 0.0 {
+                    let _ = spend_db.spend_add(
+                        &crate::router::month_key(),
+                        provider.as_str(),
+                        model.as_deref().unwrap_or("?"),
+                        usage.input + usage.cache_read + usage.cache_write,
+                        usage.output,
+                        *c,
+                        "api",
+                    );
+                    recorded.store(true, Ordering::SeqCst);
                 }
-                // Gasto con los tokens REALES que informó el proveedor.
-                if let StreamEvent::Done {
-                    provider,
-                    cost_usd: Some(c),
-                    usage,
-                    model,
-                    ..
-                } = &ev
-                {
-                    if provider.is_cloud() && *c > 0.0 {
-                        let _ = spend_db.spend_add(
-                            &crate::router::month_key(),
-                            provider.as_str(),
-                            model.as_deref().unwrap_or("?"),
-                            usage.input + usage.cache_read + usage.cache_write,
-                            usage.output,
-                            *c,
-                            "api",
-                        );
-                        recorded.store(true, Ordering::SeqCst);
-                    }
-                }
-                let _ = channel.send(ev);
-            }),
-        )
-        .await;
+            }
+            let _ = channel.send(ev);
+        });
+        match plan {
+            Some(plan) => crate::coordination::run(env, plan, emit).await,
+            None => agent::run(env, emit).await,
+        }
     });
     let mut chats = state.chats.lock().unwrap();
     chats.retain(|_, (h, _)| !h.inner().is_finished());

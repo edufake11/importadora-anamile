@@ -220,7 +220,7 @@
   border: 1px solid var(--line);
   padding: 0 5px;
   border-radius: 5px;
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12.5px;
 }
 .msg.user .md-text code {
@@ -255,7 +255,10 @@
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  font: 12.5px/1.5 'Cascadia Code', Consolas, monospace;
+  font:
+    12.5px/1.5 "Cascadia Code",
+    Consolas,
+    monospace;
   color: #e6e6e6;
 }
 .notice {
@@ -413,9 +416,9 @@
   color: var(--muted);
   font-size: 12px;
 }
-.settings input[type='text'],
+.settings input[type="text"],
 .settings input:not([type]),
-.settings input[type='password'],
+.settings input[type="password"],
 .settings select {
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -428,7 +431,7 @@
 .settings select:focus {
   border-color: #6a6a6a;
 }
-.settings input[type='range'],
+.settings input[type="range"],
 .check input {
   accent-color: #e6e6e6;
 }
@@ -512,7 +515,7 @@ details.advanced summary {
   color: var(--text-2);
 }
 .hint.err::before {
-  content: '⚠ ';
+  content: "⚠ ";
 }
 .shortcuts {
   margin: 0;
@@ -530,7 +533,9 @@ kbd {
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   padding: 0 5px;
-  font: 11.5px 'Segoe UI', sans-serif;
+  font:
+    11.5px "Segoe UI",
+    sans-serif;
   color: var(--text);
 }
 .save-bar {
@@ -560,7 +565,7 @@ kbd {
   align-items: center;
 }
 .text-button.busy::before {
-  content: '';
+  content: "";
   display: inline-block;
   width: 6px;
   height: 6px;
@@ -636,7 +641,10 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #070707;
-  font: 12px/1.45 'Cascadia Code', Consolas, monospace;
+  font:
+    12px/1.45 "Cascadia Code",
+    Consolas,
+    monospace;
   color: var(--muted);
 }
 .diff .add {
@@ -1307,4 +1315,44 @@ details.fold summary {
   margin: 0;
   font-size: 12px;
   color: var(--text);
+}
+
+/* v0.7.1: plan coordinado */
+.plan-card {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin: 4px 0 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.plan-steps li {
+  padding: 1px 0;
+}
+.plan-steps li.pendiente,
+.plan-steps li.cancelado {
+  color: var(--muted);
+}
+.plan-steps li.en_curso strong,
+.plan-steps li.error strong {
+  color: var(--text);
+}
+.plan-report {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.plan-report-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 4px;
+}
+.plan-report ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
 }

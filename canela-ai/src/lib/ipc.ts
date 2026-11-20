@@ -109,6 +109,25 @@ export interface ActionRecord {
   detail: string | null;
 }
 
+/** v0.7.1: un paso de un plan coordinado entre agentes. */
+export interface PlanStep {
+  index: number;
+  agent: AgentId;
+  name: string;
+  task: string;
+  status:
+    | "pendiente"
+    | "en_curso"
+    | "hecho"
+    | "incompleto"
+    | "error"
+    | "cancelado";
+  attempts: number;
+  actions: ActionRecord[];
+  warnings: string[];
+  error: string | null;
+}
+
 export type StreamEvent =
   | { type: "started"; model: string }
   | { type: "thinking" }
@@ -117,6 +136,7 @@ export type StreamEvent =
   | { type: "toolEnd"; callId: string; ok: boolean; summary: string }
   | { type: "agent"; id: AgentId; name: string; reason: string }
   | { type: "toolVerified"; callId: string; ok: boolean; detail: string }
+  | { type: "plan"; steps: PlanStep[]; finished: boolean }
   | {
       type: "report";
       agent: string;

@@ -355,6 +355,30 @@ pub fn select(text: &str, previous: Option<AgentId>) -> Selection {
     )
 }
 
+/// Agente para UNA parte de un encargo (v0.7.1). A diferencia de `select`,
+/// un empate no lleva al agente general: gana la palabra clave que aparece
+/// primero, que suele ser el objeto del verbo («crea una TAREA por cada
+/// error» → productividad). Sin palabras clave → general.
+pub fn select_for_clause(text: &str) -> AgentId {
+    let t = fold(text);
+    let mut best: Option<(usize, usize, AgentId)> = None; // (aciertos, -posición, agente)
+    for (id, kws) in KW {
+        let hits: Vec<usize> = kws.iter().filter_map(|k| t.find(k)).collect();
+        if hits.is_empty() {
+            continue;
+        }
+        let first = *hits.iter().min().unwrap();
+        let better = match best {
+            None => true,
+            Some((n, pos, _)) => hits.len() > n || (hits.len() == n && first < pos),
+        };
+        if better {
+            best = Some((hits.len(), first, *id));
+        }
+    }
+    best.map_or(AgentId::General, |b| b.2)
+}
+
 // ------------------------------------------------------------ verificación
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

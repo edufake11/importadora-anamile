@@ -122,6 +122,11 @@ pub enum StreamEvent {
         ok: bool,
         detail: String,
     },
+    /// v0.7.1: estado del plan coordinado (se reenvía entero en cada cambio).
+    Plan {
+        steps: Vec<crate::coordination::StepReport>,
+        finished: bool,
+    },
     /// v0.7: resumen de lo que se hizo (antes de Done).
     Report {
         agent: String,

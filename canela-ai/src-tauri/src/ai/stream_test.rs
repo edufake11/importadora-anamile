@@ -1015,3 +1015,405 @@ async fn other_agents_tool_data_is_not_shared() {
         assert!(b.contains("El archivo define main."), "la respuesta final siempre se comparte");
     }
 }
+
+// ------------------------------------------------------------ v0.7.1 coordinación
+
+use crate::coordination::{self, Plan, Step, StepReport};
+
+/// Ejecuta un plan aprobando o denegando cada confirmación según su título.
+async fn run_plan(env: AgentEnv, plan: Plan, approve: fn(&str) -> bool) -> Vec<StreamEvent> {
+    let confirms = env.confirms.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    coordination::run(
+        env,
+        plan,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, title, .. } = &e {
+                let (c, id, ok) = (confirms.clone(), confirm_id.clone(), approve(title));
+                tokio::spawn(async move {
+                    c.resolve(&id, ok);
+                });
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    )
+    .await;
+    let out = events.lock().unwrap().clone();
+    out
+}
+
+fn final_plan(evs: &[StreamEvent]) -> Vec<StepReport> {
+    evs.iter()
+        .rev()
+        .find_map(|e| match e {
+            StreamEvent::Plan { steps, finished: true } => Some(steps.clone()),
+            _ => None,
+        })
+        .expect("informe final del plan")
+}
+
+fn statuses(steps: &[StepReport]) -> Vec<&str> {
+    steps.iter().map(|s| s.status.as_str()).collect()
+}
+
+fn tool_names(body: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    v["tools"]
+        .as_array()
+        .map(|a| a.iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn step(agent: crate::agents::AgentId, task: &str, synthesis: bool) -> Step {
+    Step {
+        agent,
+        task: task.into(),
+        synthesis,
+    }
+}
+
+/// El ejemplo del usuario, de principio a fin: plan aprobado una vez, cada
+/// paso con su agente y sus herramientas, mismo modelo, sólo resúmenes entre
+/// pasos, acción comprobada e informe final.
+#[tokio::test]
+async fn multi_agent_plan_runs_end_to_end() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let root = std::env::temp_dir().join(format!("canela-coord-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("index.html");
+    std::fs::write(&file, "<!-- SECRETO_DEL_ARCHIVO --><form id=login></form>").unwrap();
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "leer_archivo", serde_json::json!({"ruta": file.to_string_lossy()})),
+        ),
+        (
+            "200 OK",
+            ollama_final(m, "Revisé index.html: el formulario de login no valida los datos."),
+        ),
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Validar el formulario de login"})),
+        ),
+        ("200 OK", ollama_final(m, "Creé la tarea «Validar el formulario de login».")),
+        ("200 OK", ollama_final(m, "Informe: encontré 1 error y quedó 1 tarea creada.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let goal = "Canela, revisa mi proyecto web, identifica errores, organiza las tareas pendientes y prepara un informe";
+    let plan = coordination::propose(goal).expect("plan");
+    let evs = run_plan(
+        ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), goal),
+        plan,
+        |_| true,
+    )
+    .await;
+
+    // Primero el permiso del plan; dentro del paso se mantiene el permiso
+    // existente para pasar el contenido de un archivo a la IA.
+    let confirms: Vec<_> = evs
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ConfirmRequest { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(confirms[0], "Plan de trabajo con 3 pasos");
+    assert_eq!(confirms[1], "¿Envío este contenido a la IA?");
+    assert_eq!(confirms.len(), 2);
+
+    let b = bodies.lock().unwrap().clone();
+    assert_eq!(b.len(), 5);
+    for body in &b {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(v["model"], m, "siempre el mismo modelo: no se cargan otros");
+    }
+    // Herramientas por paso: programadora, productividad y el informe sin herramientas.
+    assert!(tool_names(&b[0]).contains(&"leer_archivo".to_string()));
+    assert!(tool_names(&b[0]).iter().all(|t| profile(AgentId::Programador).allows(t)));
+    assert!(tool_names(&b[2]).contains(&"crear_tarea".to_string()));
+    assert!(tool_names(&b[2]).iter().all(|t| profile(AgentId::Productividad).allows(t)));
+    assert!(tool_names(&b[4]).is_empty(), "el informe no usa herramientas");
+    // Contexto: el paso 2 recibe el RESUMEN del paso 1, no el archivo leído.
+    assert!(b[1].contains("SECRETO_DEL_ARCHIVO"), "el propio paso sí ve lo que leyó");
+    assert!(b[2].contains("no valida los datos"));
+    assert!(!b[2].contains("SECRETO_DEL_ARCHIVO"), "los datos internos no pasan a otro agente");
+    assert!(!b[4].contains("SECRETO_DEL_ARCHIVO"));
+    assert!(b[4].contains("Validar el formulario de login"));
+
+    // Cambio de agente en orden.
+    let mut running: Vec<AgentId> = vec![];
+    for e in &evs {
+        if let StreamEvent::Plan { steps, .. } = e {
+            if let Some(s) = steps.iter().find(|s| s.status == "en_curso") {
+                if running.last() != Some(&s.agent) {
+                    running.push(s.agent);
+                }
+            }
+        }
+    }
+    assert_eq!(running, vec![AgentId::Programador, AgentId::Productividad, AgentId::General]);
+
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["hecho", "hecho", "hecho"]);
+    let created = &steps[1].actions[0];
+    assert_eq!((created.tool.as_str(), created.verified), ("crear_tarea", Some(true)));
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1);
+    let dones: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::Done { .. })).collect();
+    assert_eq!(dones.len(), 1, "una sola respuesta en la conversación");
+    match dones[0] {
+        StreamEvent::Done { usage, notice, .. } => {
+            assert_eq!(usage.input, 500, "suma de los 5 turnos");
+            assert_eq!(notice.as_deref(), Some("Plan: 3 de 3 pasos hechos."));
+        }
+        _ => unreachable!(),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Si no apruebas el plan, no se llama al modelo ni se toca nada.
+#[tokio::test]
+async fn denied_plan_does_nothing() {
+    let (url, bodies) = serve(vec![]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let goal = "revisa el código de mi API y crea una tarea por cada error";
+    let plan = coordination::propose(goal).unwrap();
+    let evs = run_plan(
+        ollama_env(&base, "qwen3:8b", db.clone(), Arc::new(Confirmations::default()), goal),
+        plan,
+        |_| false,
+    )
+    .await;
+    assert!(bodies.lock().unwrap().is_empty());
+    assert_eq!(statuses(&final_plan(&evs)), vec!["pendiente", "pendiente"]);
+    assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolStart { .. })));
+    match evs.last() {
+        Some(StreamEvent::Done { stop_reason, .. }) => assert_eq!(stop_reason.as_deref(), Some("plan_denied")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Un permiso denegado dentro de un paso: la acción no se hace, el paso queda
+/// «incompleto» y los siguientes pasos lo saben.
+#[tokio::test]
+async fn denied_action_inside_a_step_is_reported_as_pending() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    db.task_add(&crate::db::TaskInput {
+        title: Some("Tarea importante".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    let responses = vec![
+        ("200 OK", ollama_tool(m, "eliminar_tarea", serde_json::json!({"id": 1}))),
+        ("200 OK", ollama_final(m, "No la borré porque no lo autorizaste.")),
+        ("200 OK", ollama_final(m, "Resumen: la tarea sigue ahí.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let plan = Plan {
+        goal: "borra la tarea 1 y haz un resumen".into(),
+        steps: vec![
+            step(AgentId::Productividad, "Borra la tarea 1", false),
+            step(AgentId::General, "Haz un resumen", true),
+        ],
+    };
+    let evs = run_plan(
+        ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "x"),
+        plan,
+        |title| title.starts_with("Plan de trabajo"),
+    )
+    .await;
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1, "no se borró");
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["incompleto", "hecho"]);
+    assert_eq!(steps[0].actions[0].status, "denegada");
+    assert!(bodies.lock().unwrap()[2].contains("(incompleto)"));
+}
+
+/// Detener a mitad: lo que faltaba no se hace y el informe final dice qué
+/// se hizo, qué se canceló y qué quedó pendiente.
+#[tokio::test]
+async fn cancelling_mid_plan_stops_and_reports() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let folder = std::env::temp_dir().join(format!("canela-coord-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Preparar respaldo"})),
+        ),
+        ("200 OK", ollama_final(m, "Creé la tarea.")),
+        (
+            "200 OK",
+            ollama_tool(m, "crear_carpeta", serde_json::json!({"ruta": folder.to_string_lossy()})),
+        ),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "x");
+    let confirms = env.confirms.clone();
+    let plan = Plan {
+        goal: "crea la tarea, la carpeta y un informe".into(),
+        steps: vec![
+            step(AgentId::Productividad, "Crea la tarea", false),
+            step(AgentId::Archivos, "Crea la carpeta de respaldo", false),
+            step(AgentId::General, "Prepara un informe", true),
+        ],
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let tx = Mutex::new(Some(tx));
+    let handle = tokio::spawn(coordination::run(
+        env,
+        plan,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, title, .. } = &e {
+                if title.starts_with("Plan de trabajo") {
+                    let (c, id) = (confirms.clone(), confirm_id.clone());
+                    tokio::spawn(async move {
+                        c.resolve(&id, true);
+                    });
+                } else if let Some(tx) = tx.lock().unwrap().take() {
+                    // Mientras pide permiso para la carpeta, el usuario pulsa Detener.
+                    let _ = tx.send(());
+                }
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    ));
+    rx.await.unwrap();
+    handle.abort();
+    assert!(handle.await.unwrap_err().is_cancelled());
+    let evs = events.lock().unwrap().clone();
+    assert!(!folder.exists(), "la carpeta no se creó");
+    assert_eq!(
+        db.task_list(crate::db::TaskFilter::All).unwrap().len(),
+        1,
+        "lo hecho antes se conserva"
+    );
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["hecho", "cancelado", "pendiente"]);
+    assert_eq!(bodies.lock().unwrap().len(), 3, "no hubo más llamadas al modelo");
+}
+
+/// Recuperación: un error temporal se reintenta una vez; si vuelve a fallar,
+/// el paso queda con error y los demás continúan sabiendo que falló.
+#[tokio::test]
+async fn transient_errors_are_retried_once_and_the_plan_continues() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let boom = r#"{"error":"boom"}"#.to_string();
+    let responses = vec![
+        ("500 Internal Server Error", boom.clone()),
+        ("200 OK", ollama_final(m, "Revisé el código: no hay errores graves.")),
+        ("500 Internal Server Error", boom.clone()),
+        ("500 Internal Server Error", boom),
+        ("200 OK", ollama_final(m, "Informe: el paso 2 falló.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let plan = Plan {
+        goal: "revisa el código, crea tareas e informa".into(),
+        steps: vec![
+            step(AgentId::Programador, "Revisa el código", false),
+            step(AgentId::Productividad, "Crea las tareas", false),
+            step(AgentId::General, "Prepara un informe", true),
+        ],
+    };
+    let evs = run_plan(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x"), plan, |_| true).await;
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["hecho", "error", "hecho"]);
+    assert_eq!((steps[0].attempts, steps[1].attempts), (2, 2));
+    assert!(steps[1].error.as_deref().unwrap().contains("falló también al reintentar"));
+    let b = bodies.lock().unwrap().clone();
+    assert_eq!(b.len(), 5);
+    assert!(b[4].contains("ERROR: Ollama tuvo un problema interno"), "el informe sabe que falló");
+    match evs.last() {
+        Some(StreamEvent::Done { notice, .. }) => assert_eq!(notice.as_deref(), Some("Plan: 2 de 3 pasos hechos, 1 con error.")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Si el intento fallido ya había hecho cambios, NO se reintenta (no se
+/// repiten acciones) y lo hecho aparece en el informe.
+#[tokio::test]
+async fn failed_steps_with_side_effects_are_not_repeated() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Una sola vez"})),
+        ),
+        ("500 Internal Server Error", r#"{"error":"boom"}"#.to_string()),
+        ("200 OK", ollama_final(m, "Memoria en orden.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let plan = Plan {
+        goal: "crea la tarea y revisa la memoria".into(),
+        steps: vec![
+            step(AgentId::Productividad, "Crea la tarea", false),
+            step(AgentId::Sistema, "Revisa la memoria", false),
+        ],
+    };
+    let evs = run_plan(
+        ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "x"),
+        plan,
+        |_| true,
+    )
+    .await;
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1, "la tarea no se duplicó");
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["error", "hecho"]);
+    assert_eq!(steps[0].attempts, 1);
+    assert!(steps[0].error.as_deref().unwrap().contains("no reintenté"));
+    assert_eq!(steps[0].actions[0].tool, "crear_tarea");
+    assert_eq!(steps[0].actions[0].status, "ok");
+    assert_eq!(bodies.lock().unwrap().len(), 3);
+}
+
+/// Presupuesto: el gasto real se suma paso a paso; al superar el máximo, los
+/// pasos restantes quedan pendientes sin llamar otra vez al modelo de pago.
+#[tokio::test]
+async fn plan_stops_at_the_spending_limit() {
+    use crate::agents::AgentId;
+    let _guard = ENV_LOCK.lock().await;
+    let root = std::env::temp_dir().join(format!("canela-coord-budget-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let text = "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"Revisado.\"}}]}\n\ndata: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"model\":\"gpt-5\",\"choices\":[],\"usage\":{\"prompt_tokens\":400000,\"completion_tokens\":100}}\n\ndata: [DONE]\n\n".to_string();
+    let (url, bodies) = serve(vec![("200 OK", text)]).await;
+    std::env::set_var("CANELA_TEST_OPENAI_URL", &url);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let plan = Plan {
+        goal: "revisa el código y crea tareas".into(),
+        steps: vec![
+            step(AgentId::Programador, "Revisa el código", false),
+            step(AgentId::Productividad, "Crea tareas", false),
+        ],
+    };
+    let evs = run_plan(openai_env(&root, db, "x", Some(0.10)), plan, |_| true).await;
+    std::env::remove_var("CANELA_TEST_OPENAI_URL");
+    assert_eq!(bodies.lock().unwrap().len(), 1);
+    assert_eq!(statuses(&final_plan(&evs)), vec!["hecho", "pendiente"]);
+    match evs.last() {
+        Some(StreamEvent::Done { notice, cost_usd, .. }) => {
+            assert!(notice.as_deref().unwrap().contains("límite de gasto"), "{notice:?}");
+            assert!(cost_usd.unwrap() > 0.10);
+        }
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

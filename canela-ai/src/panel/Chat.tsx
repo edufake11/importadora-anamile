@@ -21,6 +21,7 @@ import {
   type ImageData,
   type JobInfo,
   type KeyStatus,
+  type PlanStep,
   type Settings,
   type StreamEvent,
 } from "../lib/ipc";
@@ -37,6 +38,8 @@ import {
   type PendingConfirm,
   toWire,
   actionSummary,
+  planReport,
+  PLAN_ICON,
   type UiMessage,
   wireSize,
 } from "./chatModel";
@@ -492,6 +495,22 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
                 : t,
             ),
           }));
+          break;
+        case "plan":
+          if (ev.finished) {
+            // El informe final se guarda aunque la respuesta se haya detenido.
+            setMessages((prev) => {
+              const next = prev.map((m) =>
+                m.id === reply.id
+                  ? { ...m, plan: ev.steps, planFinished: true }
+                  : m,
+              );
+              persist(next);
+              return next;
+            });
+          } else {
+            patch(reply.id, (m) => ({ ...m, plan: ev.steps }));
+          }
           break;
         case "report":
           patch(reply.id, (m) => ({ ...m, actions: ev.actions }));
@@ -1024,7 +1043,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               {m.role === "assistant" && (
                 <div className="msg-author">
                   Canela
-                  {m.agent && m.agent !== "general" && m.agentName && (
+                  {m.agentName && m.agentName !== "Canela" && (
                     <span className="cost" title={m.agentReason}>
                       {" "}
                       · {m.agentName}
@@ -1098,6 +1117,9 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
                     </li>
                   ))}
                 </ul>
+              )}
+              {m.plan && m.plan.length > 0 && (
+                <PlanCard steps={m.plan} finished={!!m.planFinished} />
               )}
               {m.status !== "streaming" &&
                 m.actions &&
@@ -1314,6 +1336,53 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           </button>
         )}
       </form>
+    </div>
+  );
+}
+
+/** v0.7.1: pasos del plan y, al terminar, qué se hizo, qué falta y errores. */
+function PlanCard({
+  steps,
+  finished,
+}: {
+  steps: PlanStep[];
+  finished: boolean;
+}) {
+  const r = finished ? planReport(steps) : null;
+  return (
+    <div className="plan-card">
+      <ol className="plan-steps">
+        {steps.map((s) => (
+          <li key={s.index} className={s.status}>
+            <span className="tool-icon">{PLAN_ICON[s.status]}</span>
+            <strong>{s.name}</strong> — {s.task}
+            {s.attempts > 1 && <span className="tool-why"> · 2 intentos</span>}
+          </li>
+        ))}
+      </ol>
+      {r && (
+        <div className="plan-report">
+          {(
+            [
+              ["Hecho", r.done],
+              ["Pendiente", r.pending],
+              ["Errores", r.errors],
+            ] as const
+          ).map(
+            ([title, items]) =>
+              items.length > 0 && (
+                <div key={title}>
+                  <div className="plan-report-title">{title}</div>
+                  <ul>
+                    {items.map((t, i) => (
+                      <li key={i}>{t}</li>
+                    ))}
+                  </ul>
+                </div>
+              ),
+          )}
+        </div>
+      )}
     </div>
   );
 }

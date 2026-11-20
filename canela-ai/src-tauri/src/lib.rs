@@ -3,6 +3,7 @@
 mod agents;
 mod ai;
 mod commands;
+mod coordination;
 mod data_cmds;
 mod db;
 mod docs;
