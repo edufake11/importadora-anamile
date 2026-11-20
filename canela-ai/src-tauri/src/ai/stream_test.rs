@@ -181,6 +181,7 @@ async fn agent_runs_tool_and_continues() {
         }],
         tools: Some(Arc::new(tools)),
         confirms: Arc::new(Confirmations::default()),
+        max_cost_usd: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -267,6 +268,7 @@ async fn claude_agent_respects_denied_confirmation() {
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
+        max_cost_usd: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -359,6 +361,7 @@ async fn injected_instructions_require_confirmation() {
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
+        max_cost_usd: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -450,6 +453,7 @@ async fn plan_runs_steps_and_rechecks_destructive_ones() {
         }],
         tools: Some(Arc::new(tools)),
         confirms: confirms.clone(),
+        max_cost_usd: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -529,6 +533,7 @@ fn ollama_env(base: &str, model: &str, db: Arc<Db>, confirms: Arc<Confirmations>
         }],
         tools: Some(Arc::new(tools)),
         confirms,
+        max_cost_usd: None,
     }
 }
 
@@ -682,4 +687,117 @@ async fn ollama_missing_model_is_explained() {
         Some(StreamEvent::Error { message }) => assert!(message.contains("ollama pull qwen3:8b"), "{message}"),
         other => panic!("{other:?}"),
     }
+}
+
+// ------------------------------------------------------------ v0.6.1
+
+fn openai_tool_call(id: &str, name: &str, args: serde_json::Value, prompt_tokens: u64, completion: u64) -> String {
+    let a = serde_json::to_string(&args.to_string()).unwrap();
+    format!(
+        "data: {{\"model\":\"gpt-5\",\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"function\":{{\"name\":\"{name}\",\"arguments\":{a}}}}}]}}}}]}}\n\ndata: {{\"model\":\"gpt-5\",\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: {{\"model\":\"gpt-5\",\"choices\":[],\"usage\":{{\"prompt_tokens\":{prompt_tokens},\"completion_tokens\":{completion}}}}}\n\ndata: [DONE]\n\n"
+    )
+}
+
+fn openai_env(root: &std::path::Path, db: Arc<Db>, text: &str, max_cost_usd: Option<f64>) -> AgentEnv {
+    let settings = Settings {
+        provider: ProviderId::Openai,
+        confirm_file_sharing: false,
+        ..Settings::default()
+    };
+    let tools = ToolCtx {
+        db,
+        settings: settings.clone(),
+        scope: Scope::new(vec![root.to_path_buf()], vec![]),
+        backups_dir: root.join("bak"),
+        jobs: None,
+        llm: None,
+        notify: Arc::new(|_| {}),
+        screen: None,
+    };
+    AgentEnv {
+        http: reqwest::Client::new(),
+        settings,
+        api_key: "sk-test".into(),
+        system: "s".into(),
+        history: vec![ChatMessage {
+            role: Role::User,
+            text: text.into(),
+            provider: None,
+            transcript: None,
+            images: vec![],
+        }],
+        tools: Some(Arc::new(tools)),
+        confirms: Arc::new(Confirmations::default()),
+        max_cost_usd,
+    }
+}
+
+/// Freno de gasto: con tokens reales que ya superan el máximo, Canela no
+/// ejecuta más herramientas ni vuelve a llamar al modelo.
+#[tokio::test]
+async fn spending_brake_stops_before_more_paid_turns() {
+    let _guard = ENV_LOCK.lock().await;
+    let root = std::env::temp_dir().join(format!("canela-brake-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    // 400 000 tokens de entrada ≈ 0,5 US$ con gpt-5: supera el máximo de 0,10.
+    let first = openai_tool_call(
+        "c1",
+        "crear_tarea",
+        serde_json::json!({"titulo": "no debería crearse"}),
+        400_000,
+        100,
+    );
+    let (url, bodies) = serve(vec![("200 OK", first), ("200 OK", "data: [DONE]\n\n".into())]).await;
+    std::env::set_var("CANELA_TEST_OPENAI_URL", &url);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = openai_env(&root, db.clone(), "crea una tarea", Some(0.10));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    agent::run(env, Arc::new(move |e| sink.lock().unwrap().push(e))).await;
+    std::env::remove_var("CANELA_TEST_OPENAI_URL");
+    let evs = events.lock().unwrap().clone();
+    match evs.last() {
+        Some(StreamEvent::Done {
+            stop_reason,
+            notice,
+            cost_usd,
+            ..
+        }) => {
+            assert_eq!(stop_reason.as_deref(), Some("budget"));
+            assert!(notice.as_deref().unwrap().contains("límite de gasto"));
+            assert!(cost_usd.unwrap() > 0.10, "costo con tokens reales: {cost_usd:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        db.task_list(crate::db::TaskFilter::All).unwrap().is_empty(),
+        "no se ejecutó la herramienta"
+    );
+    assert_eq!(bodies.lock().unwrap().len(), 1, "no hubo una segunda llamada de pago");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Un archivo con una contraseña leído por una herramienta NO se envía a un
+/// modelo externo: en su lugar va un aviso.
+#[tokio::test]
+async fn secrets_read_by_tools_are_not_sent_to_external_models() {
+    let _guard = ENV_LOCK.lock().await;
+    let root = std::env::temp_dir().join(format!("canela-redact-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("config.env"), "DB_HOST=localhost\nDB_PASSWORD=Sup3rGat0Secreto\n").unwrap();
+    let path = root.join("config.env").to_string_lossy().to_string();
+    let first = openai_tool_call("c1", "leer_archivo", serde_json::json!({"ruta": path}), 1000, 20);
+    let second = "data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"Listo\"}}]}\n\ndata: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string();
+    let (url, bodies) = serve(vec![("200 OK", first), ("200 OK", second)]).await;
+    std::env::set_var("CANELA_TEST_OPENAI_URL", &url);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = openai_env(&root, db, "lee config.env", None);
+    agent::run(env, Arc::new(|_| {})).await;
+    std::env::remove_var("CANELA_TEST_OPENAI_URL");
+    let b = bodies.lock().unwrap().clone();
+    assert_eq!(b.len(), 2);
+    assert!(!b[1].contains("Sup3rGat0Secreto"), "la contraseña no salió del equipo");
+    assert!(b[1].contains("omitido por privacidad"), "{}", &b[1][..b[1].len().min(400)]);
+    let _ = std::fs::remove_dir_all(&root);
 }

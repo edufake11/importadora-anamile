@@ -1291,3 +1291,8 @@ details.fold summary {
 .route-title {
   font-weight: 600;
 }
+.route-warn {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}

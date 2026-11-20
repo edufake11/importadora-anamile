@@ -36,6 +36,19 @@ pub struct Request {
     pub attachment_chars: usize,
     /// Tamaño del historial que se reenviaría.
     pub history_chars: usize,
+    /// Contenido de los adjuntos (para revisar la privacidad).
+    pub attachments: Vec<String>,
+    /// Textos anteriores de la conversación (para revisar la privacidad).
+    pub history: Vec<String>,
+    /// Imágenes en mensajes anteriores.
+    pub history_images: usize,
+}
+
+/// Un modelo disponible.
+#[derive(Debug, Clone)]
+pub struct Model {
+    pub provider: ProviderId,
+    pub model: String,
 }
 
 /// Lo que se sabe del equipo y de tus ajustes.
@@ -46,10 +59,35 @@ pub struct Context {
     pub auto: bool,
     pub local_ok: bool,
     pub local_vision: bool,
-    /// Modelo externo preferido con clave guardada (si hay).
-    pub cloud: Option<(ProviderId, String)>,
+    /// El modelo local admite herramientas.
+    pub local_tools: bool,
+    /// Contexto del modelo local (tokens).
+    pub local_ctx_tokens: u32,
+    /// El modelo local ya está en memoria (si no, tarda en cargar).
+    pub local_loaded: bool,
+    /// Modelos externos con clave guardada, en orden de preferencia.
+    pub clouds: Vec<Model>,
     pub spent_month_usd: f64,
+    /// Lo reservado por otras respuestas en curso.
+    pub reserved_usd: f64,
     pub budget_usd: f64,
+}
+
+/// Un candidato evaluado (para explicar la elección).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub provider: ProviderId,
+    pub model: String,
+    pub label: String,
+    pub eligible: bool,
+    /// Por qué no sirve (si no es elegible).
+    pub why_not: Option<String>,
+    /// Calidad relativa esperada (1 = local pequeño, 3 = modelo grande externo).
+    pub quality: u8,
+    /// ESTIMACIONES (no son el costo ni el tiempo final).
+    pub est_cost_usd: Option<f64>,
+    pub est_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -59,10 +97,16 @@ pub struct CloudOffer {
     pub model: String,
     /// «Claude» / «ChatGPT».
     pub label: String,
-    /// Costo estimado de esta respuesta (None = precio desconocido).
+    /// Costo ESTIMADO de esta respuesta (None = precio desconocido). El costo
+    /// final depende de los tokens reales que informe el proveedor.
     pub est_cost_usd: Option<f64>,
+    pub est_seconds: f64,
     /// Por qué se propone, en una frase.
     pub why: String,
+    /// Tipos de datos que necesitan tu autorización explícita para enviarlos.
+    pub ack: Vec<String>,
+    /// Qué se detectó (para mostrarlo en la tarjeta).
+    pub ack_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -77,9 +121,15 @@ pub struct Decision {
     pub offer: Option<CloudOffer>,
     /// Si no se puede continuar, el motivo (y `provider` no se debe usar).
     pub blocked: Option<String>,
-    /// El mensaje parece contener datos privados: nunca sale del equipo.
+    /// Hay secretos: nunca sale del equipo.
     pub private: bool,
+    /// Revisión de privacidad de todo lo que se enviaría.
+    pub privacy: crate::privacy::Report,
+    /// Con un proveedor principal externo: datos que necesitan autorización.
+    pub ack_required: Vec<String>,
+    pub candidates: Vec<Candidate>,
     pub spent_month_usd: f64,
+    pub reserved_usd: f64,
     pub budget_usd: f64,
 }
 
@@ -100,7 +150,13 @@ fn fold(s: &str) -> String {
 }
 
 /// Palabras que suelen indicar trabajo de razonamiento largo.
-const HEAVY: [&str; 34] = [
+const HEAVY: [&str; 40] = [
+    "planifica",
+    "investigo",
+    "seguridad",
+    "escalabilidad",
+    "recomiendame",
+    "cuello de botella",
     "analiza",
     "analisis",
     "compara",
@@ -137,8 +193,66 @@ const HEAVY: [&str; 34] = [
     "revisa este codigo",
 ];
 
+/// Verbos de instrucción: dos o más distintos = tarea encadenada.
+const ACTIONS: [&str; 24] = [
+    "analiza",
+    "propon",
+    "explica",
+    "compara",
+    "recomienda",
+    "justifica",
+    "revisa",
+    "disena",
+    "implementa",
+    "crea",
+    "reescribe",
+    "detalla",
+    "senala",
+    "evalua",
+    "investiga",
+    "resume",
+    "escribe",
+    "aplica",
+    "optimiza",
+    "depura",
+    "migra",
+    "planifica",
+    "calcula",
+    "prueba",
+];
+
+/// Señales de tarea extensa (alcance): planes, modelos, pruebas formales…
+const SCOPE: [&str; 18] = [
+    "plan de",
+    "planifica",
+    "modelo de negocio",
+    "analisis financiero",
+    "demuestra que",
+    "contrato",
+    "clausula",
+    "completo",
+    "completa",
+    "a fondo",
+    "exhaustiv",
+    "cada ",
+    "con argumentos",
+    "semanas",
+    "cronograma",
+    "casos limite",
+    "sin tiempo de inactividad",
+    "fuga",
+];
+
 /// Peticiones que piden elaborar algo (respuesta normal, no trivial).
-const MEDIUM: [&str; 14] = [
+const MEDIUM: [&str; 22] = [
+    "que es ",
+    "que son",
+    "como ",
+    "cuales son",
+    "consejos",
+    "receta",
+    "corrige",
+    "traduce este",
     "explica",
     "escribe",
     "redacta",
@@ -220,6 +334,38 @@ pub fn complexity(req: &Request) -> (Complexity, Vec<String>) {
     if MEDIUM.iter().any(|k| t.contains(k)) {
         score += 1;
     }
+    // Alcance: varias instrucciones distintas, requisitos enumerados, datos.
+    let actions: Vec<&str> = ACTIONS
+        .iter()
+        .copied()
+        .filter(|a| t.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(a)))
+        .collect();
+    if actions.len() >= 2 && (!heavy.is_empty() || words > 12) {
+        score += 1;
+        why.push("varias instrucciones encadenadas".to_string());
+    }
+    let scope: Vec<&str> = SCOPE.iter().copied().filter(|k| t.contains(k)).collect();
+    if !scope.is_empty() {
+        score += if scope
+            .iter()
+            .any(|k| ["demuestra que", "modelo de negocio", "analisis financiero"].contains(k))
+        {
+            3
+        } else {
+            1
+        };
+        why.push("pide un trabajo extenso".to_string());
+    }
+    let items = req.text.matches(',').count() + t.matches(" y ").count();
+    if items >= 3 && words > 10 {
+        score += 1;
+        why.push("varios requisitos".to_string());
+    }
+    let numbers = req.text.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).count();
+    if numbers >= 3 && (!heavy.is_empty() || !scope.is_empty() || actions.len() >= 2) {
+        score += 1;
+        why.push("incluye datos para analizar".to_string());
+    }
     let questions = req.text.matches('?').count();
     if questions >= 3 {
         score += 1;
@@ -261,48 +407,42 @@ pub fn complexity(req: &Request) -> (Complexity, Vec<String>) {
 
 // ------------------------------------------------------------ privacidad
 
-/// ¿Datos que nunca deben salir del equipo?
-pub fn private_reason(text: &str) -> Option<&'static str> {
-    if let Some(r) = crate::db::looks_sensitive(text) {
-        return Some(r);
-    }
-    // 13–19 cifras seguidas (se permiten espacios o guiones entre ellas):
-    // posible número de tarjeta o de cuenta.
-    let (mut run, mut longest) = (0usize, 0usize);
-    for c in text.chars() {
-        if c.is_ascii_digit() {
-            run += 1;
-            longest = longest.max(run);
-        } else if c != ' ' && c != '-' {
-            run = 0;
-        }
-    }
-    if (13..=19).contains(&longest) {
-        return Some("un número de tarjeta o cuenta");
-    }
-    let up = text.to_uppercase();
-    if up.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
-        w.len() >= 15
-            && w.len() <= 34
-            && w.as_bytes()[..2].iter().all(u8::is_ascii_alphabetic)
-            && w[2..].chars().all(|c| c.is_ascii_digit())
-    }) {
-        return Some("un número de cuenta (IBAN)");
-    }
-    let f = fold(text);
-    for (k, why) in [
-        ("curp", "un documento de identidad"),
-        ("rfc ", "un documento de identidad"),
-        ("dni ", "un documento de identidad"),
-        ("pasaporte", "un documento de identidad"),
-        ("historia clinica", "datos de salud"),
-        ("diagnostico medico", "datos de salud"),
-    ] {
-        if f.contains(k) {
-            return Some(why);
-        }
-    }
-    None
+/// Compatibilidad (pruebas): motivo si el texto contiene un SECRETO.
+#[cfg(test)]
+pub fn private_reason(text: &str) -> Option<String> {
+    let mut f = Vec::new();
+    crate::privacy::scan_text(text, "mensaje", &mut f);
+    f.into_iter().find(|x| x.level == crate::privacy::Level::Secret).map(|x| x.what)
+}
+
+/// ¿Pide una acción que requiere herramientas (abrir, crear tareas…)?
+pub fn needs_tools(text: &str) -> bool {
+    let t = fold(text);
+    const TOOLS: [&str; 22] = [
+        "abre ",
+        "abrir ",
+        "cierra ",
+        "crea una tarea",
+        "agrega",
+        "recuerdame",
+        "recuerda que",
+        "marca ",
+        "borra ",
+        "elimina ",
+        "pausa",
+        "siguiente cancion",
+        "volumen",
+        "busca el archivo",
+        "busca en mis",
+        "organiza",
+        "captura",
+        "lee el",
+        "mis tareas",
+        "pendiente",
+        "archivos recientes",
+        "espacio libre",
+    ];
+    TOOLS.iter().any(|k| t.contains(k))
 }
 
 // ------------------------------------------------------------ costo
@@ -318,123 +458,248 @@ pub fn provider_label(p: ProviderId) -> &'static str {
 /// Instrucciones + herramientas ≈ 5 200 tokens (medido en v0.4).
 const BASE_PROMPT_TOKENS: u64 = 5_200;
 
-/// Costo estimado de responder (aprox.: 1 token ≈ 3,2 caracteres en español).
-pub fn estimate_cost(provider: ProviderId, model: &str, req: &Request, level: Complexity) -> Option<f64> {
-    let price = pricing::price(provider, model)?;
+fn input_tokens(req: &Request) -> u64 {
     let chars = req.text.chars().count() + req.attachment_chars + req.history_chars;
-    let input = BASE_PROMPT_TOKENS + (chars as u64 * 10 / 32);
-    let output = match level {
+    BASE_PROMPT_TOKENS + (chars as u64 * 10 / 32)
+}
+
+fn output_tokens(level: Complexity) -> u64 {
+    match level {
         Complexity::Simple => 300,
         Complexity::Medium => 900,
         Complexity::Complex => 2_500,
-    };
+    }
+}
+
+/// Costo ESTIMADO de responder (aprox.: 1 token ≈ 3,2 caracteres en español;
+/// salida según complejidad). El costo real se calcula después con los
+/// tokens que informa el proveedor.
+pub fn estimate_cost(provider: ProviderId, model: &str, req: &Request, level: Complexity) -> Option<f64> {
+    let price = pricing::price(provider, model)?;
     Some(pricing::cost(
         price,
         &Usage {
-            input,
-            output,
+            input: input_tokens(req),
+            output: output_tokens(level),
             ..Default::default()
         },
     ))
 }
 
+/// Tiempo ESTIMADO (segundos). Local: carga del modelo si no está en
+/// memoria + lectura del contexto + escritura (≈ 35 tokens/s, típico de un
+/// modelo de 8B en una GPU de gama media). Externo: latencia + ≈ 60 tokens/s.
+pub fn estimate_seconds(provider: ProviderId, req: &Request, level: Complexity, local_loaded: bool) -> f64 {
+    let (inp, out) = (input_tokens(req) as f64, output_tokens(level) as f64);
+    match provider {
+        ProviderId::Ollama => (if local_loaded { 0.0 } else { 10.0 }) + inp / 1_500.0 + out / 35.0,
+        _ => 1.5 + inp / 6_000.0 + out / 60.0,
+    }
+}
+
 // ------------------------------------------------------------ política
 
 pub fn decide(req: &Request, ctx: &Context) -> Decision {
+    use crate::privacy::{scan, Level, Outgoing};
     let (level, mut reasons) = complexity(req);
-    let private = private_reason(&req.text);
-    let base = |provider: ProviderId, reasons: Vec<String>| Decision {
-        provider,
+    let privacy = scan(&Outgoing {
+        text: req.text.clone(),
+        attachments: req.attachments.clone(),
+        history: req.history.clone(),
+        images: usize::from(req.has_images) + req.history_images,
+    });
+    let secret = privacy.level() == Level::Secret;
+    let available = ctx.budget_usd - ctx.spent_month_usd - ctx.reserved_usd;
+    let tools = needs_tools(&req.text);
+    let tokens = input_tokens(req);
+
+    // --- Candidatos
+    let mut candidates = Vec::new();
+    let local_why_not = if !ctx.local_ok {
+        Some("Ollama no está disponible".to_string())
+    } else if req.has_images && !ctx.local_vision {
+        Some("no puede ver imágenes".to_string())
+    } else if tools && !ctx.local_tools {
+        Some("no admite herramientas".to_string())
+    } else if tokens as f64 > ctx.local_ctx_tokens as f64 * 0.9 {
+        Some(format!(
+            "la conversación (≈ {} mil tokens) no cabe en su memoria de {} mil",
+            tokens / 1000,
+            ctx.local_ctx_tokens / 1000
+        ))
+    } else {
+        None
+    };
+    candidates.push(Candidate {
+        provider: ProviderId::Ollama,
+        model: "local".into(),
+        label: "Modelo local".into(),
+        eligible: local_why_not.is_none(),
+        why_not: local_why_not.clone(),
+        quality: 1,
+        est_cost_usd: Some(0.0),
+        est_seconds: estimate_seconds(ProviderId::Ollama, req, level, ctx.local_loaded),
+    });
+    for m in &ctx.clouds {
+        let est = estimate_cost(m.provider, &m.model, req, level);
+        let why_not = if secret {
+            Some(format!("contiene {}", privacy.findings[0].what))
+        } else if ctx.budget_usd <= 0.0 || available <= 0.0 || est.is_some_and(|c| c > available) {
+            Some("superaría tu límite de gasto mensual".to_string())
+        } else {
+            None
+        };
+        candidates.push(Candidate {
+            provider: m.provider,
+            model: m.model.clone(),
+            label: provider_label(m.provider).into(),
+            eligible: why_not.is_none(),
+            why_not,
+            quality: 3,
+            est_cost_usd: est,
+            est_seconds: estimate_seconds(m.provider, req, level, true),
+        });
+    }
+    let local = candidates[0].clone();
+    let best_cloud = candidates.iter().skip(1).find(|c| c.eligible).cloned();
+    if candidates
+        .iter()
+        .skip(1)
+        .any(|c| c.why_not.as_deref() == Some("superaría tu límite de gasto mensual"))
+    {
+        reasons.push("límite de gasto mensual alcanzado".into());
+    }
+    let ack = privacy.kinds_needing_ack();
+    let mut d = Decision {
+        provider: ctx.main,
         complexity: level,
         reasons,
         offer: None,
         blocked: None,
-        private: private.is_some(),
+        private: secret,
+        privacy: privacy.clone(),
+        ack_required: Vec::new(),
+        candidates: candidates.clone(),
         spent_month_usd: ctx.spent_month_usd,
+        reserved_usd: ctx.reserved_usd,
         budget_usd: ctx.budget_usd,
     };
-    let over_budget =
-        |extra: f64| ctx.budget_usd <= 0.0 || ctx.spent_month_usd >= ctx.budget_usd || ctx.spent_month_usd + extra > ctx.budget_usd;
+    let offer_from = |c: &Candidate, why: String| CloudOffer {
+        provider: c.provider,
+        model: c.model.clone(),
+        label: c.label.clone(),
+        est_cost_usd: c.est_cost_usd,
+        est_seconds: c.est_seconds,
+        why,
+        ack: ack.clone(),
+        ack_summary: privacy.summary(),
+    };
 
-    // Proveedor principal externo: siempre ése, dentro del presupuesto.
+    // --- Proveedor principal externo (elegiste Claude o ChatGPT)
     if ctx.main != ProviderId::Ollama {
-        let mut d = base(ctx.main, reasons);
-        if let Some(why) = private {
-            // Ya elegiste un modelo externo como principal: se avisa, no se bloquea.
-            d.reasons
-                .push(format!("contiene {} (se enviará a {})", why, provider_label(ctx.main)));
-        }
-        if over_budget(0.0) {
+        if secret {
+            if local.eligible {
+                d.provider = ProviderId::Ollama;
+                d.reasons.push(format!(
+                    "contiene {}: esta vez respondo con el modelo local",
+                    privacy.findings[0].what
+                ));
+            } else {
+                d.blocked = Some(format!(
+                    "Por tu privacidad no enviaré esto a {}: contiene {}. Quita esos datos o abre Ollama para responder en local.",
+                    provider_label(ctx.main),
+                    privacy.summary()
+                ));
+            }
+        } else if ctx.budget_usd <= 0.0 || available <= 0.0 {
             d.blocked = Some(format!(
                 "Alcanzaste tu límite de gasto mensual ({:.2} US$ de {:.2} US$). Súbelo en Ajustes › Asistente o usa el modelo local.",
-                ctx.spent_month_usd, ctx.budget_usd
+                ctx.spent_month_usd + ctx.reserved_usd,
+                ctx.budget_usd
             ));
+        } else {
+            d.ack_required = ack.clone();
         }
         return d;
     }
 
-    let needs_vision = req.has_images && !ctx.local_vision;
-    let mut d = base(ProviderId::Ollama, reasons.clone());
-
-    if let Some(why) = private {
-        d.reasons.push(format!("contiene {why}: sólo se usa el modelo local"));
-        if !ctx.local_ok {
+    // --- Principal local
+    d.provider = ProviderId::Ollama;
+    if secret {
+        d.reasons
+            .push(format!("contiene {}: sólo se usa el modelo local", privacy.findings[0].what));
+        if !local.eligible {
             d.blocked = Some(format!(
-                "El mensaje parece contener {why} y el modelo local (Ollama) no está disponible. Por tu privacidad no lo enviaré a internet: abre Ollama y vuelve a intentarlo."
-            ));
-        } else if needs_vision {
-            d.blocked = Some(format!(
-                "El mensaje parece contener {why} y el modelo local no ve imágenes. Por tu privacidad no lo enviaré a internet."
+                "Contiene {} y el modelo local no puede responder ({}). Por tu privacidad no lo enviaré a internet.",
+                privacy.summary(),
+                local.why_not.unwrap_or_default()
             ));
         }
         return d;
     }
-
-    // Motivo para proponer un modelo externo.
-    let why = if !ctx.local_ok {
-        Some("el modelo local (Ollama) no está disponible".to_string())
-    } else if needs_vision {
-        Some("el modelo local no puede ver imágenes".to_string())
+    let why = if !local.eligible {
+        Some(format!("el modelo local {}", local.why_not.clone().unwrap_or_default()))
     } else if ctx.auto && level == Complexity::Complex {
-        Some(format!("la tarea parece compleja ({})", reasons.join(", ")))
+        Some(format!("la tarea parece compleja ({})", d.reasons.join(", ")))
     } else {
         None
     };
-    let Some(why) = why else { return d };
-
-    let offer = ctx.cloud.as_ref().and_then(|(p, model)| {
-        let est = estimate_cost(*p, model, req, level);
-        if over_budget(est.unwrap_or(0.0)) {
-            reasons.push("límite de gasto mensual alcanzado".into());
-            return None;
-        }
-        Some(CloudOffer {
-            provider: *p,
-            model: model.clone(),
-            label: provider_label(*p).to_string(),
-            est_cost_usd: est,
-            why: why.clone(),
-        })
-    });
-    d.reasons = reasons;
-    if !ctx.local_ok || needs_vision {
-        // Sin alternativa local útil: o se acepta el externo o no se puede.
-        if offer.is_none() {
-            d.blocked = Some(if needs_vision && ctx.local_ok {
-                "El modelo local no puede ver imágenes y no hay un modelo externo disponible (falta la clave o se alcanzó el límite de gasto).".into()
+    if let Some(why) = why {
+        d.offer = best_cloud.as_ref().map(|c| offer_from(c, why.clone()));
+        if !local.eligible && d.offer.is_none() {
+            d.blocked = Some(if ctx.local_ok {
+                format!("{why} y no hay un modelo externo disponible (falta la clave o se alcanzó el límite de gasto).")
             } else {
                 crate::ai::ollama::connect_error_message(&Settings::default())
             });
         }
     }
-    d.offer = offer;
     d
 }
 
 // ------------------------------------------------------------ gasto
 
-/// ¿Se puede usar este proveedor externo ahora? (control final en el backend)
-pub fn check_cloud_use(provider: ProviderId, text: &str, spent_month: f64, budget: f64) -> Result<(), String> {
+/// Reservas de presupuesto de las respuestas en curso: dos respuestas
+/// simultáneas no pueden gastar el mismo saldo.
+#[derive(Default)]
+pub struct Reservations {
+    map: std::sync::Mutex<std::collections::HashMap<String, f64>>,
+}
+
+impl Reservations {
+    pub fn total(&self) -> f64 {
+        self.map.lock().unwrap().values().sum()
+    }
+
+    /// Reserva `amount` si cabe en el presupuesto (gastado + reservado).
+    pub fn reserve(&self, id: &str, amount: f64, spent: f64, budget: f64) -> Result<(), String> {
+        let mut m = self.map.lock().unwrap();
+        let reserved: f64 = m.values().sum();
+        if budget <= 0.0 || spent + reserved + amount > budget + 1e-9 {
+            return Err(format!(
+                "Esta respuesta (≈ {amount:.3} US$ estimados) superaría tu límite mensual: gastado {spent:.2} US$ + reservado por otras respuestas en curso {reserved:.2} US$ de {budget:.2} US$."
+            ));
+        }
+        m.insert(id.to_string(), amount);
+        Ok(())
+    }
+
+    pub fn release(&self, id: &str) -> Option<f64> {
+        self.map.lock().unwrap().remove(id)
+    }
+}
+
+pub static RESERVATIONS: std::sync::LazyLock<Reservations> = std::sync::LazyLock::new(Reservations::default);
+
+/// ¿Se puede usar este proveedor externo ahora? (control final en el backend:
+/// presupuesto + privacidad de todo lo que se enviaría + autorizaciones).
+pub fn check_cloud_use(
+    provider: ProviderId,
+    outgoing: &crate::privacy::Outgoing,
+    acks: &[String],
+    spent_month: f64,
+    budget: f64,
+) -> Result<(), String> {
     if provider == ProviderId::Ollama {
         return Ok(());
     }
@@ -443,13 +708,7 @@ pub fn check_cloud_use(provider: ProviderId, text: &str, spent_month: f64, budge
             "Alcanzaste tu límite de gasto mensual ({spent_month:.2} US$ de {budget:.2} US$). Súbelo en Ajustes › Asistente o usa el modelo local."
         ));
     }
-    if let Some(why) = private_reason(text) {
-        return Err(format!(
-            "El mensaje parece contener {why}: por tu privacidad no lo enviaré a {}.",
-            provider_label(provider)
-        ));
-    }
-    Ok(())
+    crate::privacy::check_external(&crate::privacy::scan(outgoing), acks, provider_label(provider))
 }
 
 /// Clave «AAAA-MM» del mes actual (hora local).
@@ -472,26 +731,38 @@ pub fn record_spend(db: &crate::db::Db, provider: ProviderId, model: &str, usage
         usage.input + usage.cache_read + usage.cache_write,
         usage.output,
         c,
+        "api",
     );
     Some(c)
 }
 
 /// Estado de Ollama en caché (20 s) para no retrasar cada mensaje.
-static LOCAL_CACHE: std::sync::Mutex<Option<(std::time::Instant, String, bool, bool)>> = std::sync::Mutex::new(None);
+#[derive(Clone, Copy, Default)]
+struct LocalInfo {
+    ok: bool,
+    vision: bool,
+    tools: bool,
+}
 
-async fn local_status(http: &reqwest::Client, settings: &Settings) -> (bool, bool) {
+static LOCAL_CACHE: std::sync::Mutex<Option<(std::time::Instant, String, LocalInfo)>> = std::sync::Mutex::new(None);
+
+async fn local_status(http: &reqwest::Client, settings: &Settings) -> LocalInfo {
     let key = format!("{}|{}", settings.ollama_url, settings.ollama_model);
-    if let Some((t, k, ok, vision)) = LOCAL_CACHE.lock().unwrap().clone() {
+    if let Some((t, k, info)) = LOCAL_CACHE.lock().unwrap().clone() {
         if k == key && t.elapsed() < std::time::Duration::from_secs(20) {
-            return (ok, vision);
+            return info;
         }
     }
     let st = crate::ai::ollama::status(http, settings).await;
-    let ok = st.running && st.model_installed;
-    let vision = st.capabilities.iter().any(|c| c == "vision")
-        || crate::ai::model_supports_images(ProviderId::Ollama, &settings.ollama_model) == Some(true);
-    *LOCAL_CACHE.lock().unwrap() = Some((std::time::Instant::now(), key, ok, vision));
-    (ok, vision)
+    let has = |c: &str| st.capabilities.iter().any(|x| x == c);
+    let info = LocalInfo {
+        ok: st.running && st.model_installed,
+        vision: has("vision") || crate::ai::model_supports_images(ProviderId::Ollama, &settings.ollama_model) == Some(true),
+        // Si Ollama no informa capacidades, se asume que sí (qwen3 las tiene).
+        tools: st.capabilities.is_empty() || has("tools"),
+    };
+    *LOCAL_CACHE.lock().unwrap() = Some((std::time::Instant::now(), key, info));
+    info
 }
 
 fn has_key(p: ProviderId) -> bool {
@@ -502,8 +773,8 @@ fn has_key(p: ProviderId) -> bool {
     crate::secrets::has_key(p)
 }
 
-/// Modelo externo preferido que tenga clave guardada.
-fn cloud_choice(settings: &Settings) -> Option<(ProviderId, String)> {
+/// Modelos externos con clave guardada, en orden de preferencia.
+fn clouds(settings: &Settings) -> Vec<Model> {
     let model = |p: ProviderId| match p {
         ProviderId::Anthropic => settings.anthropic_model.clone(),
         _ => settings.openai_model.clone(),
@@ -514,29 +785,43 @@ fn cloud_choice(settings: &Settings) -> Option<(ProviderId, String)> {
     } else {
         ProviderId::Anthropic
     };
-    [first, second].into_iter().find(|p| has_key(*p)).map(|p| (p, model(p)))
+    [first, second]
+        .into_iter()
+        .filter(|p| has_key(*p))
+        .map(|p| Model {
+            provider: p,
+            model: model(p),
+        })
+        .collect()
 }
 
 /// Qué modelo usar para este mensaje (no envía nada a ninguna IA).
 #[tauri::command]
 pub async fn route_decide(state: tauri::State<'_, crate::commands::AppState>, request: Request) -> Result<Decision, String> {
     let settings = state.current_settings();
-    let (local_ok, local_vision) = if settings.provider == ProviderId::Ollama {
+    let info = if settings.provider == ProviderId::Ollama || settings.router_auto {
         local_status(&state.http, &settings).await
     } else {
-        (false, false)
+        LocalInfo::default()
     };
+    let local_loaded = crate::resources::ollama_ps(&state.http, &crate::ai::ollama::base_url(&settings))
+        .await
+        .is_some_and(|ps| ps.iter().any(|m| crate::ai::ollama::same_model(&m.name, &settings.ollama_model)));
     let s2 = settings.clone();
-    let cloud = tauri::async_runtime::spawn_blocking(move || cloud_choice(&s2))
+    let clouds = tauri::async_runtime::spawn_blocking(move || clouds(&s2))
         .await
         .map_err(|e| e.to_string())?;
     let ctx = Context {
         main: settings.provider,
         auto: settings.router_auto,
-        local_ok,
-        local_vision,
-        cloud,
+        local_ok: info.ok,
+        local_vision: info.vision,
+        local_tools: info.tools,
+        local_ctx_tokens: crate::resources::mode(&settings).max_ctx.min(settings.ollama_num_ctx),
+        local_loaded,
+        clouds,
         spent_month_usd: state.db.spend_month(&month_key()).unwrap_or(0.0),
+        reserved_usd: RESERVATIONS.total(),
         budget_usd: settings.monthly_budget_usd,
     };
     Ok(decide(&request, &ctx))
@@ -547,6 +832,8 @@ pub async fn route_decide(state: tauri::State<'_, crate::commands::AppState>, re
 pub struct SpendSummary {
     pub month: String,
     pub spent_usd: f64,
+    /// Parte estimada (respuestas cortadas sin datos reales de consumo).
+    pub estimated_usd: f64,
     pub budget_usd: f64,
     pub breakdown: Vec<crate::db::SpendRow>,
 }
@@ -556,6 +843,7 @@ pub fn spend_summary(state: tauri::State<'_, crate::commands::AppState>) -> Resu
     let month = month_key();
     Ok(SpendSummary {
         spent_usd: state.db.spend_month(&month)?,
+        estimated_usd: state.db.spend_month_estimated(&month)?,
         budget_usd: state.current_settings().monthly_budget_usd,
         breakdown: state.db.spend_breakdown(&month)?,
         month,
@@ -579,8 +867,15 @@ mod tests {
             auto: true,
             local_ok: true,
             local_vision: false,
-            cloud: Some((ProviderId::Anthropic, "claude-opus-5-5".into())),
+            local_tools: true,
+            local_ctx_tokens: 16_384,
+            local_loaded: true,
+            clouds: vec![Model {
+                provider: ProviderId::Anthropic,
+                model: "claude-opus-5-5".into(),
+            }],
             spent_month_usd: 0.0,
+            reserved_usd: 0.0,
             budget_usd: 5.0,
         }
     }
@@ -737,7 +1032,7 @@ mod tests {
         assert!(d.blocked.unwrap().contains("no lo enviaré a internet"));
         assert!(private_reason("mi tarjeta es 4111 1111 1111 1111").is_some());
         assert!(private_reason("transfiere a ES9121000418450200051332").is_some());
-        assert!(private_reason("mi CURP es XXXX").is_some());
+        assert!(private_reason("mi CURP es LOMP900215MDFPRL08").is_some());
         assert!(private_reason("tengo 3 tareas para el 2026").is_none());
         assert!(private_reason("llama al 555 1234").is_none());
     }
@@ -759,7 +1054,7 @@ mod tests {
         // Sin clave externa: no hay alternativa.
         let mut c = ctx();
         c.local_ok = false;
-        c.cloud = None;
+        c.clouds = vec![];
         assert!(decide(&req("hola"), &c).blocked.unwrap().contains("Ollama"));
     }
 
@@ -786,14 +1081,108 @@ mod tests {
 
     #[test]
     fn backend_check_blocks_over_budget_or_private() {
-        assert!(check_cloud_use(ProviderId::Ollama, "mi contraseña es x", 99.0, 0.0).is_ok());
-        assert!(check_cloud_use(ProviderId::Anthropic, "hola", 1.0, 5.0).is_ok());
-        assert!(check_cloud_use(ProviderId::Anthropic, "hola", 5.0, 5.0)
+        use crate::privacy::Outgoing;
+        let out = |t: &str| Outgoing {
+            text: t.into(),
+            ..Default::default()
+        };
+        assert!(check_cloud_use(ProviderId::Ollama, &out("mi contraseña es x"), &[], 99.0, 0.0).is_ok());
+        assert!(check_cloud_use(ProviderId::Anthropic, &out("hola"), &[], 1.0, 5.0).is_ok());
+        assert!(check_cloud_use(ProviderId::Anthropic, &out("hola"), &[], 5.0, 5.0)
             .unwrap_err()
             .contains("límite"));
-        assert!(check_cloud_use(ProviderId::Openai, "mi contraseña es x", 0.0, 5.0)
+        assert!(check_cloud_use(ProviderId::Openai, &out("mi contraseña es x"), &[], 0.0, 5.0)
             .unwrap_err()
             .contains("privacidad"));
+        // Datos personales: sólo con la autorización de ese tipo de dato.
+        let p = out("escríbele a ana@ejemplo.com");
+        assert!(check_cloud_use(ProviderId::Openai, &p, &[], 0.0, 5.0)
+            .unwrap_err()
+            .contains("autorización"));
+        assert!(check_cloud_use(ProviderId::Openai, &p, &["correo".into()], 0.0, 5.0).is_ok());
+        // El historial también cuenta.
+        let h = Outgoing {
+            text: "¿y ahora?".into(),
+            history: vec!["DB_PASSWORD=Gato123".into()],
+            ..Default::default()
+        };
+        assert!(check_cloud_use(ProviderId::Openai, &h, &[], 0.0, 5.0).is_err());
+    }
+
+    #[test]
+    fn personal_data_offer_requires_explicit_ack() {
+        let mut r = req(LABELED[23].0);
+        r.text.push_str(" y mándale el resultado a jefe@empresa.com");
+        let d = decide(&r, &ctx());
+        let o = d.offer.expect("propone Claude");
+        assert_eq!(o.ack, vec!["correo".to_string()]);
+        assert!(o.ack_summary.contains("correo"));
+        // Imágenes (no se pueden revisar por dentro) también piden autorización.
+        let mut r = req("¿qué ves aquí?");
+        r.has_images = true;
+        let o = decide(&r, &ctx()).offer.unwrap();
+        assert!(o.ack.contains(&"imagen".to_string()));
+    }
+
+    #[test]
+    fn main_cloud_provider_respects_privacy() {
+        let mut c = ctx();
+        c.main = ProviderId::Anthropic;
+        // Secreto: esta vez responde el modelo local.
+        let d = decide(&req("revisa esto: DB_PASSWORD=Gato123"), &c);
+        assert_eq!(d.provider, ProviderId::Ollama);
+        assert!(d.blocked.is_none());
+        // …y si Ollama no está, se bloquea en vez de enviarlo.
+        c.local_ok = false;
+        assert!(decide(&req("revisa esto: DB_PASSWORD=Gato123"), &c)
+            .blocked
+            .unwrap()
+            .contains("privacidad"));
+        // Datos personales: Claude con autorización explícita.
+        let d = decide(&req("escribe a ana@ejemplo.com"), &c);
+        assert_eq!(d.provider, ProviderId::Anthropic);
+        assert_eq!(d.ack_required, vec!["correo".to_string()]);
+    }
+
+    #[test]
+    fn capability_context_and_speed_drive_the_choice() {
+        // Conversación que no cabe en el contexto local → propone el externo.
+        let mut r = req("¿y qué opinas de todo esto?");
+        r.history_chars = 60_000;
+        let d = decide(&r, &ctx());
+        assert!(d.offer.unwrap().why.contains("no cabe"), "{:?}", d.candidates[0]);
+        // Modelo local sin herramientas + acción → propone el externo.
+        let mut c = ctx();
+        c.local_tools = false;
+        assert!(decide(&req("abre la calculadora"), &c).offer.unwrap().why.contains("herramientas"));
+        // Velocidad estimada: cargar el modelo local suma tiempo.
+        let mut cold = ctx();
+        cold.local_loaded = false;
+        let warm_s = decide(&req("hola"), &ctx()).candidates[0].est_seconds;
+        let cold_s = decide(&req("hola"), &cold).candidates[0].est_seconds;
+        assert!(cold_s > warm_s + 5.0);
+        // Todos los candidatos quedan explicados.
+        let d = decide(&req(LABELED[24].0), &ctx());
+        assert_eq!(d.candidates.len(), 2);
+        assert!(d.candidates.iter().all(|c| c.eligible || c.why_not.is_some()));
+    }
+
+    #[test]
+    fn reservations_prevent_overspending_with_simultaneous_requests() {
+        let r = Reservations::default();
+        // Presupuesto 1 US$, gastado 0,40: caben dos respuestas de 0,25 pero no tres.
+        assert!(r.reserve("a", 0.25, 0.40, 1.0).is_ok());
+        assert!(r.reserve("b", 0.25, 0.40, 1.0).is_ok());
+        let e = r.reserve("c", 0.25, 0.40, 1.0).unwrap_err();
+        assert!(e.contains("reservado por otras respuestas"), "{e}");
+        assert!((r.total() - 0.5).abs() < 1e-9);
+        r.release("a");
+        assert!(r.reserve("c", 0.25, 0.40, 1.0).is_ok(), "al terminar una, se libera su reserva");
+        // El enrutador tiene en cuenta lo reservado.
+        let mut c = ctx();
+        c.spent_month_usd = 3.0;
+        c.reserved_usd = 1.99;
+        assert!(decide(&req(LABELED[24].0), &c).offer.is_none());
     }
 
     #[test]

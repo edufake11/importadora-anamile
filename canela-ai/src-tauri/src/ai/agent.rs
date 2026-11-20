@@ -47,6 +47,9 @@ pub struct AgentEnv {
     pub history: Vec<ChatMessage>,
     pub tools: Option<Arc<ToolCtx>>,
     pub confirms: Arc<Confirmations>,
+    /// Freno de gasto: máximo (US$) que puede costar esta respuesta, con
+    /// tokens reales. `None` = sin límite (modelo local).
+    pub max_cost_usd: Option<f64>,
 }
 
 type Emit = Arc<dyn Fn(StreamEvent) + Send + Sync>;
@@ -318,10 +321,28 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         };
         last_model = outcome.model.clone().or(last_model);
         usage.add(&outcome.usage);
+        let spent_here = super::pricing::price(provider, &model).map(|p| super::pricing::cost(p, &usage));
+        let over_budget = matches!((env.max_cost_usd, spent_here), (Some(max), Some(c)) if c > max);
         if let Some(a) = &outcome.assistant {
             transcript.push(a.clone());
         }
         let ctx = match (&env.tools, outcome.tool_calls.is_empty()) {
+            (Some(_), false) if over_budget => {
+                // Seguir llamando al modelo superaría el límite de gasto.
+                emit(StreamEvent::Done {
+                    stop_reason: Some("budget".into()),
+                    model: last_model,
+                    notice: Some(format!(
+                        "Me detuve para no superar tu límite de gasto mensual (esta respuesta ya costó ≈ {:.3} US$ según los tokens que informó el proveedor). Súbelo en Ajustes si quieres que continúe.",
+                        spent_here.unwrap_or(0.0)
+                    )),
+                    provider,
+                    transcript,
+                    usage,
+                    cost_usd: spent_here,
+                });
+                return;
+            }
             (Some(ctx), false) => ctx.clone(),
             _ => {
                 emit(StreamEvent::Done {
@@ -338,8 +359,16 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         };
         let mut results = Vec::new();
         for call in &outcome.tool_calls {
-            let (result, untrusted) = execute(&env, &ctx, call, &emit, tainted).await;
+            let (mut result, untrusted) = execute(&env, &ctx, call, &emit, tainted).await;
             tainted |= untrusted;
+            // Con un modelo externo, lo que leen las herramientas (archivos,
+            // documentos) se revisa antes de enviarlo: los secretos no salen.
+            if provider.is_cloud() {
+                if let Some(safe) = crate::privacy::redact_for_external(&result.text, super::anthropic_or_openai_label(provider)) {
+                    result.text = safe;
+                    result.images.clear();
+                }
+            }
             results.push(result);
         }
         transcript.extend(tool_results(provider, &results));

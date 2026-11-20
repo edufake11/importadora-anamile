@@ -356,6 +356,12 @@ impl Db {
             conn.execute_batch(SCHEMA_V4).map_err(err)?;
             conn.execute_batch("PRAGMA user_version = 4").map_err(err)?;
         }
+        if version < 5 {
+            // «api» = tokens reales informados por el proveedor; «estimado» =
+            // la respuesta se cortó y no hubo datos de consumo.
+            conn.execute_batch("ALTER TABLE api_spend ADD COLUMN source TEXT NOT NULL DEFAULT 'api'; PRAGMA user_version = 5;")
+                .map_err(err)?;
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -846,18 +852,30 @@ impl Db {
     }
 
     /// Apunta el costo de una respuesta de un modelo de pago.
-    pub fn spend_add(&self, month: &str, provider: &str, model: &str, input: u64, output: u64, usd: f64) -> DbResult<()> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn spend_add(&self, month: &str, provider: &str, model: &str, input: u64, output: u64, usd: f64, source: &str) -> DbResult<()> {
         if usd <= 0.0 {
             return Ok(());
         }
         let ts = now_str();
         self.with(|c| {
             c.execute(
-                "INSERT INTO api_spend (ts, month, provider, model, input_tokens, output_tokens, usd) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![ts, month, provider, model, input as i64, output as i64, usd],
+                "INSERT INTO api_spend (ts, month, provider, model, input_tokens, output_tokens, usd, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![ts, month, provider, model, input as i64, output as i64, usd, source],
             )
         })
         .map(|_| ())
+    }
+
+    /// Parte del gasto del mes que es estimada (sin datos reales de consumo).
+    pub fn spend_month_estimated(&self, month: &str) -> DbResult<f64> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(usd), 0) FROM api_spend WHERE month = ?1 AND source = 'estimado'",
+                params![month],
+                |r| r.get(0),
+            )
+        })
     }
 
     /// Gasto total de un mes («AAAA-MM»).
@@ -1156,11 +1174,13 @@ mod tests {
     #[test]
     fn spend_is_recorded_per_month() {
         let db = Db::open_in_memory().unwrap();
-        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 6000, 800, 0.04).unwrap();
-        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 9000, 1200, 0.06).unwrap();
-        db.spend_add("2026-11", "openai", "gpt-5", 5000, 500, 0.01).unwrap();
-        db.spend_add("2026-10", "openai", "gpt-5", 5000, 500, 3.0).unwrap();
-        db.spend_add("2026-11", "ollama", "qwen3:8b", 5000, 500, 0.0).unwrap(); // gratis: no se apunta
+        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 6000, 800, 0.04, "api")
+            .unwrap();
+        db.spend_add("2026-11", "anthropic", "claude-opus-5-5", 9000, 1200, 0.06, "api")
+            .unwrap();
+        db.spend_add("2026-11", "openai", "gpt-5", 5000, 500, 0.01, "api").unwrap();
+        db.spend_add("2026-10", "openai", "gpt-5", 5000, 500, 3.0, "api").unwrap();
+        db.spend_add("2026-11", "ollama", "qwen3:8b", 5000, 500, 0.0, "api").unwrap(); // gratis: no se apunta
         assert!((db.spend_month("2026-11").unwrap() - 0.11).abs() < 1e-9);
         assert!((db.spend_month("2026-10").unwrap() - 3.0).abs() < 1e-9);
         assert_eq!(db.spend_month("2027-01").unwrap(), 0.0);
@@ -1168,5 +1188,11 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!(b[0].provider, "anthropic");
         assert_eq!(b[0].calls, 2);
+        db.spend_add("2026-11", "openai", "gpt-5", 0, 0, 0.02, "estimado").unwrap();
+        assert!((db.spend_month_estimated("2026-11").unwrap() - 0.02).abs() < 1e-9);
+        assert!(
+            (db.spend_month("2026-11").unwrap() - 0.13).abs() < 1e-9,
+            "lo estimado también cuenta para el límite"
+        );
     }
 }

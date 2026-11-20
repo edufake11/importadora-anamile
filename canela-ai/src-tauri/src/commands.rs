@@ -167,6 +167,9 @@ pub async fn chat_send(
     // v0.6: modelo elegido para ESTE mensaje (p. ej. aceptaste usar Claude
     // para una tarea compleja). Se valida aquí: presupuesto y privacidad.
     provider_override: Option<ProviderId>,
+    // v0.6.1: tipos de datos personales que autorizaste enviar fuera en ESTE
+    // mensaje (correo, teléfono, imagen…). Los secretos nunca se autorizan.
+    privacy_ack: Option<Vec<String>>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     if messages.last().map(|m| m.role) != Some(Role::User) {
@@ -179,21 +182,53 @@ pub async fn chat_send(
 
     let mut settings = state.current_settings();
     let spent = state.db.spend_month(&crate::router::month_key()).unwrap_or(0.0);
-    let last_text = messages.last().map(|m| m.text.clone()).unwrap_or_default();
-    match provider_override {
-        Some(p) => {
-            crate::router::check_cloud_use(p, &last_text, spent, settings.monthly_budget_usd)?;
-            settings.provider = p;
-        }
-        None if settings.provider.is_cloud() && (settings.monthly_budget_usd <= 0.0 || spent >= settings.monthly_budget_usd) => {
-            return Err(format!(
-                "Alcanzaste tu límite de gasto mensual ({spent:.2} US$ de {:.2} US$). Súbelo en Ajustes › Asistente o usa el modelo local.",
-                settings.monthly_budget_usd
-            ));
-        }
-        None => {}
+    let last = messages.last().cloned().unwrap();
+    let switching = provider_override.is_some_and(|p| p != settings.provider);
+    if let Some(p) = provider_override {
+        settings.provider = p;
     }
     let provider = settings.provider;
+    // Control final de privacidad y presupuesto para servicios externos.
+    let mut reservation: Option<(String, f64)> = None;
+    if provider.is_cloud() {
+        // Si se cambia de modelo, el historial también viaja (por primera vez).
+        let outgoing = crate::privacy::Outgoing {
+            text: last.text.clone(),
+            attachments: vec![],
+            history: if switching {
+                messages[..messages.len() - 1].iter().map(|m| m.text.clone()).collect()
+            } else {
+                vec![]
+            },
+            images: if switching {
+                messages.iter().map(|m| m.images.len()).sum()
+            } else {
+                last.images.len()
+            },
+        };
+        let reserved = crate::router::RESERVATIONS.total();
+        crate::router::check_cloud_use(
+            provider,
+            &outgoing,
+            privacy_ack.as_deref().unwrap_or(&[]),
+            spent + reserved,
+            settings.monthly_budget_usd,
+        )?;
+        // Reserva el costo ESTIMADO mientras dure la respuesta.
+        let req = crate::router::Request {
+            text: last.text.clone(),
+            history_chars: messages.iter().map(|m| m.text.len()).sum::<usize>(),
+            ..Default::default()
+        };
+        let (level, _) = crate::router::complexity(&req);
+        let est = crate::router::estimate_cost(provider, &ai::model_of(&settings), &req, level).unwrap_or(0.01);
+        crate::router::RESERVATIONS.reserve(&request_id, est, spent, settings.monthly_budget_usd)?;
+        reservation = Some((request_id.clone(), est));
+    }
+    let max_cost_usd = reservation
+        .as_ref()
+        .map(|_| (settings.monthly_budget_usd - spent - (crate::router::RESERVATIONS.total() - reservation.as_ref().unwrap().1)).max(0.0));
+    let model_name = ai::model_of(&settings);
     // Sólo en desarrollo: clave simulada para probar con un servidor local.
     #[cfg(debug_assertions)]
     let dev_key = std::env::var("CANELA_DEV_API_KEY").ok();
@@ -241,15 +276,32 @@ pub async fn chat_send(
         history: messages,
         tools: Some(Arc::new(tools)),
         confirms: state.confirms.clone(),
+        max_cost_usd,
     };
 
     let channel = on_event.clone();
     let spend_db = state.db.clone();
+    // Al terminar (bien, con error o cancelada) se libera la reserva; si la
+    // respuesta se cortó sin datos de consumo, se apunta la estimación.
+    let guard = SpendGuard {
+        reservation,
+        db: state.db.clone(),
+        provider,
+        model: model_name,
+        started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        recorded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let (started, recorded) = (guard.started.clone(), guard.recorded.clone());
     let handle = tauri::async_runtime::spawn(async move {
+        let _guard = guard;
         agent::run(
             env,
             Arc::new(move |ev| {
-                // Gasto real de cada respuesta de pago (para el límite mensual).
+                use std::sync::atomic::Ordering;
+                if matches!(ev, StreamEvent::Started { .. }) {
+                    started.store(true, Ordering::SeqCst);
+                }
+                // Gasto con los tokens REALES que informó el proveedor.
                 if let StreamEvent::Done {
                     provider,
                     cost_usd: Some(c),
@@ -266,7 +318,9 @@ pub async fn chat_send(
                             usage.input + usage.cache_read + usage.cache_write,
                             usage.output,
                             *c,
+                            "api",
                         );
+                        recorded.store(true, Ordering::SeqCst);
                     }
                 }
                 let _ = channel.send(ev);
@@ -278,6 +332,38 @@ pub async fn chat_send(
     chats.retain(|_, (h, _)| !h.inner().is_finished());
     chats.insert(request_id, (handle, on_event));
     Ok(())
+}
+
+/// Libera la reserva de presupuesto al terminar una respuesta. Si el modelo
+/// externo empezó a responder pero no llegaron datos de consumo (cancelada o
+/// cortada), apunta el costo estimado como «estimado» para no subestimar.
+struct SpendGuard {
+    reservation: Option<(String, f64)>,
+    db: Arc<crate::db::Db>,
+    provider: ProviderId,
+    model: String,
+    started: Arc<std::sync::atomic::AtomicBool>,
+    recorded: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for SpendGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        if let Some((id, est)) = self.reservation.take() {
+            crate::router::RESERVATIONS.release(&id);
+            if self.started.load(Ordering::SeqCst) && !self.recorded.load(Ordering::SeqCst) {
+                let _ = self.db.spend_add(
+                    &crate::router::month_key(),
+                    self.provider.as_str(),
+                    &self.model,
+                    0,
+                    0,
+                    est,
+                    "estimado",
+                );
+            }
+        }
+    }
 }
 
 #[tauri::command]

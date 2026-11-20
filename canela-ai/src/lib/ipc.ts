@@ -208,6 +208,7 @@ export const api = {
     context: string,
     onEvent: (ev: StreamEvent) => void,
     providerOverride?: ProviderId,
+    privacyAck?: string[],
   ): Promise<() => Promise<void>> {
     const channel = new Channel<StreamEvent>();
     channel.onmessage = onEvent;
@@ -217,6 +218,7 @@ export const api = {
       userName,
       context,
       providerOverride: providerOverride ?? null,
+      privacyAck: privacyAck ?? null,
       onEvent: channel,
     });
     return async () => {
@@ -621,21 +623,49 @@ export async function askUser(message: string): Promise<boolean> {
   }
 }
 
-// ------------------------- Enrutador de modelos (v0.6) ----------------------
+// ------------------------- Enrutador de modelos (v0.6.1) --------------------
 
 export interface RouteRequest {
   text: string;
   hasImages: boolean;
   attachmentChars: number;
   historyChars: number;
+  /** Contenido de adjuntos, textos anteriores e imágenes previas: se revisan
+   * por privacidad antes de enviar nada fuera. */
+  attachments: string[];
+  history: string[];
+  historyImages: number;
+}
+
+export interface PrivacyFinding {
+  level: "none" | "uncertain" | "personal" | "secret";
+  kind: string;
+  what: string;
+  place: string;
 }
 
 export interface CloudOffer {
   provider: ProviderId;
   model: string;
   label: string;
+  /** Costo ESTIMADO (el real depende de los tokens que informe el proveedor). */
   estCostUsd: number | null;
+  estSeconds: number;
   why: string;
+  /** Datos que necesitan tu autorización explícita para salir del equipo. */
+  ack: string[];
+  ackSummary: string;
+}
+
+export interface RouteCandidate {
+  provider: ProviderId;
+  model: string;
+  label: string;
+  eligible: boolean;
+  whyNot: string | null;
+  quality: number;
+  estCostUsd: number | null;
+  estSeconds: number;
 }
 
 export interface RouteDecision {
@@ -645,34 +675,69 @@ export interface RouteDecision {
   offer: CloudOffer | null;
   blocked: string | null;
   private: boolean;
+  privacy: { findings: PrivacyFinding[] };
+  ackRequired: string[];
+  candidates: RouteCandidate[];
   spentMonthUsd: number;
+  reservedUsd: number;
   budgetUsd: number;
 }
 
 export interface SpendSummary {
   month: string;
   spentUsd: number;
+  estimatedUsd: number;
   budgetUsd: number;
   breakdown: { provider: string; model: string; calls: number; usd: number }[];
 }
 
 /** Qué hacer con la decisión del enrutador antes de enviar. */
 export type RouteAction =
-  | { kind: "send"; override?: ProviderId }
+  | { kind: "send"; override?: ProviderId; ack?: string[] }
   | { kind: "ask"; offer: CloudOffer; localPossible: boolean }
+  | {
+      kind: "confirm-send";
+      provider: ProviderId;
+      ack: string[];
+      summary: string;
+    }
   | { kind: "blocked"; message: string };
+
+const PROVIDER_LABEL: Record<ProviderId, string> = {
+  anthropic: "Claude",
+  openai: "ChatGPT",
+  ollama: "el modelo local",
+};
 
 export function routeAction(
   d: RouteDecision,
   cloudAllowedInConversation: boolean,
+  main: ProviderId,
 ): RouteAction {
+  if (d.blocked && !d.offer) return { kind: "blocked", message: d.blocked };
+  // Principal externo: datos personales → autorización explícita para ESTE mensaje.
+  if (main !== "ollama") {
+    if (d.provider !== main) return { kind: "send", override: d.provider };
+    if (d.ackRequired.length)
+      return {
+        kind: "confirm-send",
+        provider: main,
+        ack: d.ackRequired,
+        summary: d.privacy.findings
+          .filter((f) => f.level === "personal" || f.level === "uncertain")
+          .map((f) => `${f.what} (${f.place})`)
+          .join(", "),
+      };
+    return { kind: "send" };
+  }
   if (d.offer) {
     const localPossible = !d.blocked && d.provider === "ollama";
-    // Permitido para toda la conversación (y no hay datos privados).
-    if (cloudAllowedInConversation && !d.private)
+    // «Permitir en esta conversación» NO cubre datos personales ni imágenes.
+    if (cloudAllowedInConversation && !d.private && d.offer.ack.length === 0)
       return { kind: "send", override: d.offer.provider };
     return { kind: "ask", offer: d.offer, localPossible };
   }
-  if (d.blocked) return { kind: "blocked", message: d.blocked };
   return { kind: "send" };
 }
+
+export const providerLabel = (p: ProviderId) => PROVIDER_LABEL[p];

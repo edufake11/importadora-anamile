@@ -4,6 +4,7 @@ import {
   api,
   canChat,
   routeAction,
+  providerLabel,
   type CloudOffer,
   type ProviderId,
   onMemoryWarning,
@@ -166,6 +167,12 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
     resolve: (c: RouteChoice) => void;
   } | null>(null);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  // Principal externo + datos personales: autorización para ESTE mensaje.
+  const [privacyAsk, setPrivacyAsk] = useState<{
+    provider: ProviderId;
+    summary: string;
+    resolve: (ok: boolean) => void;
+  } | null>(null);
   // «Permitir en esta conversación» (se reinicia con «Nueva»).
   const cloudAllowedRef = useRef(false);
 
@@ -297,16 +304,21 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
       onOpenSettings();
       return;
     }
-    // Enrutador (v0.6): ¿local o un modelo externo con tu permiso?
+    // Enrutador (v0.6.1): modelo, privacidad y presupuesto.
     let override: ProviderId | undefined;
+    let privacyAck: string[] | undefined;
     try {
+      const prior = messagesRef.current;
       const d = await api.routeDecide({
         text,
         hasImages: images.length > 0,
         attachmentChars: attachments.reduce((n, a) => n + a.content.length, 0),
-        historyChars: wireSize(messagesRef.current),
+        historyChars: wireSize(prior),
+        attachments: attachments.map((a) => a.content),
+        history: prior.map((m) => m.text),
+        historyImages: prior.reduce((n, m) => n + (m.images?.length ?? 0), 0),
       });
-      const action = routeAction(d, cloudAllowedRef.current);
+      const action = routeAction(d, cloudAllowedRef.current, settings.provider);
       if (action.kind === "blocked") {
         setRouteNotice(action.message);
         return;
@@ -322,7 +334,17 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         setRouteAsk(null);
         if (choice === "cancel") return;
         if (choice === "cloud-always") cloudAllowedRef.current = true;
-        if (choice !== "local") override = action.offer.provider;
+        if (choice !== "local") {
+          override = action.offer.provider;
+          privacyAck = action.offer.ack;
+        }
+      } else if (action.kind === "confirm-send") {
+        const ok = await new Promise<boolean>((resolve) =>
+          setPrivacyAsk({ ...action, resolve }),
+        );
+        setPrivacyAsk(null);
+        if (!ok) return;
+        privacyAck = action.ack;
       } else {
         override = action.override;
       }
@@ -543,6 +565,7 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
         conv.context,
         onEvent,
         override,
+        privacyAck,
       );
     } catch (e) {
       finish((m) => ({
@@ -820,10 +843,16 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
             {routeAsk.offer.label}: tu mensaje se enviará a su servicio en
             internet
             {routeAsk.offer.estCostUsd != null
-              ? ` (≈ ${formatUsd(routeAsk.offer.estCostUsd)})`
+              ? ` (≈ ${formatUsd(routeAsk.offer.estCostUsd)} estimado; el costo final lo fija el proveedor según los tokens reales)`
               : " (costo desconocido)"}
             .
           </p>
+          {routeAsk.offer.ack.length > 0 && (
+            <p className="route-warn">
+              ⚠ Contiene {routeAsk.offer.ackSummary}. Sólo se enviará si eliges{" "}
+              {routeAsk.offer.label}.
+            </p>
+          )}
           <div className="row">
             {routeAsk.localPossible && (
               <button className="btn" onClick={() => routeAsk.resolve("local")}>
@@ -840,12 +869,37 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               Cancelar
             </button>
           </div>
-          <button
-            className="text-button"
-            onClick={() => routeAsk.resolve("cloud-always")}
-          >
-            Usar {routeAsk.offer.label} cuando haga falta en esta conversación
-          </button>
+          {routeAsk.offer.ack.length === 0 && (
+            <button
+              className="text-button"
+              onClick={() => routeAsk.resolve("cloud-always")}
+            >
+              Usar {routeAsk.offer.label} cuando haga falta en esta conversación
+            </button>
+          )}
+        </div>
+      )}
+
+      {privacyAsk && (
+        <div className="route-card" role="dialog" aria-label="Autorizar envío">
+          <div className="route-title">
+            ¿Enviar esto a {providerLabel(privacyAsk.provider)}?
+          </div>
+          <p className="muted">
+            Contiene {privacyAsk.summary}. Se enviará a su servicio en internet
+            sólo si lo autorizas para este mensaje.
+          </p>
+          <div className="row">
+            <button
+              className="btn primary"
+              onClick={() => privacyAsk.resolve(true)}
+            >
+              Enviar
+            </button>
+            <button className="btn" onClick={() => privacyAsk.resolve(false)}>
+              No enviar
+            </button>
+          </div>
         </div>
       )}
 

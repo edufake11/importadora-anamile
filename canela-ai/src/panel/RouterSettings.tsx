@@ -74,7 +74,7 @@ export function RouterSettings({ form, set, keys }: Props) {
         />
         <small className="muted">
           {spend
-            ? `Este mes llevas ${formatUsd(spend.spentUsd)} (aproximado). `
+            ? `Este mes llevas ${formatUsd(spend.spentUsd)}${spend.estimatedUsd > 0 ? `, de ello ${formatUsd(spend.estimatedUsd)} estimado (respuestas cortadas sin datos de consumo)` : ""}. Se calcula con los tokens que informa cada proveedor y precios aproximados: la factura final la fija el proveedor. `
             : ""}
           Al llegar al límite, Canela deja de usar Claude o ChatGPT hasta el mes
           siguiente. 0 = no gastar nada.

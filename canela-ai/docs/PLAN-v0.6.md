@@ -85,3 +85,27 @@ Mensaje ─► [Enrutador] ─► elige modelo (local / externo con permiso) y l
   - Garantía comprobada en ambos: **ninguna tarea sencilla se clasifica como compleja** (nunca se propone pagar por un saludo o una acción simple).
 - **Probado en la app (Linux, modelos simulados):** saludo → local sin preguntar; comparación compleja → tarjeta con motivo y costo estimado; «Usar ChatGPT» → la petición fue al proveedor externo y el gasto quedó registrado; mensaje complejo con contraseña → local, sin tarjeta y sin gasto; Ajustes muestra el gasto del mes.
 - **Pendiente en Windows real:** que el costo estimado se parezca al real con respuestas de verdad (el simulador declara un uso inventado), y que la tarjeta resulte útil y no molesta en el uso diario.
+
+## 6. v0.6.1 — Refuerzos (rama de desarrollo, no estable)
+
+### Privacidad (`src-tauri/src/privacy.rs`)
+- No depende sólo de palabras clave: **valida** los datos (tarjetas con Luhn, IBAN con mod-97, DNI/NIE con su letra, formato de CURP, SSN), reconoce claves privadas, JWT, direcciones de conexión con contraseña, asignaciones tipo `.env` (`PASSWORD=…`) y **claves sin prefijo** por su aleatoriedad (entropía + alternancia de minúsculas/mayúsculas/cifras).
+- Revisa **todo lo que saldría**: mensaje, adjuntos, historial (cuando se cambia a un modelo externo) e imágenes (que no puede revisar por dentro).
+- Tres niveles: **secreto** (nunca sale; si tu principal es externo, ese mensaje lo responde el modelo local), **personal** (correo, teléfono, salud, dirección, finanzas, hash largo: sólo con tu autorización explícita para ese mensaje, que «permitir en esta conversación» no cubre) e **incierto** (imágenes: también con autorización).
+- Lo que leen las herramientas (archivos, documentos) se revisa antes de enviarlo a un modelo externo: si contiene secretos, se envía un aviso en su lugar.
+- Control final en el backend (`chat_send`): aunque la interfaz lo pidiera, no se envía nada con secretos ni datos personales sin la autorización de ese tipo de dato.
+- **Evaluación** (mensajes en español etiquetados a mano): primer conjunto nuevo 27/30 antes de corregir 3 errores de los detectores (IBAN alemán, teléfono con espacios, `react@18.3.1` tomado como correo); tras corregirlos, **segundo conjunto nuevo escrito después: 20/20**, sin falsos negativos.
+
+### Presupuesto
+- **Costo real**: cada respuesta de pago se apunta con los **tokens que informa el proveedor** (fuente «api»); el precio por token es aproximado y la factura final la fija el proveedor. Si una respuesta se corta sin datos de consumo, se apunta la estimación (fuente «estimado») para no subestimar. Ajustes muestra qué parte es estimada.
+- **Reservas**: cada respuesta externa reserva su costo estimado mientras dura; dos respuestas simultáneas no pueden gastar el mismo saldo.
+- **Freno a mitad de respuesta**: si una cadena de herramientas hace que el costo real supere lo disponible, Canela se detiene antes de la siguiente llamada de pago y lo explica.
+- Los costos mostrados antes de enviar son **estimaciones** y se rotulan así.
+
+### Selección de modelos
+- Cada candidato (local y externos con clave) se evalúa por **capacidad** (imágenes, herramientas, tamaño de la conversación frente al contexto local), **privacidad**, **disponibilidad**, **velocidad estimada** (incluye cargar el modelo local si no está en memoria) y **costo estimado**; la decisión incluye por qué cada candidato sirve o no.
+- Clasificador de complejidad con señales generales nuevas (varias instrucciones encadenadas, requisitos enumerados, datos para analizar, alcance: planes, contratos, demostraciones).
+- **Evaluación** (`src-tauri/src/router_eval.rs`):
+  - Conjunto A (100 mensajes nuevos): **línea base 78 %**; tras las mejoras 97 % (optimista: A guió las mejoras).
+  - **Conjunto B (60 mensajes, escrito antes de medir y nunca usado para ajustar): 90 %**. Detección de tareas complejas: 16/20 (80 %) con 100 % de precisión. **Ninguna tarea sencilla clasificada como compleja** en ningún conjunto.
+  - Confundir «sencilla» con «normal» no cambia la decisión (ambas se quedan en local); sólo «compleja» propone un modelo externo.

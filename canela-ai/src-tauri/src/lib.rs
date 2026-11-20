@@ -10,9 +10,12 @@ mod jobs;
 mod media;
 mod memdiag;
 mod model_cmds;
+mod privacy;
 mod reminders;
 mod resources;
 mod router;
+#[cfg(test)]
+mod router_eval;
 mod secrets;
 mod settings;
 mod system;

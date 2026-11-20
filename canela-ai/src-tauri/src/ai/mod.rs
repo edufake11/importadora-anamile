@@ -231,6 +231,11 @@ pub fn http_error_message(provider: ProviderId, status: u16, body: &str, model: 
     }
 }
 
+/// Nombre del servicio externo para los mensajes de privacidad.
+pub fn anthropic_or_openai_label(p: ProviderId) -> &'static str {
+    crate::router::provider_label(p)
+}
+
 /// Historial de la interfaz -> mensajes en el formato del proveedor.
 pub fn native_history(provider: ProviderId, history: &[ChatMessage]) -> Vec<Value> {
     match provider {
