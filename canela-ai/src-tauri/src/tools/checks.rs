@@ -49,12 +49,19 @@ pub struct CheckCmd {
     pub timeout: Duration,
     /// Revisión interna de este archivo (sin procesos).
     pub internal: Option<PathBuf>,
+    /// Quitar del entorno las variables con aspecto de secreto (siempre en la
+    /// app; sólo se desactiva en el diagnóstico de pruebas).
+    pub scrub_env: bool,
+    /// Lanzar sin ventana de consola (Windows).
+    pub hide_window: bool,
 }
 
 /// Busca un programa en el PATH (en Windows también .exe, .cmd y .bat).
 pub fn which(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ""] } else { &[""] };
+    // En Windows sólo ejecutables reales (no el script sin extensión que npm
+    // también instala junto a npm.cmd).
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ".com"] } else { &[""] };
     for dir in std::env::split_paths(&path) {
         for n in names {
             for e in exts {
@@ -100,7 +107,6 @@ const MAX_PATH_LEN: usize = 8000;
 /// Windows; después el PATH heredado (sin repetidos) hasta el límite. Así las
 /// pruebas que lanza npm encuentran `node` aunque el PATH heredado sea enorme.
 fn child_path(program: &Path) -> Option<std::ffi::OsString> {
-    let mut parts: Vec<PathBuf> = Vec::new();
     let mut first: Vec<PathBuf> = [
         program.parent().map(Path::to_path_buf),
         which(&["node"]).and_then(|n| n.parent().map(Path::to_path_buf)),
@@ -119,19 +125,28 @@ fn child_path(program: &Path) -> Option<std::ffi::OsString> {
     let inherited: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    let limit = if cfg!(windows) { Some(MAX_PATH_LEN) } else { None };
+    std::env::join_paths(build_path(first, inherited, limit)).ok()
+}
+
+/// Lista final de carpetas: primero `first`, después las heredadas, sin
+/// vacías ni repetidas y, si hay límite, sin pasarse de él (las primeras
+/// nunca se pierden porque van delante).
+fn build_path(first: Vec<PathBuf>, inherited: Vec<PathBuf>, limit: Option<usize>) -> Vec<PathBuf> {
+    let mut parts: Vec<PathBuf> = Vec::new();
     let mut len = 0;
     for p in first.into_iter().chain(inherited) {
         if p.as_os_str().is_empty() || parts.contains(&p) {
             continue;
         }
         let l = p.as_os_str().len() + 1;
-        if cfg!(windows) && len + l > MAX_PATH_LEN {
+        if limit.is_some_and(|max| len + l > max) {
             break;
         }
         len += l;
         parts.push(p);
     }
-    std::env::join_paths(parts).ok()
+    parts
 }
 
 /// Decide el comando (o la revisión interna) para una comprobación.
@@ -156,6 +171,8 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     runs_project_code: false,
                     timeout: secs(30),
                     internal: None,
+                    scrub_env: true,
+                    hide_window: true,
                 }),
                 "py" => Ok(CheckCmd {
                     program: need(&["python", "python3", "py"], "Python")?,
@@ -165,6 +182,8 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     runs_project_code: false,
                     timeout: secs(30),
                     internal: None,
+                    scrub_env: true,
+                    hide_window: true,
                 }),
                 _ => Ok(CheckCmd {
                     program: PathBuf::new(),
@@ -174,6 +193,8 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     runs_project_code: false,
                     timeout: secs(5),
                     internal: Some(target.to_path_buf()),
+                    scrub_env: true,
+                    hide_window: true,
                 }),
             }
         }
@@ -194,6 +215,8 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                 runs_project_code: true,
                 timeout: secs(300),
                 internal: None,
+                scrub_env: true,
+                hide_window: true,
             };
             if let Some(s) = package_script(&dir, script).filter(|s| !s.contains(NPM_DEFAULT_TEST)) {
                 let _ = s;
@@ -319,9 +342,11 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    for (k, _) in std::env::vars_os() {
-        if looks_secret(&k.to_string_lossy()) {
-            c.env_remove(&k);
+    if cmd.scrub_env {
+        for (k, _) in std::env::vars_os() {
+            if looks_secret(&k.to_string_lossy()) {
+                c.env_remove(&k);
+            }
         }
     }
     if let Some(path) = child_path(&cmd.program) {
@@ -330,7 +355,9 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
     #[cfg(windows)]
     {
         // Sin ventana de consola.
-        c.creation_flags(0x0800_0000);
+        if cmd.hide_window {
+            c.creation_flags(0x0800_0000);
+        }
     }
     #[cfg(unix)]
     {
@@ -437,6 +464,128 @@ mod tests {
         if cfg!(windows) {
             assert!(p.len() <= MAX_PATH_LEN, "{}", p.len());
         }
+    }
+
+    #[test]
+    fn reduced_path_keeps_needed_tools_first_and_everything_when_short() {
+        let first = vec![PathBuf::from("C:/Program Files/nodejs"), PathBuf::from("C:/Windows/System32")];
+        // PATH normal: no se pierde nada, sin repetidos ni vacíos, en orden.
+        let normal = vec![
+            PathBuf::from("C:/Program Files/Git/cmd"),
+            PathBuf::new(),
+            PathBuf::from("C:/Program Files/nodejs"),
+            PathBuf::from("C:/Users/Ana María/AppData/Local/Programs/Python/Python312"),
+        ];
+        let out = build_path(first.clone(), normal, Some(MAX_PATH_LEN));
+        assert_eq!(
+            out,
+            vec![
+                PathBuf::from("C:/Program Files/nodejs"),
+                PathBuf::from("C:/Windows/System32"),
+                PathBuf::from("C:/Program Files/Git/cmd"),
+                PathBuf::from("C:/Users/Ana María/AppData/Local/Programs/Python/Python312"),
+            ]
+        );
+        // PATH enorme (como el de «cargo test»): se recorta, pero lo necesario
+        // va primero y las rutas con espacios quedan intactas.
+        let huge: Vec<PathBuf> = (0..600)
+            .map(|i| PathBuf::from(format!("D:/a/target/debug/build/carpeta con espacios {i:04}/out/build")))
+            .collect();
+        let out = build_path(first.clone(), huge, Some(MAX_PATH_LEN));
+        let total: usize = out.iter().map(|p| p.as_os_str().len() + 1).sum();
+        assert!(total <= MAX_PATH_LEN, "{total}");
+        assert_eq!(&out[..2], &first[..]);
+        assert!(out[2].to_string_lossy().contains("carpeta con espacios 0000"));
+        // Sin límite (Linux/macOS) no se recorta nada.
+        let many: Vec<PathBuf> = (0..600).map(|i| PathBuf::from(format!("/x/{i}"))).collect();
+        assert_eq!(build_path(vec![], many, None).len(), 600);
+    }
+
+    #[test]
+    fn detected_tools_are_really_runnable() {
+        // Lo que encuentra `which` debe poder ejecutarse (npm.cmd en Windows).
+        for (names, what) in [
+            (&["node"][..], "node"),
+            (&["npm"][..], "npm"),
+            (&["python", "python3", "py"][..], "python"),
+        ] {
+            match which(names) {
+                Some(p) => {
+                    let out = std::process::Command::new(&p).arg("--version").output();
+                    let ok = out.as_ref().is_ok_and(|o| o.status.success());
+                    assert!(ok, "{what} en {p:?} no se pudo ejecutar: {out:?}");
+                    eprintln!("{what}: {p:?} → {}", String::from_utf8_lossy(&out.unwrap().stdout).trim());
+                }
+                None => eprintln!("{what}: no instalado"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn checks_work_in_folders_with_spaces_and_accents() {
+        let d = dir("con espacios y ñ").join("Mi Proyecto Ñandú");
+        std::fs::create_dir_all(&d).unwrap();
+        if which(&["node"]).is_some() {
+            let f = d.join("mi app.js");
+            std::fs::write(&f, "const x = 1;\n").unwrap();
+            let o = run(&plan(Kind::Sintaxis, &f).unwrap()).await.unwrap();
+            assert!(o.ok, "node --check con espacios: {o:?}");
+        }
+        if which(&["python", "python3", "py"]).is_some() {
+            let f = d.join("mi script.py");
+            std::fs::write(&f, "x = 1\n").unwrap();
+            let o = run(&plan(Kind::Sintaxis, &f).unwrap()).await.unwrap();
+            assert!(o.ok, "python con espacios: {o:?}");
+        }
+        if which(&["npm"]).is_some() && which(&["node"]).is_some() {
+            std::fs::write(d.join("prueba uno.js"), "console.log('ok con espacios')").unwrap();
+            std::fs::write(
+                d.join("package.json"),
+                r#"{"name":"x","version":"1.0.0","scripts":{"test":"node \"prueba uno.js\""}}"#,
+            )
+            .unwrap();
+            let o = run(&plan(Kind::Pruebas, &d).unwrap()).await.unwrap();
+            assert!(o.ok && o.output.contains("ok con espacios"), "npm test con espacios: {o:?}");
+        }
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    /// Diagnóstico (no oculta fallos: sólo informa). Lanza `npm test` con un
+    /// script que muestra el entorno que recibe cmd.exe/sh, con cada factor
+    /// activado o no, para identificar la causa exacta de un fallo en Windows.
+    #[tokio::test]
+    async fn diagnostico_entorno_de_npm() {
+        if which(&["npm"]).is_none() {
+            eprintln!("(sin npm)");
+            return;
+        }
+        let d = dir("diag");
+        let script = if cfg!(windows) {
+            "set & where node"
+        } else {
+            "env; command -v node"
+        };
+        std::fs::write(
+            d.join("package.json"),
+            format!(r#"{{"name":"x","version":"1.0.0","scripts":{{"test":{script:?}}}}}"#),
+        )
+        .unwrap();
+        let base = plan(Kind::Pruebas, &d).unwrap();
+        eprintln!("npm detectado: {:?}; node: {:?}", base.program, which(&["node"]));
+        for (scrub, hide) in [(true, true), (false, true), (true, false), (false, false)] {
+            let mut c = base.clone();
+            c.scrub_env = scrub;
+            c.hide_window = hide;
+            let o = run(&c).await.unwrap();
+            eprintln!("== limpiar_entorno={scrub} sin_ventana={hide} → ok={} código={:?}", o.ok, o.code);
+            for l in o.output.lines() {
+                let low = l.to_lowercase();
+                if low.starts_with("path=") || low.starts_with("pathext=") || low.starts_with("comspec=") || low.contains("node") {
+                    eprintln!("   {}", l.chars().take(400).collect::<String>());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

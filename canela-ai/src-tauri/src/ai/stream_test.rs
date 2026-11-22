@@ -2097,7 +2097,8 @@ async fn code_checks_run_for_real_and_decide_the_result() {
         return;
     }
     let m = "qwen3:8b";
-    let dir = scratch("check");
+    // Carpeta con espacios: en Windows cubre también la ruta normalizada \\?\.
+    let dir = scratch("check con espacios");
     let marker = dir.join("pwned.txt");
     for (content, expected) in [("function f() { return 1 }\n", "completo"), ("function f( {\n", "no_logrado")] {
         let file = dir.join("app.js");
