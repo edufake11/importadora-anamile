@@ -184,6 +184,7 @@ async fn agent_runs_tool_and_continues() {
         confirms: Arc::new(Confirmations::default()),
         max_cost_usd: None,
         agent: None,
+        goal: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -273,6 +274,7 @@ async fn claude_agent_respects_denied_confirmation() {
         confirms: confirms.clone(),
         max_cost_usd: None,
         agent: None,
+        goal: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -368,6 +370,7 @@ async fn injected_instructions_require_confirmation() {
         confirms: confirms.clone(),
         max_cost_usd: None,
         agent: None,
+        goal: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -462,6 +465,7 @@ async fn plan_runs_steps_and_rechecks_destructive_ones() {
         confirms: confirms.clone(),
         max_cost_usd: None,
         agent: None,
+        goal: None,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -544,6 +548,7 @@ fn ollama_env(base: &str, model: &str, db: Arc<Db>, confirms: Arc<Confirmations>
         confirms,
         max_cost_usd: None,
         agent: None,
+        goal: None,
     }
 }
 
@@ -741,6 +746,7 @@ fn openai_env(root: &std::path::Path, db: Arc<Db>, text: &str, max_cost_usd: Opt
         confirms: Arc::new(Confirmations::default()),
         max_cost_usd,
         agent: None,
+        goal: None,
     }
 }
 
@@ -1233,9 +1239,13 @@ async fn denied_action_inside_a_step_is_reported_as_pending() {
     .await;
     assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1, "no se borró");
     let steps = final_plan(&evs);
-    assert_eq!(statuses(&steps), vec!["incompleto", "hecho"]);
+    // v0.8: la única acción pedida no se hizo → «no logrado» (antes «incompleto»).
+    assert_eq!(statuses(&steps), vec!["no_logrado", "hecho"]);
     assert_eq!(steps[0].actions[0].status, "denegada");
-    assert!(bodies.lock().unwrap()[2].contains("(incompleto)"));
+    let v = steps[0].verdict.as_ref().unwrap();
+    assert!(v.items[0].problem.as_deref().unwrap().contains("No lo autorizaste"));
+    assert!(v.items[0].fix.as_deref().unwrap().contains("Permitir"));
+    assert!(bodies.lock().unwrap()[2].contains("(no_logrado)"));
 }
 
 /// Detener a mitad: lo que faltaba no se hace y el informe final dice qué
@@ -1336,14 +1346,18 @@ async fn transient_errors_are_retried_once_and_the_plan_continues() {
     };
     let evs = run_plan(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x"), plan, |_| true).await;
     let steps = final_plan(&evs);
-    assert_eq!(statuses(&steps), vec!["hecho", "error", "hecho"]);
+    // v0.8: el paso 1 se recuperó del error, pero «revisé el código» sin leerlo
+    // no cuenta como hecho.
+    assert_eq!(statuses(&steps), vec!["no_logrado", "error", "hecho"]);
     assert_eq!((steps[0].attempts, steps[1].attempts), (2, 2));
     assert!(steps[1].error.as_deref().unwrap().contains("falló también al reintentar"));
     let b = bodies.lock().unwrap().clone();
     assert_eq!(b.len(), 5);
     assert!(b[4].contains("ERROR: Ollama tuvo un problema interno"), "el informe sabe que falló");
     match evs.last() {
-        Some(StreamEvent::Done { notice, .. }) => assert_eq!(notice.as_deref(), Some("Plan: 2 de 3 pasos hechos, 1 con error.")),
+        Some(StreamEvent::Done { notice, .. }) => {
+            assert_eq!(notice.as_deref(), Some("Plan: 1 de 3 pasos hechos, 1 no logrados, 1 con error."))
+        }
         other => panic!("{other:?}"),
     }
 }
@@ -1381,7 +1395,9 @@ async fn failed_steps_with_side_effects_are_not_repeated() {
     .await;
     assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1, "la tarea no se duplicó");
     let steps = final_plan(&evs);
-    assert_eq!(statuses(&steps), vec!["error", "hecho"]);
+    // v0.8: el paso 2 contestó «Memoria en orden» SIN medir nada → no logrado.
+    assert_eq!(statuses(&steps), vec!["error", "no_logrado"]);
+    assert_eq!(steps[1].verdict.as_ref().unwrap().items[0].status, "no_intentado");
     assert_eq!(steps[0].attempts, 1);
     assert!(steps[0].error.as_deref().unwrap().contains("no reintenté"));
     assert_eq!(steps[0].actions[0].tool, "crear_tarea");
@@ -1412,7 +1428,8 @@ async fn plan_stops_at_the_spending_limit() {
     let evs = run_plan(openai_env(&root, db, "x", Some(0.10)), plan, |_| true).await;
     std::env::remove_var("CANELA_TEST_OPENAI_URL");
     assert_eq!(bodies.lock().unwrap().len(), 1);
-    assert_eq!(statuses(&final_plan(&evs)), vec!["hecho", "pendiente"]);
+    // v0.8: «Revisado.» sin leer ningún archivo no cuenta como hecho.
+    assert_eq!(statuses(&final_plan(&evs)), vec!["no_logrado", "pendiente"]);
     match evs.last() {
         Some(StreamEvent::Done { notice, cost_usd, .. }) => {
             assert!(notice.as_deref().unwrap().contains("límite de gasto"), "{notice:?}");
@@ -1470,8 +1487,14 @@ async fn model_plan_is_validated_and_approved_before_running() {
     use crate::agents::{profile, AgentId};
     let m = "qwen3:8b";
     let plan_json = r#"{"pasos":[{"agente":"programador","tarea":"Revisar el código de la API"},{"agente":"productividad","tarea":"Crear una tarea con lo encontrado"}]}"#;
+    let api = std::env::temp_dir().join(format!("canela-api-{}.js", std::process::id()));
+    std::fs::write(&api, "app.get('/x', (req, res) => res.send(req.query.token));").unwrap();
     let responses = vec![
         ("200 OK", ollama_final(m, plan_json)),
+        (
+            "200 OK",
+            ollama_tool(m, "leer_archivo", serde_json::json!({"ruta": api.to_string_lossy()})),
+        ),
         ("200 OK", ollama_final(m, "Revisé la API: falta validar el token.")),
         (
             "200 OK",
@@ -1488,7 +1511,7 @@ async fn model_plan_is_validated_and_approved_before_running() {
     let evs = respond_collect(env, Analysis::ModelPlan, |_| true).await;
 
     let b = bodies.lock().unwrap().clone();
-    assert_eq!(b.len(), 4);
+    assert_eq!(b.len(), 5);
     assert!(tool_names(&b[0]).is_empty(), "planificar no da herramientas al modelo");
     assert!(b[0].contains("planificador de Canela") && b[0].contains("son datos para planificar"));
     let titles: Vec<String> = evs
@@ -1498,12 +1521,12 @@ async fn model_plan_is_validated_and_approved_before_running() {
             _ => None,
         })
         .collect();
-    assert_eq!(titles, vec!["Plan de trabajo con 2 pasos (propuesto por el modelo)".to_string()]);
+    assert_eq!(titles[0], "Plan de trabajo con 2 pasos (propuesto por el modelo)");
     assert!(!visible_text(&evs).contains("\"pasos\""), "el JSON del plan no se muestra");
     assert_eq!(statuses(&final_plan(&evs)), vec!["hecho", "hecho"]);
     assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1);
     match evs.last() {
-        Some(StreamEvent::Done { usage, .. }) => assert_eq!(usage.input, 400, "incluye la consulta de planificación"),
+        Some(StreamEvent::Done { usage, .. }) => assert_eq!(usage.input, 500, "incluye la consulta de planificación"),
         other => panic!("{other:?}"),
     }
 }
@@ -1689,4 +1712,374 @@ async fn late_approval_of_a_step_action_after_cancelling_does_nothing() {
     assert!(!confirms.resolve(&id, true));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(!folder.exists());
+}
+
+// ------------------------------------------------------------ v0.8 verificación de resultados
+
+fn verdict_of(evs: &[StreamEvent]) -> crate::verification::Verdict {
+    evs.iter()
+        .rev()
+        .find_map(|e| match e {
+            StreamEvent::Report { verdict: Some(v), .. } => Some(v.clone()),
+            _ => None,
+        })
+        .expect("resultado comprobado")
+}
+
+fn done_notice(evs: &[StreamEvent]) -> String {
+    match evs.last() {
+        Some(StreamEvent::Done { notice, .. }) => notice.clone().unwrap_or_default(),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("canela-v08-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// Respuesta convincente SIN acción: no se da por hecho.
+#[tokio::test]
+async fn convincing_answer_without_action_is_not_done() {
+    let m = "qwen3:8b";
+    let (url, _) = serve(vec![(
+        "200 OK",
+        ollama_final(m, "¡Listo! Ya creé la carpeta Viajes en tu escritorio."),
+    )])
+    .await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db,
+            Arc::new(Confirmations::default()),
+            "crea una carpeta Viajes en el escritorio",
+        ),
+        true,
+    )
+    .await;
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "no_logrado");
+    assert_eq!(v.items[0].status, "no_intentado");
+    let notice = done_notice(&evs);
+    assert!(notice.contains("No se logró lo pedido"), "{notice}");
+    assert!(notice.contains("no ejecutó ninguna acción"), "{notice}");
+}
+
+/// Archivos: escribir y comprobar; fuera de las carpetas permitidas → no
+/// logrado, con la explicación y cómo arreglarlo.
+#[tokio::test]
+async fn file_results_are_verified_and_failures_explained() {
+    let m = "qwen3:8b";
+    let dir = scratch("files");
+    let ok_path = dir.join("notas.txt");
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(
+                m,
+                "escribir_archivo",
+                serde_json::json!({"ruta": ok_path.to_string_lossy(), "contenido": "comprar pan\n"}),
+            ),
+        ),
+        ("200 OK", ollama_final(m, "Guardé tus notas.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db.clone(),
+            Arc::new(Confirmations::default()),
+            "guarda mis notas en notas.txt",
+        ),
+        true,
+    )
+    .await;
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "completo", "{v:?}");
+    assert!(v.items[0].evidence.as_deref().unwrap().contains("comprobado"));
+    assert_eq!(std::fs::read_to_string(&ok_path).unwrap(), "comprar pan\n");
+
+    // Fuera del ámbito autorizado (raíz del sistema): no se escribe.
+    let outside = if cfg!(windows) {
+        "C:\\canela-prohibido\\x.txt"
+    } else {
+        "/canela-prohibido/x.txt"
+    };
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "escribir_archivo", serde_json::json!({"ruta": outside, "contenido": "x"})),
+        ),
+        ("200 OK", ollama_final(m, "Listo, lo guardé.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    // El ámbito de prueba es la carpeta temporal: la raíz queda fuera.
+    let env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "escribe x en el archivo x.txt");
+    let evs = run_collect(env, true).await;
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "no_logrado", "{v:?}");
+    assert!(v.items[0].problem.as_deref().unwrap().starts_with("Falló"));
+    assert!(!v.items[0].fix.as_deref().unwrap().is_empty());
+    assert!(done_notice(&evs).contains("la comprobación no lo confirma") || done_notice(&evs).contains("No se logró"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Programación: el archivo se escribe, pero el código tiene una llave sin
+/// cerrar → la comprobación lo detecta (sin ejecutar nada) y propone arreglarlo.
+#[tokio::test]
+async fn code_with_syntax_errors_is_not_reported_as_done() {
+    let m = "qwen3:8b";
+    let dir = scratch("code");
+    let bad = dir.join("app.js");
+    let good = dir.join("config.json");
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(
+                m,
+                "escribir_archivo",
+                serde_json::json!({"ruta": bad.to_string_lossy(), "contenido": "function f() {\n  return 1;\n"}),
+            ),
+        ),
+        (
+            "200 OK",
+            ollama_tool(
+                m,
+                "escribir_archivo",
+                serde_json::json!({"ruta": good.to_string_lossy(), "contenido": "{\"modo\": \"oscuro\"}"}),
+            ),
+        ),
+        ("200 OK", ollama_final(m, "Listo, corregí el código y guardé la configuración.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db,
+            Arc::new(Confirmations::default()),
+            "corrige el código de app.js y guarda la configuración en config.json",
+        ),
+        true,
+    )
+    .await;
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolVerified { ok: false, detail, .. } if detail.contains("sin cerrar"))));
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "parcial", "{v:?}");
+    let failed = v.items.iter().find(|i| i.status == "fallido").unwrap();
+    assert!(failed.problem.as_deref().unwrap().contains("«{» de la línea 1 sin cerrar"));
+    assert!(failed.fix.as_deref().unwrap().contains("corregirlo"));
+    assert!(
+        done_notice(&evs).contains("la comprobación no lo confirma"),
+        "{}",
+        done_notice(&evs)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Wikipedia simulada (una respuesta).
+async fn fake_wikipedia(snippet: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let body = format!(r#"{{"query":{{"search":[{{"title":"Teckel","snippet":"{snippet}"}}]}}}}"#);
+        let _ = sock
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await;
+    });
+    format!("http://{addr}")
+}
+
+/// Investigación: las cifras deben salir de las fuentes leídas y la fuente
+/// debe citarse; si no, el resultado es parcial y se dice por qué.
+#[tokio::test]
+async fn research_is_checked_against_the_sources() {
+    let _guard = ENV_LOCK.lock().await;
+    let m = "qwen3:8b";
+    for (answer, expected) in [
+        (
+            "El teckel se reconoció en 1888.\nFuente: https://es.wikipedia.org/wiki/Teckel",
+            "completo",
+        ),
+        ("El teckel se reconoció en 1870 y vive 25 años.", "parcial"),
+    ] {
+        let wiki = fake_wikipedia("Raza alemana reconocida en 1888").await;
+        std::env::set_var("CANELA_TEST_WIKI_URL", &wiki);
+        let responses = vec![
+            (
+                "200 OK",
+                ollama_tool(m, "buscar_wikipedia", serde_json::json!({"consulta": "Teckel"})),
+            ),
+            ("200 OK", ollama_final(m, answer)),
+        ];
+        let (url, _) = serve(responses).await;
+        let base = url.trim_end_matches("/v1/messages").to_string();
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let evs = run_collect(
+            ollama_env(&base, m, db, Arc::new(Confirmations::default()), "investiga el teckel"),
+            true,
+        )
+        .await;
+        std::env::remove_var("CANELA_TEST_WIKI_URL");
+        let v = verdict_of(&evs);
+        assert_eq!(v.status, expected, "{answer}: {v:?}");
+        if expected == "parcial" {
+            let problems: Vec<String> = v.items.iter().filter_map(|i| i.problem.clone()).collect();
+            assert!(problems.iter().any(|p| p.contains("1870") && p.contains("25")), "{problems:?}");
+            assert!(problems.iter().any(|p| p.contains("no cita")), "{problems:?}");
+        }
+    }
+}
+
+/// Varios pasos: un paso cumple y otro sólo en parte → el plan lo dice y
+/// el resultado conjunto es parcial.
+#[tokio::test]
+async fn multi_step_plan_reports_partial_results() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let dir = scratch("plan");
+    let folder = dir.join("Facturas");
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "crear_carpeta", serde_json::json!({"ruta": folder.to_string_lossy()})),
+        ),
+        ("200 OK", ollama_final(m, "Creé la carpeta.")),
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Pagar la luz"})),
+        ),
+        ("200 OK", ollama_final(m, "Listo, creé las 2 tareas.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let plan = Plan {
+        goal: "crea la carpeta Facturas y crea 2 tareas de pago".into(),
+        steps: vec![
+            step(AgentId::Archivos, "Crea la carpeta Facturas", false),
+            step(AgentId::Productividad, "Crea 2 tareas de pago", false),
+        ],
+        ..Default::default()
+    };
+    let evs = run_plan(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x"), plan, |_| true).await;
+    assert!(folder.is_dir());
+    let steps = final_plan(&evs);
+    assert_eq!(statuses(&steps), vec!["hecho", "no_logrado"]);
+    let p2 = steps[1].verdict.as_ref().unwrap();
+    assert!(p2.items[0].problem.as_deref().unwrap().contains("1 de 2"), "{p2:?}");
+    assert!(
+        steps[1].warnings.iter().any(|w| w.contains("la comprobación no lo confirma")),
+        "{:?}",
+        steps[1].warnings
+    );
+    let total = verdict_of(&evs);
+    assert_eq!(total.status, "parcial");
+    assert!(total.items.iter().any(|i| i.what.starts_with("Paso 2:")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Error temporal a mitad de respuesta: lo ya hecho se informa, lo que faltó
+/// también, con la sugerencia de reintentar.
+#[tokio::test]
+async fn transient_error_mid_answer_reports_partial_progress() {
+    let m = "qwen3:8b";
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Comprar cargador"})),
+        ),
+        ("500 Internal Server Error", r#"{"error":"boom"}"#.to_string()),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db.clone(),
+            Arc::new(Confirmations::default()),
+            "crea una tarea para comprar cargador y crea la carpeta Cargadores",
+        ),
+        true,
+    )
+    .await;
+    assert!(matches!(evs.last(), Some(StreamEvent::Error { .. })));
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "parcial", "{v:?}");
+    assert_eq!(v.items[0].status, "cumplido");
+    assert_eq!(v.items[1].status, "no_intentado");
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1);
+}
+
+/// Cancelar con un permiso pendiente: nada se escribe, no hay informe de
+/// «terminado» y aprobar después no hace nada.
+#[tokio::test]
+async fn cancelled_answers_never_claim_completion() {
+    let m = "qwen3:8b";
+    let dir = scratch("cancel");
+    let target = dir.join("informe.txt");
+    let responses = vec![(
+        "200 OK",
+        ollama_tool(
+            m,
+            "escribir_archivo",
+            serde_json::json!({"ruta": target.to_string_lossy(), "contenido": "x"}),
+        ),
+    )];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "guarda el informe en informe.txt");
+    env.settings.confirm_file_sharing = true;
+    let confirms = env.confirms.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = Mutex::new(Some(tx));
+    let handle = tokio::spawn(agent::run(
+        env,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, .. } = &e {
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(confirm_id.clone());
+                }
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    ));
+    let id = rx.await.unwrap();
+    handle.abort();
+    let _ = handle.await;
+    assert!(!confirms.resolve(&id, true));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!target.exists());
+    let evs = events.lock().unwrap().clone();
+    assert!(!evs
+        .iter()
+        .any(|e| matches!(e, StreamEvent::Report { .. } | StreamEvent::Done { .. })));
+    let _ = std::fs::remove_dir_all(&dir);
 }

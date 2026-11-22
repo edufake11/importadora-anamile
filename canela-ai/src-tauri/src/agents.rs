@@ -210,6 +210,25 @@ const KW: &[(AgentId, &[&str])] = &[
             ".py",
             ".js",
             ".ts",
+            "docker",
+            "kubernetes",
+            "servidor",
+            "backend",
+            "frontend",
+            "endpoint",
+            "base de datos",
+            "json",
+            "yaml",
+            "node",
+            "java",
+            "php",
+            "flask",
+            "django",
+            "log",
+            "logs",
+            "readme",
+            "deploy",
+            "linter",
             "```",
         ],
     ),
@@ -235,6 +254,17 @@ const KW: &[(AgentId, &[&str])] = &[
             "lee la pagina",
             "http://",
             "https://",
+            "en internet",
+            "en la web",
+            "en google",
+            "en linea",
+            "que es",
+            "que son",
+            "como funciona",
+            "tutorial",
+            "precio del",
+            "definicion",
+            "significado",
         ],
     ),
     (
@@ -261,6 +291,13 @@ const KW: &[(AgentId, &[&str])] = &[
             "volumen",
             "abre spotify",
             "abre la calculadora",
+            "toma nota",
+            "anota",
+            "apunta",
+            "alarma",
+            "calendario",
+            "evento",
+            "avisame",
         ],
     ),
     (
@@ -269,7 +306,7 @@ const KW: &[(AgentId, &[&str])] = &[
             "archivo",
             "carpeta",
             "descargas",
-            "documentos",
+            "documento",
             "escritorio",
             "organiza mis",
             "busca el archivo",
@@ -281,6 +318,16 @@ const KW: &[(AgentId, &[&str])] = &[
             "mueve",
             "recientes",
             "ordena mis",
+            "apuntes",
+            "excel",
+            "csv",
+            "txt",
+            "docx",
+            "presentacion",
+            "hoja de calculo",
+            "video",
+            "zip",
+            "respaldo",
         ],
     ),
     (
@@ -304,6 +351,13 @@ const KW: &[(AgentId, &[&str])] = &[
             "diagnostico",
             "proceso",
             "consume",
+            "calienta",
+            "sobrecalient",
+            "ventilador",
+            "administrador de tareas",
+            "paginacion",
+            "brillo",
+            "wifi",
         ],
     ),
 ];
@@ -477,10 +531,24 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
             let path = ctx.scope.target(&s("ruta")).ok()?;
             let expected = s("contenido");
             Some(match std::fs::read_to_string(&path) {
-                Ok(c) if c == expected => Check {
-                    ok: true,
-                    detail: format!("el archivo existe y tiene el contenido esperado ({} bytes)", c.len()),
-                },
+                Ok(c) if c == expected => {
+                    // v0.8: comprobación básica del código (sin ejecutarlo).
+                    let problems = crate::verification::code_check(&path.to_string_lossy(), &c);
+                    if problems.is_empty() {
+                        Check {
+                            ok: true,
+                            detail: format!("el archivo existe y tiene el contenido esperado ({} bytes)", c.len()),
+                        }
+                    } else {
+                        Check {
+                            ok: false,
+                            detail: format!(
+                                "el archivo se guardó con el contenido aprobado, pero tiene un posible error de sintaxis: {}",
+                                problems.join("; ")
+                            ),
+                        }
+                    }
+                }
                 Ok(c) => Check {
                     ok: false,
                     detail: format!("el archivo existe pero su contenido es distinto ({} bytes)", c.len()),

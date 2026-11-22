@@ -2,7 +2,7 @@
 
 Canela es una perrita salchicha en pixel art que vive en tu escritorio de Windows 11 y es tu asistente personal: conversa contigo por escrito **o por voz — escuchándote y hablándote sin internet —** con un **modelo local en tu propia computadora (Ollama, gratis y privado)** o, si lo prefieres, con Claude o ChatGPT, **mira tu pantalla cuando tú se la muestras**, **lee tus PDF, Word e imágenes**, recuerda lo que le pidas, organiza tus tareas y recordatorios, abre aplicaciones y páginas, **encadena varias acciones en un plan** y trabaja con tus archivos **sólo en las carpetas que autorices y siempre pidiéndote permiso antes de cambiar algo**.
 
-> 🧪 **Rama en desarrollo hacia la v0.7 (no es una versión estable):** incluye el [enrutador de modelos con límite de gasto](docs/PLAN-v0.6.md) (v0.6), los refuerzos de privacidad, presupuesto y selección de modelos (v0.6.1) y la primera versión de los [agentes especializados y su coordinación](docs/PLAN-v0.7.md) (v0.7, v0.7.1 y v0.7.2). Nada de esto se ha probado aún en Windows real. La última versión validada sigue siendo la **v0.5** (ejecución [44459247667](https://github.com/edufake11/importadora-anamile/actions/runs/44459247667)).
+> 🧪 **Rama en desarrollo hacia la v0.8 (no es una versión estable):** incluye la [verificación de resultados](docs/PLAN-v0.8.md) (v0.8) y, antes, incluye el [enrutador de modelos con límite de gasto](docs/PLAN-v0.6.md) (v0.6), los refuerzos de privacidad, presupuesto y selección de modelos (v0.6.1) y la primera versión de los [agentes especializados y su coordinación](docs/PLAN-v0.7.md) (v0.7, v0.7.1 y v0.7.2). Nada de esto se ha probado aún en Windows real. La última versión validada sigue siendo la **v0.5** (ejecución [44459247667](https://github.com/edufake11/importadora-anamile/actions/runs/44459247667)).
 
 > ⚠ Esta versión se probó en Linux (micrófono virtual, whisper.cpp **real** con modelos descargados, Ollama y Piper **simulados**) y se compiló y probó en Windows por GitHub Actions, **pero todavía no se ha probado en una PC real con Windows 11, ni con un Ollama real ni con Piper real**. La lista de [qué probar](#qué-probar-cuando-llegues-a-tu-pc) está al final.
 
@@ -240,8 +240,8 @@ npm run tauri build      # instaladores en src-tauri\target\release\bundle\{nsis
 
 ```powershell
 npm run typecheck        # TypeScript estricto
-npm test                 # 59 pruebas de interfaz
-cd src-tauri; cargo test # 211 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
+npm test                 # 62 pruebas de interfaz
+cd src-tauri; cargo test # 231 pruebas de Rust: agente con Claude, ChatGPT y Ollama simulados,
                          # voz (detector de fin de frase, WAV), visión, PDF/Word,
                          # defensa contra instrucciones inyectadas, planes,
                          # multimedia, información del sistema y Ollama (streaming
@@ -255,7 +255,9 @@ cd src-tauri; cargo test # 211 pruebas de Rust: agente con Claude, ChatGPT y Oll
                          # coordinación de varios agentes (planes, permisos,
                          # cancelación, reintentos, límite de gasto, planes del
                          # modelo validados, aclaraciones) y evaluación del
-                         # planificador con 119 solicitudes nuevas
+                         # planificador (conjuntos B y C) y verificación de
+                         # resultados de la v0.8 (archivos, código,
+                         # investigación, varios pasos, cancelaciones)
 
 # Pruebas reales de voz sin internet (necesitan los modelos descargados):
 #   CANELA_WHISPER_DIR=<carpeta con ggml-small-q5_1.bin y ggml-tiny-q5_1.bin>

@@ -5,6 +5,7 @@ import type {
   ImageData,
   PlanStep,
   ProviderId,
+  Verdict,
   Usage,
   WireMessage,
 } from "../lib/ipc";
@@ -61,6 +62,8 @@ export interface UiMessage {
   /** v0.7.1: plan coordinado entre varios agentes. */
   plan?: PlanStep[];
   planFinished?: boolean;
+  /** v0.8: ¿se consiguió lo pedido? (comprobado por el programa) */
+  verdict?: Verdict;
 }
 
 export interface Conversation {
@@ -306,18 +309,30 @@ export function planReport(steps: PlanStep[]): PlanSummary {
   const out: PlanSummary = { done: [], pending: [], errors: [] };
   for (const s of steps) {
     const who = `Paso ${s.index} · ${s.name}`;
+    const v = s.verdict;
     for (const a of s.actions) {
-      if (a.status === "ok" && a.verified === false)
+      if (a.status === "ok" && a.verified !== false)
+        out.done.push(`${who}: ${a.label}${a.verified ? " (comprobado)" : ""}`);
+      else if (v)
+        continue; // v0.8: los fallos los explica el resultado comprobado
+      else if (a.status === "ok")
         out.errors.push(
           `${who}: ${a.label} — la comprobación falló${a.detail ? `: ${a.detail}` : ""}`,
         );
-      else if (a.status === "ok")
-        out.done.push(`${who}: ${a.label}${a.verified ? " (comprobado)" : ""}`);
       else if (a.status === "denegada")
         out.pending.push(`${who}: ${a.label} (no lo autorizaste)`);
       else if (a.status === "no permitida")
         out.pending.push(`${who}: ${a.label} (no permitida a este agente)`);
       else out.errors.push(`${who}: ${a.label} falló`);
+    }
+    for (const it of v?.items ?? []) {
+      const why = [it.problem, it.fix && `Cómo arreglarlo: ${it.fix}`]
+        .filter(Boolean)
+        .join(" ");
+      if (it.status === "fallido")
+        out.errors.push(`${who}: ${it.what} — ${why}`);
+      else if (it.status === "no_intentado")
+        out.pending.push(`${who}: ${it.what} — ${why}`);
     }
     if (
       (s.status === "hecho" || s.status === "incompleto") &&
@@ -339,6 +354,33 @@ export const PLAN_ICON: Record<PlanStep["status"], string> = {
   en_curso: "…",
   hecho: "✓",
   incompleto: "◐",
+  no_logrado: "✕",
   error: "✕",
   cancelado: "–",
 };
+
+/** v0.8: cómo mostrar el resultado comprobado de una respuesta. */
+export function verdictView(v: Verdict | undefined | null): {
+  title: string;
+  lines: { icon: string; text: string; fix?: string }[];
+} | null {
+  if (!v || v.status === "sin_comprobar" || v.items.length === 0) return null;
+  const title =
+    v.status === "completo"
+      ? `Resultado: completo ✓ — ${v.summary}`
+      : v.status === "parcial"
+        ? `Resultado: parcial ◐ — ${v.summary}`
+        : `Resultado: no logrado ✕ — ${v.summary}`;
+  return {
+    title,
+    lines: v.items.map((it) => ({
+      icon:
+        it.status === "cumplido" ? "✓" : it.status === "fallido" ? "✕" : "○",
+      text:
+        it.status === "cumplido"
+          ? `${it.what}${it.evidence ? ` — ${it.evidence}` : ""}`
+          : `${it.what} — ${it.problem ?? "no se hizo"}`,
+      fix: it.status === "cumplido" ? undefined : (it.fix ?? undefined),
+    })),
+  };
+}

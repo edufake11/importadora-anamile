@@ -109,6 +109,22 @@ export interface ActionRecord {
   detail: string | null;
 }
 
+/** v0.8: un objetivo de la petición y si se cumplió (lo comprueba el programa). */
+export interface VerdictItem {
+  what: string;
+  status: "cumplido" | "fallido" | "no_intentado";
+  evidence: string | null;
+  problem: string | null;
+  fix: string | null;
+}
+
+/** v0.8: ¿se consiguió lo pedido? */
+export interface Verdict {
+  status: "completo" | "parcial" | "no_logrado" | "sin_comprobar";
+  items: VerdictItem[];
+  summary: string;
+}
+
 /** v0.7.1: un paso de un plan coordinado entre agentes. */
 export interface PlanStep {
   index: number;
@@ -120,12 +136,14 @@ export interface PlanStep {
     | "en_curso"
     | "hecho"
     | "incompleto"
+    | "no_logrado"
     | "error"
     | "cancelado";
   attempts: number;
   actions: ActionRecord[];
   warnings: string[];
   error: string | null;
+  verdict?: Verdict | null;
 }
 
 export type StreamEvent =
@@ -142,6 +160,7 @@ export type StreamEvent =
       agent: string;
       actions: ActionRecord[];
       warnings: string[];
+      verdict?: Verdict | null;
     }
   | {
       type: "confirmRequest";

@@ -22,6 +22,7 @@ import {
   type JobInfo,
   type KeyStatus,
   type PlanStep,
+  type Verdict,
   type Settings,
   type StreamEvent,
 } from "../lib/ipc";
@@ -39,6 +40,7 @@ import {
   toWire,
   actionSummary,
   planReport,
+  verdictView,
   PLAN_ICON,
   type UiMessage,
   wireSize,
@@ -513,7 +515,11 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
           }
           break;
         case "report":
-          patch(reply.id, (m) => ({ ...m, actions: ev.actions }));
+          patch(reply.id, (m) => ({
+            ...m,
+            actions: ev.actions,
+            verdict: ev.verdict ?? undefined,
+          }));
           break;
         case "confirmRequest":
           patch(reply.id, (m) => ({
@@ -1121,6 +1127,9 @@ export function Chat({ settings, keys, onOpenSettings }: Props) {
               {m.plan && m.plan.length > 0 && (
                 <PlanCard steps={m.plan} finished={!!m.planFinished} />
               )}
+              {!m.plan && m.status !== "streaming" && (
+                <ResultCard verdict={m.verdict} />
+              )}
               {m.status !== "streaming" &&
                 m.actions &&
                 m.actions.length > 0 && (
@@ -1383,6 +1392,28 @@ function PlanCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** v0.8: si se consiguió lo pedido, qué falló y cómo arreglarlo. */
+function ResultCard({ verdict }: { verdict?: Verdict }) {
+  const view = verdictView(verdict);
+  if (!view) return null;
+  return (
+    <div className={`result-card ${verdict?.status ?? ""}`}>
+      <div className="result-title">{view.title}</div>
+      <ul>
+        {view.lines.map((l, i) => (
+          <li key={i}>
+            <span className="tool-icon">{l.icon}</span>
+            {l.text}
+            {l.fix && (
+              <div className="result-fix">Cómo arreglarlo: {l.fix}</div>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

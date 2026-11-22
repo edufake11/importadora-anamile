@@ -52,6 +52,9 @@ pub struct AgentEnv {
     /// Freno de gasto: máximo (US$) que puede costar esta respuesta, con
     /// tokens reales. `None` = sin límite (modelo local).
     pub max_cost_usd: Option<f64>,
+    /// v0.8: lo que hay que conseguir (para comprobar el resultado). None =
+    /// el último mensaje del usuario.
+    pub goal: Option<String>,
     /// v0.7: agente especializado (None = general, todas las herramientas).
     pub agent: Option<&'static crate::agents::Profile>,
 }
@@ -68,6 +71,17 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
         verified,
         detail,
     };
+    // Si falla antes de empezar, el registro dice al menos sobre qué era.
+    let target = call
+        .input
+        .as_ref()
+        .ok()
+        .and_then(|v| ["ruta", "titulo", "consulta", "url", "nombre", "id"].iter().find_map(|k| v.get(*k)))
+        .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+    let fail_label = match &target {
+        Some(t) => format!("{} «{}»", call.name, t.chars().take(80).collect::<String>()),
+        None => call.name.clone(),
+    };
     let fail = |text: String, status: &str| {
         (
             ToolResult {
@@ -78,7 +92,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 images: vec![],
             },
             false,
-            record(status, &call.name, None, Some(text)),
+            record(status, &fail_label, None, Some(text)),
         )
     };
     let input = match &call.input {
@@ -348,8 +362,14 @@ async fn run_plan(env: &AgentEnv, ctx: &ToolCtx, call_id: &str, title: &str, ste
     )
 }
 
-/// Resumen final (v0.7): qué se hizo, qué se comprobó y avisos honestos.
-fn final_report(actions: &[ActionRecord], answer: &str, fetched: &str) -> (Vec<String>, Option<String>) {
+/// Resumen final (v0.7 + v0.8): qué se hizo, qué se comprobó, si se logró lo
+/// pedido y avisos honestos.
+fn final_report(
+    goal: &str,
+    actions: &[ActionRecord],
+    answer: &str,
+    fetched: &str,
+) -> (Vec<String>, Option<String>, crate::verification::Verdict) {
     let mut warnings = Vec::new();
     let did_something = actions.iter().any(|a| a.status == "ok");
     if !did_something && crate::agents::claims_action(answer) {
@@ -372,8 +392,23 @@ fn final_report(actions: &[ActionRecord], answer: &str, fetched: &str) -> (Vec<S
             uncited.join(", ")
         ));
     }
-    let notice = (!warnings.is_empty()).then(|| format!("⚠ {}", warnings.join(" ")));
-    (warnings, notice)
+    let verdict = crate::verification::assess(goal, actions, answer, fetched);
+    let unfinished = matches!(verdict.status.as_str(), "parcial" | "no_logrado");
+    if unfinished && crate::verification::claims_done(answer) && did_something {
+        warnings.push(format!(
+            "La respuesta da a entender que terminó, pero la comprobación no lo confirma. {}",
+            verdict.summary
+        ));
+    }
+    let mut lines: Vec<String> = Vec::new();
+    if unfinished {
+        lines.push(verdict.summary.clone());
+    }
+    if !warnings.is_empty() {
+        lines.push(format!("⚠ {}", warnings.join(" ")));
+    }
+    let notice = (!lines.is_empty()).then(|| lines.join("\n"));
+    (warnings, notice, verdict)
 }
 
 fn merge_notice(a: Option<String>, b: Option<String>) -> Option<String> {
@@ -431,14 +466,23 @@ pub async fn run(env: AgentEnv, emit: Emit) {
         }
         outer(e)
     });
+    let goal = env.goal.clone().unwrap_or_else(|| {
+        env.history
+            .iter()
+            .rev()
+            .find(|m| m.role == super::Role::User)
+            .map(|m| m.text.clone())
+            .unwrap_or_default()
+    });
     let finish = |emit: &Emit, actions: &[ActionRecord], fetched: &str, done: StreamEvent| {
         let text = answer.lock().unwrap().clone();
-        let (warnings, notice) = final_report(actions, &text, fetched);
-        if !actions.is_empty() || !warnings.is_empty() {
+        let (warnings, notice, verdict) = final_report(&goal, actions, &text, fetched);
+        if !actions.is_empty() || !warnings.is_empty() || !verdict.items.is_empty() {
             emit(StreamEvent::Report {
                 agent: agent_name.clone(),
                 actions: actions.to_vec(),
                 warnings,
+                verdict: Some(verdict),
             });
         }
         let done = match done {
@@ -473,10 +517,12 @@ pub async fn run(env: AgentEnv, emit: Emit) {
             Err(message) => {
                 // Lo ya hecho antes del error también se informa.
                 if !actions.is_empty() {
+                    let text = answer.lock().unwrap().clone();
                     emit(StreamEvent::Report {
                         agent: agent_name.clone(),
                         actions: actions.clone(),
                         warnings: vec![],
+                        verdict: Some(crate::verification::assess(&goal, &actions, &text, &fetched)),
                     });
                 }
                 emit(StreamEvent::Error {

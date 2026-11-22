@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionSummary,
   planReport,
+  verdictView,
   bubbleSnippet,
   compactWith,
   composeUserText,
@@ -337,6 +338,90 @@ describe("plan coordinado (v0.7.1)", () => {
     ]);
     expect(r.errors).toEqual([
       "Paso 1 · agente de archivos: Escribir informe.md — la comprobación falló: el contenido no coincide",
+    ]);
+  });
+});
+
+describe("resultado comprobado (v0.8)", () => {
+  it("no muestra nada si no había nada que comprobar", () => {
+    expect(verdictView(undefined)).toBeNull();
+    expect(
+      verdictView({ status: "sin_comprobar", items: [], summary: "" }),
+    ).toBeNull();
+  });
+
+  it("explica lo que falló y cómo arreglarlo", () => {
+    const v = verdictView({
+      status: "parcial",
+      summary: "Resultado parcial: 1 de 2 objetivos cumplidos.",
+      items: [
+        {
+          what: "Crear la tarea («crea una tarea»)",
+          status: "cumplido",
+          evidence: "Crear tarea «Pan» (comprobado)",
+          problem: null,
+          fix: null,
+        },
+        {
+          what: "Crear la carpeta («crea la carpeta Viajes»)",
+          status: "no_intentado",
+          evidence: null,
+          problem: "No se ejecutó ninguna acción para esto: sólo hubo texto.",
+          fix: "Pídemelo de nuevo de forma concreta.",
+        },
+      ],
+    })!;
+    expect(v.title).toBe(
+      "Resultado: parcial ◐ — Resultado parcial: 1 de 2 objetivos cumplidos.",
+    );
+    expect(v.lines[0]).toEqual({
+      icon: "✓",
+      text: "Crear la tarea («crea una tarea») — Crear tarea «Pan» (comprobado)",
+      fix: undefined,
+    });
+    expect(v.lines[1].icon).toBe("○");
+    expect(v.lines[1].fix).toBe("Pídemelo de nuevo de forma concreta.");
+  });
+
+  it("en un plan, los fallos los explica el resultado sin repetirse", () => {
+    const r = planReport([
+      {
+        index: 1,
+        agent: "productividad",
+        name: "asistente de productividad",
+        task: "Borra la tarea 3",
+        status: "no_logrado",
+        attempts: 1,
+        warnings: [],
+        error: null,
+        actions: [
+          {
+            tool: "eliminar_tarea",
+            label: "Eliminar #3",
+            status: "denegada",
+            verified: null,
+            detail: null,
+          },
+        ],
+        verdict: {
+          status: "no_logrado",
+          summary: "No se logró lo pedido: 0 de 1 objetivos cumplidos.",
+          items: [
+            {
+              what: "Eliminar la tarea («Borra la tarea 3»)",
+              status: "fallido",
+              evidence: null,
+              problem: "No lo autorizaste, así que no se hizo.",
+              fix: "Si quieres hacerlo, pídemelo de nuevo y pulsa Permitir.",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(r.done).toEqual([]);
+    expect(r.pending).toEqual([]);
+    expect(r.errors).toEqual([
+      "Paso 1 · asistente de productividad: Eliminar la tarea («Borra la tarea 3») — No lo autorizaste, así que no se hizo. Cómo arreglarlo: Si quieres hacerlo, pídemelo de nuevo y pulsa Permitir.",
     ]);
   });
 });

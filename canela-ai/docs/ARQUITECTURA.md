@@ -24,6 +24,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │ agents.rs       agentes (v0.7 dev): perfiles, orquestador, verificación, informe «Qué hice» │
 │ coordination.rs (v0.7.1 dev) plan entre varios agentes: permiso, resúmenes, reintento, informe│
 │                 (v0.7.2) español natural, aclaraciones, planes del modelo validados          │
+│ verification.rs (v0.8 dev) objetivos de la petición → completo/parcial/no logrado + soluciones│
 │ resources.rs    modos Equilibrado/Ahorro, descarga por inactividad, liberar memoria, registro │
 │ voice/local.rs  whisper.cpp en proceso + Piper por frase + catálogo verificado por SHA-256   │
 │ voice/wake.rs   «Hola, Canela»: segmentador + whisper tiny + detección de la frase           │

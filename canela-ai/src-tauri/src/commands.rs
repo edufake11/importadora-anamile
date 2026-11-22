@@ -315,6 +315,7 @@ pub async fn chat_send(
         confirms: state.confirms.clone(),
         max_cost_usd,
         agent: profile,
+        goal: None,
     };
 
     let channel = on_event.clone();

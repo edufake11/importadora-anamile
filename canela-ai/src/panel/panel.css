@@ -1356,3 +1356,31 @@ details.fold summary {
   margin: 2px 0 0;
   padding-left: 16px;
 }
+
+/* v0.8: resultado comprobado */
+.result-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  margin: 4px 0 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.result-card.parcial,
+.result-card.no_logrado {
+  border-color: var(--line-strong);
+}
+.result-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.result-card ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.result-fix {
+  margin-left: 16px;
+  color: var(--muted);
+}

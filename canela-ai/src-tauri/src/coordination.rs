@@ -62,12 +62,14 @@ pub struct StepReport {
     pub agent: AgentId,
     pub name: String,
     pub task: String,
-    /// «pendiente» | «en_curso» | «hecho» | «incompleto» | «error» | «cancelado»
+    /// «pendiente» | «en_curso» | «hecho» | «incompleto» | «no_logrado» | «error» | «cancelado»
     pub status: String,
     pub attempts: u32,
     pub actions: Vec<ActionRecord>,
     pub warnings: Vec<String>,
     pub error: Option<String>,
+    /// v0.8: ¿se consiguió lo pedido en este paso?
+    pub verdict: Option<crate::verification::Verdict>,
 }
 
 // ------------------------------------------------------------ planificador
@@ -169,11 +171,30 @@ const VERBS: &[&str] = &[
     "sintetiza",
     "lista",
     "programa",
+    "apaga",
+    "enciende",
+    "toma",
+    "checa",
+    "cierra",
+    "activa",
+    "desactiva",
+    "quita",
+    "cambia",
+    "inicia",
+    "deten",
+    "avisa",
+    "consigue",
+    "obten",
+    "instala",
+    "configura",
+    "descarga",
+    "repasa",
+    "escanea",
 ];
 /// Palabras de VERBS que también son sustantivos frecuentes: sólo cuentan
 /// en imperativo o con pronombre, nunca en sus otras formas («listas»,
 /// «programas»).
-const NOUN_LIKE: &[&str] = &["lista", "programa", "copia", "prueba", "marca", "muestra"];
+const NOUN_LIKE: &[&str] = &["lista", "programa", "copia", "prueba", "marca", "muestra", "descarga", "toma"];
 
 /// Formas extra de verbos irregulares o con cambio de raíz.
 fn irregular(v: &str) -> &'static [&'static str] {
@@ -196,6 +217,11 @@ fn irregular(v: &str) -> &'static [&'static str] {
         "vacia" => &["vacies", "vacie", "vaciar"],
         "evalua" => &["evalues", "evalue", "evaluar"],
         "averigua" => &["averigues", "averigue", "averiguar"],
+        "enciende" => &["enciendas", "encienda", "encender"],
+        "cierra" => &["cierres", "cierre", "cerrar"],
+        "deten" => &["detengas", "detenga", "detener"],
+        "obten" => &["obtengas", "obtenga", "obtener"],
+        "consigue" => &["consigas", "consiga", "conseguir"],
         _ => &[],
     }
 }
@@ -304,7 +330,7 @@ const CONNECTORS: &[&str] = &[
 ];
 /// Entre el conector y el verbo pueden ir «que» y pronombres («y que me
 /// expliques», «y luego lo guardas»).
-const BRIDGE: &[&str] = &["que", "me", "te", "se", "lo", "la", "los", "las", "le", "les", "nos"];
+const BRIDGE: &[&str] = &["que", "a", "me", "te", "se", "lo", "la", "los", "las", "le", "les", "nos"];
 
 fn is_list_marker(w: &str) -> bool {
     let t = w.trim_end_matches([')', '.', ':', '-']);
@@ -318,6 +344,20 @@ fn is_list_marker(w: &str) -> bool {
 fn order_starts_at(words: &[&str], mut j: usize) -> Option<usize> {
     while j < words.len() && (CONNECTORS.contains(&fold(words[j]).trim_end_matches([',', ':'])) || is_list_marker(words[j])) {
         j += 1;
+    }
+    // Condición: «… y si fallan, apúntalo» → la parte empieza en «si».
+    if j < words.len() && fold(words[j]).trim_end_matches(',') == "si" {
+        let end = words.len().min(j + 9);
+        let mut x = j + 1;
+        while x < end {
+            if is_verb(words[x]) {
+                return Some(j);
+            }
+            if words[x].ends_with(['.', ';', '?', '!']) {
+                break;
+            }
+            x += 1;
+        }
     }
     let mut k = j;
     while k < words.len() && k - j < 2 && BRIDGE.contains(&fold(words[k]).as_str()) {
@@ -462,8 +502,34 @@ fn vague_destructive(clause: &str) -> Option<&'static str> {
     if !DESTRUCTIVE.contains(&base) {
         return None;
     }
+    // El objeto es lo que va antes del destino («mueve ESO a la otra carpeta»).
     let rest: Vec<String> = words_of(&raw[pos + 1..].join(" "));
-    rest.iter().all(|w| VAGUE.contains(&w.as_str())).then_some(base)
+    let object: Vec<&String> = rest.iter().take_while(|w| !PREPS.contains(&w.as_str())).collect();
+    let object: Vec<&String> = if object.is_empty() { rest.iter().collect() } else { object };
+    object.iter().all(|w| VAGUE.contains(&w.as_str())).then_some(base)
+}
+
+const PREPS: &[&str] = &["a", "al", "en", "hacia", "para", "de", "del", "con", "por", "desde", "dentro"];
+
+/// La parte se refiere a lo anterior («dime qué tareas tengo apuntadas
+/// AHÍ»): la hace el mismo agente que la parte anterior.
+fn refers_back(clause: &str) -> bool {
+    let t = fold(clause);
+    [
+        "ahi",
+        "alli",
+        "de ahi",
+        "en ese",
+        "en esa",
+        "en esos",
+        "en esas",
+        "en el mismo",
+        "en la misma",
+        "lo que dice",
+        "que contiene",
+    ]
+    .iter()
+    .any(|k| crate::agents::kw_find(&t, k).is_some())
 }
 
 const ADJUNTO: &str = "[Archivo adjunto:";
@@ -496,7 +562,16 @@ pub fn analyze(text: &str) -> Analysis {
             ));
         }
     }
-    if plan.is_none() && !multi {
+    // Consultar al modelo sólo si alguna parte que las reglas no pudieron
+    // dividir mezcla varios especialistas y varias órdenes.
+    let mixed = clauses.iter().any(|c| {
+        crate::agents::keyword_agents(c).len() >= 2
+            && c.split_whitespace()
+                .filter(|w| verb_base(w).is_some_and(|b| !NOUN_LIKE.contains(&b)))
+                .count()
+                >= 2
+    });
+    if plan.is_none() && !(multi && mixed) {
         return Analysis::Single;
     }
     if let Some(v) = contradiction(text) {
@@ -527,6 +602,12 @@ fn build_plan(text: &str, clauses: &[String]) -> Option<Plan> {
     let mut steps: Vec<Step> = Vec::new();
     let mut orphan: Vec<String> = Vec::new();
     for c in clauses {
+        if refers_back(c) {
+            if let Some(last) = steps.last_mut().filter(|s| !s.synthesis) {
+                last.task = format!("{}; {c}", last.task);
+                continue;
+            }
+        }
         let agent = select_for_clause(c);
         if agent == AgentId::General {
             if is_report(c) {
@@ -775,6 +856,7 @@ fn initial_reports(plan: &Plan) -> Vec<StepReport> {
             actions: vec![],
             warnings: vec![],
             error: None,
+            verdict: None,
         })
         .collect()
 }
@@ -785,6 +867,7 @@ pub fn counts_line(steps: &[StepReport]) -> String {
     let mut parts = vec![format!("{} de {} pasos hechos", n("hecho"), steps.len())];
     for (k, label) in [
         ("incompleto", "incompletos"),
+        ("no_logrado", "no logrados"),
         ("error", "con error"),
         ("cancelado", "cancelados"),
         ("pendiente", "pendientes"),
@@ -926,6 +1009,7 @@ struct Attempt {
     text: String,
     ok_tools: usize,
     report: Option<(Vec<ActionRecord>, Vec<String>)>,
+    verdict: Option<crate::verification::Verdict>,
     done: Option<DoneInfo>,
     error: Option<String>,
 }
@@ -1065,7 +1149,16 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
                     }
                     out(e)
                 }
-                StreamEvent::Report { actions, warnings, .. } => sink.lock().unwrap().report = Some((actions, warnings)),
+                StreamEvent::Report {
+                    actions,
+                    warnings,
+                    verdict,
+                    ..
+                } => {
+                    let mut st = sink.lock().unwrap();
+                    st.report = Some((actions, warnings));
+                    st.verdict = verdict;
+                }
                 StreamEvent::Done {
                     stop_reason,
                     model,
@@ -1095,6 +1188,7 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
                 confirms: env.confirms.clone(),
                 max_cost_usd: env.max_cost_usd.map(|m| (m - cost.unwrap_or(0.0)).max(0.0)),
                 agent: Some(prof),
+                goal: Some(step.task.clone()),
             };
             agent::run(sub, sub_emit).await;
             let a = std::mem::take(&mut *state.lock().unwrap());
@@ -1122,10 +1216,13 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
         let (actions, warnings) = a.report.clone().unwrap_or_default();
         let incomplete = actions.iter().any(|x| x.status != "ok" || x.verified == Some(false)) || !warnings.is_empty();
         let budget_stop = a.done.as_ref().is_some_and(|d| d.stop_reason.as_deref() == Some("budget"));
+        let verdict = a.verdict.clone();
+        let outcome = verdict.as_ref().map(|v| v.status.clone()).unwrap_or_default();
         finisher.set(i, |s| {
             s.attempts = attempts;
             s.actions = actions.clone();
             s.warnings = warnings.clone();
+            s.verdict = verdict.clone();
             if let Some(err) = &a.error {
                 s.status = "error".into();
                 s.error = Some(if a.ok_tools > 0 {
@@ -1141,7 +1238,10 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
             } else if budget_stop {
                 s.status = "incompleto".into();
                 s.error = Some("Se detuvo por el límite de gasto.".into());
-            } else if incomplete {
+            } else if outcome == "no_logrado" {
+                // v0.8: no basta con que el modelo responda: lo pedido no se hizo.
+                s.status = "no_logrado".into();
+            } else if incomplete || outcome == "parcial" {
                 s.status = "incompleto".into();
             } else {
                 s.status = "hecho".into();
@@ -1169,10 +1269,14 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
             .iter()
             .filter_map(|s| s.error.as_ref().map(|e| format!("Paso {}: {e}", s.index))),
     );
+    let per_step: Vec<(usize, &crate::verification::Verdict)> =
+        steps.iter().filter_map(|s| s.verdict.as_ref().map(|v| (s.index, v))).collect();
+    let verdict = crate::verification::merge(&per_step);
     emit(StreamEvent::Report {
         agent: "coordinando".into(),
         actions,
         warnings,
+        verdict: verdict.clone(),
     });
     let mut notice = counts_line(&steps);
     if let Some(n) = stop_note {

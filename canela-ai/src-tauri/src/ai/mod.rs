@@ -132,6 +132,8 @@ pub enum StreamEvent {
         agent: String,
         actions: Vec<crate::agents::ActionRecord>,
         warnings: Vec<String>,
+        /// v0.8: ¿se consiguió lo pedido? (comprobado por el programa)
+        verdict: Option<crate::verification::Verdict>,
     },
 }
 

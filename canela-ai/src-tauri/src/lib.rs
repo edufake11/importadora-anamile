@@ -24,6 +24,7 @@ mod secrets;
 mod settings;
 mod system;
 mod tools;
+mod verification;
 mod vision;
 mod vision_cmds;
 mod voice;
