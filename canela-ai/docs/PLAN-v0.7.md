@@ -215,11 +215,13 @@ Efecto en el orquestador de la v0.7 (un solo agente): su conjunto nuevo pasa de 
 
 ### Fallos que quedan pendientes (17 después de la corrección)
 
-**Palabras que el planificador aún no entiende como orden**
-- «chécame», «apaga», «toma nota», «busca en internet» y «busca artículos» sin la palabra «investiga».
-- «explícame por qué se calienta»: no reconoce «calienta» como tema del sistema.
-- «busca mis apuntes»: no reconoce «apuntes» como archivo.
-- Afectan a 7 solicitudes, que se resolvieron con un solo agente en vez de con un plan.
+**Palabras o temas que el planificador aún no reconoce** (7 solicitudes, que se resolvieron con un solo agente en vez de con un plan):
+- Órdenes que no reconoce como tales: «apaga», «toma nota».
+- «busca en internet» sin la palabra «investiga» (2 casos).
+- «revisa mi **Dockerfile**», que no reconoce como código.
+- «se **calienta**», que no reconoce como tema del sistema.
+- «mis **apuntes**», que no reconoce como archivos.
+- «apunta que debo comprar más **RAM**»: la palabra «RAM» hace que la anotación vaya al agente de sistema.
 
 **Condiciones («si está alta…», «y si fallan…») y «¿me ayudas a … y después a …?»**
 - No corta ahí. Estos 3 casos y «lee el archivo README del proyecto y explícame cómo instalarlo» acaban consultando al modelo: los 3 primeros con razón y el último innecesariamente.
@@ -236,9 +238,6 @@ Efecto en el orquestador de la v0.7 (un solo agente): su conjunto nuevo pasa de 
 
 **Aclaración que faltó**
 - «mueve **eso** a la otra carpeta y crea un recordatorio» → planifica en vez de preguntar qué mover. Lo mitiga que el plan y la acción de mover piden permiso igualmente.
-
-**Repetir el mismo agente**
-- «silencia la música, revisa la CPU y anota en una tarea…» → [productividad, sistema] en vez de [productividad, sistema, productividad]. La anotación se une a otro paso y no se pierde.
 
 Para corregirlos sin trampa hará falta otro conjunto nuevo.
 
