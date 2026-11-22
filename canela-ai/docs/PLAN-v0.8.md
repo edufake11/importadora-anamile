@@ -223,7 +223,7 @@ Además, cada resultado se apunta en **Actividad** («verificación»), para rev
 |---|---|
 | **Escenarios nuevos del cierre (45), escritos ANTES de cambiar el verificador** | Antes: **27/45 (60 %), 7 «completos» falsos**. Después: **45/45, 0 «completos» falsos** (no es a ciegas: el mismo equipo escribió los escenarios y el verificador) |
 | Escenarios anteriores (40) | 40/40. Se reetiquetaron 5 que tenían categorías anteriores a las pedidas («pon música» era «completo»; ahora es «sin verificar»), con un comentario en el código |
-| Pruebas | **244 de Rust** (antes 231) y **64 de interfaz** (antes 62); suite repetida 3 veces sin fallos |
+| Pruebas | **253 de Rust** (antes 231) y **64 de interfaz** (antes 62) |
 | Comprobaciones reales en Linux | `node --check` y Python no ejecutan el programa (un archivo marcador lo demuestra). `npm test` no ve las claves del entorno. El límite de tiempo termina el proceso hijo de npm |
 | Costo | Verificación ≈ 0,2 ms y **sin llamadas extra al modelo**. Las comprobaciones de código sólo se ejecutan si se piden y se aprueban |
 
@@ -234,3 +234,34 @@ Además, cada resultado se apunta en **Actividad** («verificación»), para rev
 3. **v0.10 (investigación)**: búsqueda web real con varias fuentes, comparación y contradicciones entre fuentes.
 4. **v0.11 (evaluación)**: batería reproducible con modelos reales (calidad, latencia, memoria, costo) en tu PC.
 5. **Planificador nivel 2**: clasificación contextual (intención, entidades, dependencias) antes de recurrir al modelo.
+
+## 6. Estabilización en Windows (GitHub Actions)
+
+Las comprobaciones de código fallaban sólo en Windows. Cada causa se identificó con datos antes de cambiar la lógica:
+
+| # | Fallo | Causa comprobada | Arreglo |
+|---|---|---|---|
+| 1 | `node --check` fallaba con un archivo válido | La comprobación de permisos devuelve rutas `\\?\C:\…` y Node no las acepta | Se pasa la ruta normal `C:\…` |
+| 2 | `npm test`: «'node' is not recognized» | Diagnóstico en el servidor de Windows: el proceso de pruebas tenía **un único `Path`** (no había conflicto PATH/Path); `node.exe` lanzado directamente lo recibía siempre; fallaba **incluso con el entorno heredado sin tocar**. Experimento: con PATH ≤ 5 857 caracteres npm encuentra `node`; con 7 956, no. npm antepone sus carpetas `node_modules\.bin` y **cmd.exe deja de usar un PATH de más de 8 191 caracteres** | El PATH del proceso se calcula según la carpeta del proyecto (8 191 − lo que añadirá npm − margen), con Node, el programa y Windows primero. Con un PATH normal no se recorta nada. La privacidad no cambia: sólo se quitan las variables con aspecto de secreto |
+| 3 | Al agotarse el tiempo, el proceso de las pruebas seguía vivo en Windows (la prueba tardaba ~60 s) | Se terminaba primero la raíz (cmd.exe) y después `taskkill /T`, que ya no encontraba a los hijos | El árbol se termina **antes**, con la raíz viva, al agotar el tiempo y al cancelar |
+| 4 | Fallo intermitente (≈ 10 de 30 ejecuciones bajo carga) | Dos pruebas cambiaban la misma variable de entorno sin cerrojo y la de investigación llegó a consultar **la Wikipedia real** (429) | Cerrojo común para todas las pruebas que cambian variables; en pruebas, Wikipedia nunca sale a internet |
+
+**Pruebas de regresión añadidas:**
+- Rutas con espacios y acentos en Node, Python y npm.
+- PATH reducido: no pierde nada con un PATH normal y deja Node y Windows primero con uno enorme.
+- Herramientas detectadas que de verdad se ejecutan (`--version`).
+- `npm test` en una carpeta profunda con espacios (reproduce el fallo 2).
+- El proceso «nieto» no sigue vivo tras el límite de tiempo (Linux y Windows).
+- Cancelar con Detener termina todo el árbol.
+
+**Pendiente honesto:** durante la prueba de esfuerzo se vio **una vez** (1 de 30 ejecuciones con 2 procesos × 16 hilos en 4 núcleos) un fallo en `claude_agent_respects_denied_confirmation` que no se ha vuelto a reproducir en más de 40 ejecuciones. Su causa no está identificada; la prueba ahora muestra todos sus eventos si vuelve a fallar.
+
+## 7. Consumo medido (Linux, versión de depuración, Ollama simulado; NO es Windows)
+
+| Medida | Valor |
+|---|---|
+| Memoria propia del proceso principal al iniciar / tras usar el chat | 84 MB / 87 MB |
+| Procesos web (WebKitGTK) con el panel abierto | 164 + 152 MB (+ 10 MB de red) |
+| CPU en reposo, panel abierto (60 s) | proceso principal 3,4 %; procesos web 8,0 % + 1,6 % de un núcleo |
+
+En esta máquina virtual la mascota se dibuja **por software** (sin tarjeta gráfica), lo que encarece la animación. En Windows se usa WebView2 con tu GPU: las cifras serán distintas y deben medirse allí.
