@@ -27,13 +27,13 @@ Las 17 solicitudes que fallaban en la v0.7.2 se analizaron por **tipo de fallo**
 | Orquestador de un agente (v0.7, conjunto propio de 30) | 27/30 (antes 24/30) | Efecto secundario del vocabulario nuevo |
 
 **Conclusión honesta:** las mejoras corrigieron los fallos conocidos, pero con datos nuevos el acierto se mantiene en torno al **82–83 %**. Las reglas por palabras clave parecen haber llegado a su techo. Los fallos restantes casi siempre tienen una salida segura:
-- 12 de los 20 terminan en «responde un solo agente», como en la v0.7;
+- 13 de los 20 terminan en «responde un solo agente», como en la v0.7 (11 que necesitaban un plan y 2 que necesitaban una aclaración);
 - los planes innecesarios siguen pidiendo permiso antes de hacer nada;
 - de las 3 aclaraciones que faltaron, 2 acaban en un agente que pide confirmación antes de borrar y la tercera en un plan que también pide permiso.
 
 ### Fallos pendientes del conjunto C (20)
 
-**Se resolvió con un solo agente en vez de con un plan (12):**
+**Se resolvió con un solo agente en vez de con un plan (11):**
 - «necesito que averigües el horario del museo y que lo apuntes en mis pendientes»
 - «pon una rutina de estudio para las tardes y revisa que mi PC no se caliente cuando juego»
 - «mira qué apps arrancan con Windows y crea una tarea para desactivar las innecesarias»
@@ -45,7 +45,6 @@ Las 17 solicitudes que fallaban en la v0.7.2 se analizaron por **tipo de fallo**
 - «investiga cómo se hace un README bueno y luego mejora el de mi proyecto» («mejora» no está en la lista de verbos)
 - «revisa por qué tarda tanto en arrancar la PC y busca soluciones en internet»
 - «dime cuánto pesa la carpeta de videos y busca cómo comprimir videos»
-- «haz una copia de mi carpeta de proyectos en el disco externo y avísame al terminar» (aquí el error es al revés: creó un plan cuando bastaba uno; ver la lista de planes innecesarios)
 
 **Plan con un agente distinto (2):**
 - «dime qué es un SSD, revisa cuánto espacio queda en el mío y anota…» → falta el agente de sistema.
@@ -55,12 +54,12 @@ Las 17 solicitudes que fallaban en la v0.7.2 se analizaron por **tipo de fallo**
 - «**programa** un recordatorio… y pon música»
 - «busca el PDF del manual del router y explícame cómo cambiar la contraseña del **wifi**»
 - «revisa tu **memoria** de lo que te dije…» (la memoria de Canela, no la RAM)
-- «… y **avísame** al terminar»
+- «haz una copia de mi carpeta de proyectos en el disco externo y **avísame** al terminar»
 
 **Aclaración que faltó (3):**
-- «bórrame todo lo que no sirva»
-- «borra eso que te dije…»
-- «vacía la carpeta…» (no dice cuál)
+- «bórrame todo lo que no sirva» (lo atendió un solo agente)
+- «borra eso que te dije…» (lo atendió un solo agente)
+- «vacía la carpeta…» (no dice cuál; creó un plan, que pide permiso)
 
 Para mejorar sin trampa hará falta otro enfoque (por ejemplo, que el modelo proponga el plan con más frecuencia, siempre validado) y otro conjunto nuevo para medirlo.
 
