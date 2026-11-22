@@ -57,6 +57,8 @@ pub struct CheckCmd {
     /// Fijar el PATH del proceso (siempre en la app; el diagnóstico lo
     /// desactiva para comparar con el entorno heredado tal cual).
     pub set_path: bool,
+    /// Longitud máxima de ese PATH (en Windows).
+    pub path_limit: usize,
 }
 
 /// Busca un programa en el PATH (en Windows también .exe, .cmd y .bat).
@@ -109,7 +111,7 @@ const MAX_PATH_LEN: usize = 8000;
 /// PATH del proceso: primero la carpeta del programa, la de Node y las de
 /// Windows; después el PATH heredado (sin repetidos) hasta el límite. Así las
 /// pruebas que lanza npm encuentran `node` aunque el PATH heredado sea enorme.
-fn child_path(program: &Path) -> Option<std::ffi::OsString> {
+fn child_path(program: &Path, max: usize) -> Option<std::ffi::OsString> {
     let mut first: Vec<PathBuf> = [
         program.parent().map(Path::to_path_buf),
         which(&["node"]).and_then(|n| n.parent().map(Path::to_path_buf)),
@@ -128,7 +130,7 @@ fn child_path(program: &Path) -> Option<std::ffi::OsString> {
     let inherited: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
-    let limit = if cfg!(windows) { Some(MAX_PATH_LEN) } else { None };
+    let limit = if cfg!(windows) { Some(max) } else { None };
     std::env::join_paths(build_path(first, inherited, limit)).ok()
 }
 
@@ -177,6 +179,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     scrub_env: true,
                     hide_window: true,
                     set_path: true,
+                    path_limit: MAX_PATH_LEN,
                 }),
                 "py" => Ok(CheckCmd {
                     program: need(&["python", "python3", "py"], "Python")?,
@@ -189,6 +192,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     scrub_env: true,
                     hide_window: true,
                     set_path: true,
+                    path_limit: MAX_PATH_LEN,
                 }),
                 _ => Ok(CheckCmd {
                     program: PathBuf::new(),
@@ -201,6 +205,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     scrub_env: true,
                     hide_window: true,
                     set_path: true,
+                    path_limit: MAX_PATH_LEN,
                 }),
             }
         }
@@ -224,6 +229,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                 scrub_env: true,
                 hide_window: true,
                 set_path: true,
+                path_limit: MAX_PATH_LEN,
             };
             if let Some(s) = package_script(&dir, script).filter(|s| !s.contains(NPM_DEFAULT_TEST)) {
                 let _ = s;
@@ -357,7 +363,7 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
         }
     }
     if cmd.set_path {
-        if let Some(path) = child_path(&cmd.program) {
+        if let Some(path) = child_path(&cmd.program, cmd.path_limit) {
             c.env("PATH", path);
         }
     }
@@ -467,7 +473,7 @@ mod tests {
     #[test]
     fn child_path_puts_node_first_and_stays_short_on_windows() {
         let program = PathBuf::from("/opt/herramienta/bin/npm");
-        let p = child_path(&program).unwrap();
+        let p = child_path(&program, MAX_PATH_LEN).unwrap();
         let parts: Vec<PathBuf> = std::env::split_paths(&p).collect();
         assert_eq!(parts[0], PathBuf::from("/opt/herramienta/bin"));
         if cfg!(windows) {
@@ -621,6 +627,26 @@ mod tests {
                 }
             }
         }
+        // 2) Experimento: npm test con PATH de distinta longitud y la salida
+        //    completa, para confirmar si el límite de cmd.exe es la causa.
+        std::fs::write(d.join("t.js"), "console.log('NODE ENCONTRADO')").unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"name":"x","version":"1.0.0","scripts":{"test":"node t.js"}}"#,
+        )
+        .unwrap();
+        let npm = plan(Kind::Pruebas, &d).unwrap();
+        eprintln!("carpeta del proyecto: {:?} ({} caracteres)", npm.cwd, npm.cwd.as_os_str().len());
+        for limit in [300, 2000, 4000, 6000, 8000] {
+            let mut c = npm.clone();
+            c.path_limit = limit;
+            let len = child_path(&c.program, limit).map(|p| p.len()).unwrap_or(0);
+            let o = run(&c).await.unwrap();
+            eprintln!("== npm test con PATH ≤ {limit} (real {len}) → ok={} código={:?}", o.ok, o.code);
+            for l in o.output.lines().take(12) {
+                eprintln!("   | {}", l.chars().take(200).collect::<String>());
+            }
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -712,7 +738,7 @@ mod tests {
         assert!(
             o.ok,
             "{o:?}\nPATH del proceso: {:?}",
-            child_path(&plan(Kind::Pruebas, &d).unwrap().program)
+            child_path(&plan(Kind::Pruebas, &d).unwrap().program, MAX_PATH_LEN)
         );
         assert!(o.output.contains("1 prueba ok") && !o.output.contains("VIO LA CLAVE"));
         // Límite de tiempo: el proceso de las pruebas (hijo de npm) también termina.
