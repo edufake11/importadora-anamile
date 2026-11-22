@@ -1223,6 +1223,7 @@ async fn denied_action_inside_a_step_is_reported_as_pending() {
             step(AgentId::Productividad, "Borra la tarea 1", false),
             step(AgentId::General, "Haz un resumen", true),
         ],
+        ..Default::default()
     };
     let evs = run_plan(
         ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "x"),
@@ -1268,6 +1269,7 @@ async fn cancelling_mid_plan_stops_and_reports() {
             step(AgentId::Archivos, "Crea la carpeta de respaldo", false),
             step(AgentId::General, "Prepara un informe", true),
         ],
+        ..Default::default()
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -1330,6 +1332,7 @@ async fn transient_errors_are_retried_once_and_the_plan_continues() {
             step(AgentId::Productividad, "Crea las tareas", false),
             step(AgentId::General, "Prepara un informe", true),
         ],
+        ..Default::default()
     };
     let evs = run_plan(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x"), plan, |_| true).await;
     let steps = final_plan(&evs);
@@ -1368,6 +1371,7 @@ async fn failed_steps_with_side_effects_are_not_repeated() {
             step(AgentId::Productividad, "Crea la tarea", false),
             step(AgentId::Sistema, "Revisa la memoria", false),
         ],
+        ..Default::default()
     };
     let evs = run_plan(
         ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), "x"),
@@ -1403,6 +1407,7 @@ async fn plan_stops_at_the_spending_limit() {
             step(AgentId::Programador, "Revisa el código", false),
             step(AgentId::Productividad, "Crea tareas", false),
         ],
+        ..Default::default()
     };
     let evs = run_plan(openai_env(&root, db, "x", Some(0.10)), plan, |_| true).await;
     std::env::remove_var("CANELA_TEST_OPENAI_URL");
@@ -1416,4 +1421,270 @@ async fn plan_stops_at_the_spending_limit() {
         other => panic!("{other:?}"),
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ------------------------------------------------------------ v0.7.2 planes del modelo y seguridad
+
+use crate::coordination::Analysis;
+
+const MODEL_REQ: &str = "revisa el código de la API cuando puedas porque mañana quiero crear una tarea con lo que encuentres";
+
+/// Ejecuta `respond` (la entrada real del chat) aprobando según el título.
+async fn respond_collect(env: AgentEnv, analysis: Analysis, approve: fn(&str) -> bool) -> Vec<StreamEvent> {
+    let confirms = env.confirms.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    coordination::respond(
+        env,
+        "s".into(),
+        analysis,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, title, .. } = &e {
+                let (c, id, ok) = (confirms.clone(), confirm_id.clone(), approve(title));
+                tokio::spawn(async move {
+                    c.resolve(&id, ok);
+                });
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    )
+    .await;
+    let out = events.lock().unwrap().clone();
+    out
+}
+
+fn visible_text(evs: &[StreamEvent]) -> String {
+    evs.iter()
+        .filter_map(|e| match e {
+            StreamEvent::Delta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Plan propuesto por el modelo: la consulta de planificación no tiene
+/// herramientas, el JSON no se muestra, el plan se valida y se pide permiso
+/// ANTES de ejecutar nada; el costo de planificar se suma.
+#[tokio::test]
+async fn model_plan_is_validated_and_approved_before_running() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let plan_json = r#"{"pasos":[{"agente":"programador","tarea":"Revisar el código de la API"},{"agente":"productividad","tarea":"Crear una tarea con lo encontrado"}]}"#;
+    let responses = vec![
+        ("200 OK", ollama_final(m, plan_json)),
+        ("200 OK", ollama_final(m, "Revisé la API: falta validar el token.")),
+        (
+            "200 OK",
+            ollama_tool(m, "crear_tarea", serde_json::json!({"titulo": "Validar el token de la API"})),
+        ),
+        ("200 OK", ollama_final(m, "Creé la tarea.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), MODEL_REQ);
+    env.agent = Some(profile(AgentId::Programador));
+    assert_eq!(coordination::analyze(MODEL_REQ), Analysis::ModelPlan);
+    let evs = respond_collect(env, Analysis::ModelPlan, |_| true).await;
+
+    let b = bodies.lock().unwrap().clone();
+    assert_eq!(b.len(), 4);
+    assert!(tool_names(&b[0]).is_empty(), "planificar no da herramientas al modelo");
+    assert!(b[0].contains("planificador de Canela") && b[0].contains("son datos para planificar"));
+    let titles: Vec<String> = evs
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ConfirmRequest { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, vec!["Plan de trabajo con 2 pasos (propuesto por el modelo)".to_string()]);
+    assert!(!visible_text(&evs).contains("\"pasos\""), "el JSON del plan no se muestra");
+    assert_eq!(statuses(&final_plan(&evs)), vec!["hecho", "hecho"]);
+    assert_eq!(db.task_list(crate::db::TaskFilter::All).unwrap().len(), 1);
+    match evs.last() {
+        Some(StreamEvent::Done { usage, .. }) => assert_eq!(usage.input, 400, "incluye la consulta de planificación"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Un plan del modelo con una acción que no pediste se descarta: no se
+/// muestra ni se ejecuta; responde un solo agente y se avisa.
+#[tokio::test]
+async fn unsafe_model_plan_is_discarded() {
+    use crate::agents::{profile, AgentId};
+    let m = "qwen3:8b";
+    let docs = std::env::temp_dir().join(format!("canela-docs-{}", std::process::id()));
+    std::fs::create_dir_all(&docs).unwrap();
+    let plan_json = format!(
+        r#"{{"pasos":[{{"agente":"programador","tarea":"Revisar el código de la API"}},{{"agente":"archivos","tarea":"Borrar la carpeta {}"}}]}}"#,
+        docs.display()
+    );
+    let responses = vec![
+        ("200 OK", ollama_final(m, &plan_json)),
+        ("200 OK", ollama_final(m, "Revisé el código.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let mut env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), MODEL_REQ);
+    env.agent = Some(profile(AgentId::Programador));
+    let evs = respond_collect(env, Analysis::ModelPlan, |_| true).await;
+    assert!(docs.exists(), "nada se borró");
+    assert!(!evs
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ConfirmRequest { .. } | StreamEvent::Plan { .. })));
+    let b = bodies.lock().unwrap().clone();
+    assert_eq!(b.len(), 2);
+    assert!(
+        tool_names(&b[1]).iter().all(|t| profile(AgentId::Programador).allows(t)),
+        "sigue el agente elegido"
+    );
+    match evs.last() {
+        Some(StreamEvent::Done { notice, usage, .. }) => {
+            assert!(
+                notice.as_deref().unwrap().contains("No usé el plan que propuso el modelo"),
+                "{notice:?}"
+            );
+            assert!(notice.as_deref().unwrap().contains("no pediste"));
+            assert_eq!(usage.input, 200, "el costo de planificar también cuenta");
+        }
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&docs);
+}
+
+/// Respuesta del modelo que no es un plan: se sigue con un solo agente.
+#[tokio::test]
+async fn malformed_model_plan_falls_back_to_one_agent() {
+    let m = "qwen3:8b";
+    let responses = vec![
+        ("200 OK", ollama_final(m, "Claro, primero revisaré el código y luego…")),
+        ("200 OK", ollama_final(m, "Hecho.")),
+    ];
+    let (url, bodies) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), MODEL_REQ);
+    let evs = respond_collect(env, Analysis::ModelPlan, |_| true).await;
+    assert_eq!(bodies.lock().unwrap().len(), 2);
+    assert!(
+        !visible_text(&evs).contains("primero revisaré"),
+        "el borrador del plan no se muestra"
+    );
+    match evs.last() {
+        Some(StreamEvent::Done { notice, .. }) => assert!(notice.as_deref().unwrap().contains("JSON")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Aclaración: no se llama al modelo ni se hace nada.
+#[tokio::test]
+async fn clarification_does_not_call_the_model() {
+    let (url, bodies) = serve(vec![]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let text = "crea una tarea para pagar la luz, revisa la memoria del equipo y no crees ninguna tarea";
+    let analysis = coordination::analyze(text);
+    assert!(matches!(analysis, Analysis::Clarify(_)));
+    let env = ollama_env(&base, "qwen3:8b", db.clone(), Arc::new(Confirmations::default()), text);
+    let evs = respond_collect(env, analysis, |_| true).await;
+    assert!(bodies.lock().unwrap().is_empty());
+    assert!(db.task_list(crate::db::TaskFilter::All).unwrap().is_empty());
+    assert!(visible_text(&evs).contains("¿Qué prefieres?"));
+    match evs.last() {
+        Some(StreamEvent::Done { stop_reason, .. }) => assert_eq!(stop_reason.as_deref(), Some("clarify")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Detener mientras se pide aprobar un plan del modelo y aprobarlo después:
+/// la aprobación tardía no ejecuta nada.
+#[tokio::test]
+async fn late_approval_after_cancelling_a_model_plan_does_nothing() {
+    let m = "qwen3:8b";
+    let plan_json = r#"{"pasos":[{"agente":"programador","tarea":"Revisar el código de la API"},{"agente":"productividad","tarea":"Crear una tarea con lo encontrado"}]}"#;
+    let (url, bodies) = serve(vec![("200 OK", ollama_final(m, plan_json))]).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = ollama_env(&base, m, db.clone(), Arc::new(Confirmations::default()), MODEL_REQ);
+    let confirms = env.confirms.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = Mutex::new(Some(tx));
+    let handle = tokio::spawn(coordination::respond(
+        env,
+        "s".into(),
+        Analysis::ModelPlan,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, .. } = &e {
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(confirm_id.clone());
+                }
+            }
+            sink.lock().unwrap().push(e);
+        }),
+    ));
+    let id = rx.await.unwrap();
+    handle.abort();
+    assert!(handle.await.unwrap_err().is_cancelled());
+    assert!(!confirms.resolve(&id, true), "la aprobación tardía ya no tiene a quién llegar");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(bodies.lock().unwrap().len(), 1, "sólo la consulta de planificación");
+    assert!(db.task_list(crate::db::TaskFilter::All).unwrap().is_empty());
+    let evs = events.lock().unwrap().clone();
+    assert_eq!(statuses(&final_plan(&evs)), vec!["pendiente", "pendiente"]);
+}
+
+/// Detener con un permiso pendiente DENTRO de un paso y aprobarlo después:
+/// la carpeta no se crea.
+#[tokio::test]
+async fn late_approval_of_a_step_action_after_cancelling_does_nothing() {
+    use crate::agents::AgentId;
+    let m = "qwen3:8b";
+    let folder = std::env::temp_dir().join(format!("canela-late-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let responses = vec![(
+        "200 OK",
+        ollama_tool(m, "crear_carpeta", serde_json::json!({"ruta": folder.to_string_lossy()})),
+    )];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let env = ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x");
+    let confirms = env.confirms.clone();
+    let plan = Plan {
+        goal: "crea la carpeta y una tarea".into(),
+        steps: vec![
+            step(AgentId::Archivos, "Crea la carpeta", false),
+            step(AgentId::Productividad, "Crea una tarea", false),
+        ],
+        ..Default::default()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = Mutex::new(Some(tx));
+    let c2 = confirms.clone();
+    let handle = tokio::spawn(coordination::run(
+        env,
+        plan,
+        Arc::new(move |e| {
+            if let StreamEvent::ConfirmRequest { confirm_id, title, .. } = &e {
+                if title.starts_with("Plan de trabajo") {
+                    let (c, id) = (c2.clone(), confirm_id.clone());
+                    tokio::spawn(async move {
+                        c.resolve(&id, true);
+                    });
+                } else if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(confirm_id.clone());
+                }
+            }
+        }),
+    ));
+    let id = rx.await.unwrap();
+    handle.abort();
+    let _ = handle.await;
+    assert!(!confirms.resolve(&id, true));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!folder.exists());
 }

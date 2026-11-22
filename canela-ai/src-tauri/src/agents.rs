@@ -316,6 +316,34 @@ pub struct Selection {
     pub reason: String,
 }
 
+/// Busca una palabra clave al INICIO de una palabra («error» encuentra
+/// «errores», pero «api» no encuentra «capítulo» ni «ram» encuentra
+/// «programa»). Las muy cortas (≤ 3 letras) deben ser una palabra completa
+/// («ram», no «rama»). Las que empiezan por un signo («.rs», «```») se buscan
+/// tal cual.
+pub fn kw_find(t: &str, k: &str) -> Option<usize> {
+    let starts_alnum = k.chars().next().is_some_and(|c| c.is_alphanumeric());
+    let ends_alnum = k.chars().last().is_some_and(|c| c.is_alphanumeric());
+    let short = k.trim().chars().count() <= 3;
+    let mut from = 0;
+    while let Some(rel) = t[from..].find(k) {
+        let i = from + rel;
+        let before_ok = !starts_alnum || !t[..i].chars().last().is_some_and(|c| c.is_alphanumeric());
+        let after_ok = !(short && ends_alnum) || !t[i + k.len()..].chars().next().is_some_and(|c| c.is_alphanumeric());
+        if before_ok && after_ok {
+            return Some(i);
+        }
+        from = i + k.len().max(1);
+        while from < t.len() && !t.is_char_boundary(from) {
+            from += 1;
+        }
+        if from >= t.len() {
+            break;
+        }
+    }
+    None
+}
+
 /// Elige el agente para un mensaje. `previous` = agente de la respuesta
 /// anterior (para continuar el hilo con mensajes cortos como «sí, hazlo»).
 pub fn select(text: &str, previous: Option<AgentId>) -> Selection {
@@ -324,7 +352,7 @@ pub fn select(text: &str, previous: Option<AgentId>) -> Selection {
     let mut scores: Vec<(AgentId, usize, Vec<&str>)> = KW
         .iter()
         .map(|(id, kws)| {
-            let hits: Vec<&str> = kws.iter().copied().filter(|k| t.contains(k)).collect();
+            let hits: Vec<&str> = kws.iter().copied().filter(|k| kw_find(&t, k).is_some()).collect();
             (*id, hits.len(), hits)
         })
         .collect();
@@ -355,6 +383,17 @@ pub fn select(text: &str, previous: Option<AgentId>) -> Selection {
     )
 }
 
+/// Especialistas cuyas palabras clave aparecen en el texto (con aciertos).
+pub fn keyword_agents(text: &str) -> Vec<(AgentId, usize)> {
+    let t = fold(text);
+    KW.iter()
+        .filter_map(|(id, kws)| {
+            let n = kws.iter().filter(|k| kw_find(&t, k).is_some()).count();
+            (n > 0).then_some((*id, n))
+        })
+        .collect()
+}
+
 /// Agente para UNA parte de un encargo (v0.7.1). A diferencia de `select`,
 /// un empate no lleva al agente general: gana la palabra clave que aparece
 /// primero, que suele ser el objeto del verbo («crea una TAREA por cada
@@ -363,7 +402,7 @@ pub fn select_for_clause(text: &str) -> AgentId {
     let t = fold(text);
     let mut best: Option<(usize, usize, AgentId)> = None; // (aciertos, -posición, agente)
     for (id, kws) in KW {
-        let hits: Vec<usize> = kws.iter().filter_map(|k| t.find(k)).collect();
+        let hits: Vec<usize> = kws.iter().filter_map(|k| kw_find(&t, k)).collect();
         if hits.is_empty() {
             continue;
         }
@@ -672,6 +711,19 @@ mod tests {
         );
         // Umbral de regresión, no objetivo: el resultado real se documenta.
         assert!(ok * 100 / HELD_OUT.len() >= 60, "{ok}/{}", HELD_OUT.len());
+    }
+
+    #[test]
+    fn keywords_match_whole_words_not_fragments() {
+        assert_eq!(kw_find("programeme una tarea", "ram"), None);
+        assert_eq!(kw_find("lee el capitulo 3", "api"), None);
+        assert_eq!(kw_find("cambia de rama en git", "ram"), None);
+        assert!(kw_find("cuanta ram uso", "ram").is_some());
+        assert!(kw_find("revisa los errores", "error").is_some());
+        assert!(kw_find("abre main.rs", ".rs").is_some());
+        assert!(kw_find("la api rest", "api").is_some());
+        assert_eq!(select("abre el programa de dibujo", None).agent, AgentId::Programador);
+        assert_eq!(select_for_clause("lee el capitulo 3 del PDF"), AgentId::Archivos);
     }
 
     #[test]

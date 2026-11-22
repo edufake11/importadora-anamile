@@ -40,6 +40,7 @@ impl Confirmations {
     }
 }
 
+#[derive(Clone)]
 pub struct AgentEnv {
     pub http: reqwest::Client,
     pub settings: Settings,

@@ -183,11 +183,11 @@ pub async fn chat_send(
     let mut settings = state.current_settings();
     let spent = state.db.spend_month(&crate::router::month_key()).unwrap_or(0.0);
     let last = messages.last().cloned().unwrap();
-    // v0.7.1: ¿la petición necesita varios agentes? (sin imágenes adjuntas)
-    let plan = if last.images.is_empty() {
-        crate::coordination::propose(&last.text)
+    // v0.7.1: ¿un agente, un plan entre varios o una aclaración? (sin imágenes)
+    let analysis = if last.images.is_empty() {
+        crate::coordination::analyze(&last.text)
     } else {
-        None
+        crate::coordination::Analysis::Single
     };
     let switching = provider_override.is_some_and(|p| p != settings.provider);
     if let Some(p) = provider_override {
@@ -229,7 +229,12 @@ pub async fn chat_send(
         let (level, _) = crate::router::complexity(&req);
         // Un plan hace una respuesta por paso: se reserva el costo de todos.
         let est = crate::router::estimate_cost(provider, &ai::model_of(&settings), &req, level).unwrap_or(0.01)
-            * plan.as_ref().map_or(1.0, |p| p.steps.len() as f64);
+            * match &analysis {
+                crate::coordination::Analysis::Plan(p) => p.steps.len() as f64,
+                // Consulta de planificación + pasos (estimación prudente).
+                crate::coordination::Analysis::ModelPlan => 3.0,
+                _ => 1.0,
+            };
         crate::router::RESERVATIONS.reserve(&request_id, est, spent, settings.monthly_budget_usd)?;
         reservation = Some((request_id.clone(), est));
     }
@@ -260,10 +265,14 @@ pub async fn chat_send(
 
     let user_name = user_name.unwrap_or_else(|| settings.user_name.clone());
     // v0.7: el orquestador elige el agente (perfil) para este mensaje.
-    let mut system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
+    let base_system = ai::system_prompt(&user_name, context.as_deref().unwrap_or(""), true);
+    let mut system = base_system.clone();
     // v0.7: el orquestador elige el agente (perfil) para este mensaje; si la
     // petición necesita varios, el coordinador (v0.7.1) los reparte.
-    let profile = if plan.is_some() {
+    let profile = if matches!(
+        analysis,
+        crate::coordination::Analysis::Plan(_) | crate::coordination::Analysis::Clarify(_)
+    ) {
         None
     } else {
         let previous_agent = messages.iter().rev().find(|m| m.role == Role::Assistant).and_then(|m| m.agent);
@@ -352,10 +361,7 @@ pub async fn chat_send(
             }
             let _ = channel.send(ev);
         });
-        match plan {
-            Some(plan) => crate::coordination::run(env, plan, emit).await,
-            None => agent::run(env, emit).await,
-        }
+        crate::coordination::respond(env, base_system, analysis, emit).await;
     });
     let mut chats = state.chats.lock().unwrap();
     chats.retain(|_, (h, _)| !h.inner().is_finished());

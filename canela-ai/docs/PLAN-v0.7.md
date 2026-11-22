@@ -133,3 +133,118 @@ Consumo medido en la app de prueba (versión de depuración): proceso principal 
 - Probar en Windows 11 real con Qwen3 y con Claude/ChatGPT: que el modelo real haga bien su parte y resuma lo necesario.
 - Planes propuestos por el propio modelo para encargos que las reglas no detectan (hoy esos los atiende un solo agente).
 - Corregir los 3 fallos del conjunto nuevo (verbos con pronombre pegado, «y que …») y medir con otro conjunto distinto.
+
+---
+
+# v0.7.2 — Planificador más natural, planes del modelo validados y seguridad (rama de desarrollo)
+
+## 1. Español natural
+
+El planificador (`src-tauri/src/coordination.rs`) ahora reconoce:
+- **Pronombres pegados**: «guárdala», «explícame», «revísalo», «házmelo», «dímelo», «agrégalas», «prográmeme».
+- **Subjuntivo y trato de usted**: «que busques», «que agendes», «revise», «organice», «busque».
+- **Presente usado como orden**: «y luego lo guardas».
+- **«y que …» y pronombres entre el conector y el verbo**: «y que me expliques», «y luego lo guardas».
+- **Listas** numeradas («1.», «2)», «a)», «-») y encargos escritos en varias líneas.
+- **Verbos irregulares**: «haga», «ponga», «corrijas», «probar», «mostrar», «traduzca»…
+- No confunde **pasados** («revisé», «abrí») ni **sustantivos** («listas», «programas», «escuela», «pantalla») con órdenes.
+
+Además se corrigió un error que venía de la v0.7: las palabras clave se buscaban como trozos de palabra («ram» dentro de «prog**ram**a», «api» dentro de «c**apí**tulo»). Ahora se buscan al inicio de una palabra y las muy cortas («ram», «api», «cpu») sólo como palabra completa.
+
+## 2. Seguridad antes de planificar
+
+Antes de crear un plan, Canela comprueba que el encargo se entiende. Si no, **pregunta y no hace nada** (ni siquiera llama al modelo):
+- **Instrucciones contradictorias**: «crea una tarea… y no crees ninguna tarea» → «Me pides «crea» y también que no lo haga. ¿Qué prefieres?». «No olvides revisar» no cuenta como contradicción.
+- **Acciones destructivas sin objeto concreto**: «bórralo todo», «elimina eso», «limpia todo lo demás», «vacíalo» → pregunta qué exactamente. Con un objeto concreto («borra la tarea 3») sí planifica, y borrar sigue pidiendo permiso.
+- **Más de 6 partes**: propone dividir el encargo.
+- **Archivos adjuntos**: si el mensaje trae archivos, **no se planifica**. El contenido de un archivo nunca se convierte en pasos ni en órdenes. Este riesgo existía en la v0.7.1: el texto adjunto se analizaba junto con el mensaje. Aunque cualquier plan pedía permiso, ya está cerrado.
+- **Peticiones ambiguas** («haz lo de siempre y lo otro también», «revisa eso y arréglalo»): no se convierten en un plan; responde un solo agente, que puede preguntar.
+
+## 3. Planes propuestos por el modelo (estudio + implementación con validación)
+
+**Cuándo:** sólo si las reglas no encuentran un plan, pero el mensaje menciona **varios especialistas** y tiene **al menos dos órdenes** (p. ej. «revisa el código de la API cuando puedas porque mañana quiero crear una tarea con lo que encuentres»). En el resto de los mensajes no hay consulta extra.
+
+**Cómo, sin riesgo:**
+1. Se hace **una consulta al mismo modelo, sin herramientas** (no puede ejecutar nada). Sólo recibe el texto del usuario, marcado como datos que hay que planificar.
+2. La respuesta (JSON) **no se muestra** y el programa la **valida**:
+   - debe ser JSON con 2 a 6 pasos y sólo agentes que existen;
+   - cada tarea, de 3 a 300 caracteres y sin caracteres de control;
+   - **ninguna acción destructiva** (borrar, eliminar, vaciar, limpiar, mover, renombrar) que no esté en tu petición;
+   - **ninguna dirección web** ni **dato de acceso** (contraseña, token, clave) que no estén en tu petición;
+   - cada paso debe corresponder a algo de tu petición: el modelo no puede inventar tareas;
+   - el informe va al final y sólo si lo pediste (si no, se quita y se avisa);
+   - si un paso está asignado a un agente que no corresponde, Canela lo reasigna y lo dice.
+3. Si el plan no pasa la validación, **se descarta**, responde un solo agente y se avisa del motivo («No usé el plan que propuso el modelo: el paso 2 añade «borra», que no pediste»).
+4. Si pasa, se muestra la tarjeta **«Plan de trabajo con N pasos (propuesto por el modelo)»** con las correcciones de Canela. **Nada se ejecuta hasta que lo apruebas**, y dentro de cada paso siguen todas las confirmaciones.
+5. El costo de la consulta de planificación se suma al de la respuesta y al gasto del mes.
+
+**Costo:** una consulta corta más, sólo en los mensajes que lo necesitan. En la evaluación (punto 5), 3 de 119 mensajes la habrían usado con acierto y 1 innecesariamente.
+
+**Límite conocido:** aún no se ha probado con modelos reales (Qwen3, Claude, ChatGPT). En las pruebas el modelo está simulado, así que no sabemos cuántas veces un modelo real propondrá un plan válido.
+
+## 4. Pruebas nuevas
+
+| Tipo | Pruebas |
+|---|---|
+| Español natural | formas verbales (17 aciertos y 10 palabras que NO son órdenes), cortes con «y que», «luego lo guardas», listas numeradas y en líneas, frases que fallaban en la v0.7.1 |
+| Planes mal formulados (del modelo) | texto sin JSON, JSON roto, sin «pasos», pasos que no son una lista, 0 o 1 paso, agente inexistente, sin agente, sin tarea, tarea vacía, demasiado larga, con caracteres de control, más de 6 pasos |
+| Planes peligrosos (del modelo) | borrar o mover algo no pedido, una URL no pedida, una contraseña, una tarea inventada («poner música»), un agente equivocado (se corrige), un informe no pedido (se quita) |
+| Instrucciones contradictorias | 3 casos que piden aclaración; «no olvides revisar» y «no borres nada» no son contradicción |
+| Solicitudes ambiguas | 3 acciones destructivas sin objeto piden aclaración, 4 peticiones vagas no se convierten en plan, un encargo de 8 partes pide dividirlo, adjuntos con órdenes dentro no generan plan |
+| Cancelaciones | Detener mientras se aprueba un plan del modelo y aprobarlo después: no se ejecuta nada. Detener con un permiso pendiente dentro de un paso y aprobarlo después: la carpeta no se crea |
+| Integración (modelo simulado) | plan del modelo aceptado (consulta sin herramientas, JSON oculto, permiso antes de ejecutar, costo sumado); plan peligroso descartado (nada se borra, aviso, sigue un solo agente); respuesta que no es un plan (sigue un solo agente); aclaración sin llamar al modelo |
+
+Total: **210 pruebas de Rust** (antes 189) y 59 de interfaz. La suite completa se repitió 5 veces seguidas sin fallos.
+
+## 5. Evaluación con 119 solicitudes nuevas (`src-tauri/src/coordination_eval.rs`)
+
+Las solicitudes se escribieron después de terminar las reglas y se etiquetaron a mano con el resultado ideal: 74 necesitan varios agentes, 36 basta uno y 9 requieren aclaración. Incluyen usted, pronombres pegados, «y que», listas, saltos de línea, expresiones coloquiales («chécame», «ahorita», «la compu») y trampas («administrador de tareas», «no borres nada»).
+
+| | Primera medición (oficial, a ciegas) | Tras corregir el error de palabras clave (optimista) |
+|---|---|---|
+| **Aciertos de las reglas** | **99/119 (83 %)** | 102/119 (86 %) |
+| Planes no resueltos por las reglas que pasarían al modelo (con validación) | 3 | 3 |
+| Planes con agentes distintos de los esperados | 6 | 3 |
+| Planes innecesarios (bastaba un agente; igual se pide permiso) | 2 | 2 |
+| Consultas extra innecesarias al modelo | 1 | 1 |
+| Aclaraciones que faltaron | 1 | 1 |
+
+La segunda columna es optimista: la corrección se hizo después de ver los resultados, aunque es una corrección general y no un ajuste a estas frases. Después de eso **no se tocaron las reglas** para este conjunto.
+
+Efecto en el orquestador de la v0.7 (un solo agente): su conjunto nuevo pasa de 25/30 a 24/30. «¿Qué **programa** está usando más memoria?» antes iba al agente de sistema sólo porque «ram» aparecía dentro de «programa», es decir, acertaba por casualidad. Ahora va a Canela general, que tiene todas las herramientas.
+
+### Fallos que quedan pendientes (17 después de la corrección)
+
+**Palabras que el planificador aún no entiende como orden**
+- «chécame», «apaga», «toma nota», «busca en internet» y «busca artículos» sin la palabra «investiga».
+- «explícame por qué se calienta»: no reconoce «calienta» como tema del sistema.
+- «busca mis apuntes»: no reconoce «apuntes» como archivo.
+- Afectan a 7 solicitudes, que se resolvieron con un solo agente en vez de con un plan.
+
+**Condiciones («si está alta…», «y si fallan…») y «¿me ayudas a … y después a …?»**
+- No corta ahí. Estos 3 casos y «lee el archivo README del proyecto y explícame cómo instalarlo» acaban consultando al modelo: los 3 primeros con razón y el último innecesariamente.
+
+**Palabras que pertenecen a dos agentes**
+- «el documento del proyecto» → programadora en vez de archivos.
+- «el archivo de paginación» → archivos en vez de investigadora.
+- «búscalos en internet» → se queda en la programadora.
+
+**Planes innecesarios**
+- «abre el administrador de **tareas** y revisa la memoria» → crea un plan con productividad.
+- «lee mi archivo de notas y dime qué **tareas** tengo apuntadas ahí» → también.
+- En ambos casos se pide permiso para el plan antes de hacer nada.
+
+**Aclaración que faltó**
+- «mueve **eso** a la otra carpeta y crea un recordatorio» → planifica en vez de preguntar qué mover. Lo mitiga que el plan y la acción de mover piden permiso igualmente.
+
+**Repetir el mismo agente**
+- «silencia la música, revisa la CPU y anota en una tarea…» → [productividad, sistema] en vez de [productividad, sistema, productividad]. La anotación se une a otro paso y no se pierde.
+
+Para corregirlos sin trampa hará falta otro conjunto nuevo.
+
+## 6. Recursos
+
+- Planificador: ≈ 1 ms por mensaje (las 119 solicitudes en 0,13 s, versión optimizada). No usa el modelo.
+- La consulta de planificación al modelo sólo ocurre en los mensajes que la necesitan (3–4 de cada 119 en la evaluación). Usa el mismo modelo ya cargado, sin herramientas y con una respuesta corta.
+- En la app (Linux, versión de depuración): proceso principal ≈ 86 MB, CPU en reposo ≈ 2–4 %, igual que en la v0.7.1.
+- **Probado en la app (Linux, Ollama simulado):** un mensaje contradictorio recibió la aclaración sin llamar al modelo (0 llamadas). Un mensaje que las reglas no resolvían mostró la tarjeta «propuesto por el modelo» con la revisión de Canela; tras aprobarla, 2 pasos hechos y la tarea comprobada. En total hubo 4 llamadas: 1 para planificar y 3 para los pasos.
