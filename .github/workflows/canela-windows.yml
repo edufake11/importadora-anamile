@@ -52,13 +52,6 @@ jobs:
           npm run typecheck
           npm test
 
-      # Muestra cómo ve el entorno npm al lanzar pruebas (sólo informa; las
-      # pruebas de verdad son el paso siguiente y deben pasar todas).
-      - name: Diagnóstico de comprobaciones de código (informativo)
-        working-directory: canela-ai/src-tauri
-        continue-on-error: true
-        run: cargo test --lib diagnostico_entorno_de_npm -- --nocapture
-
       - name: Pruebas de Rust
         working-directory: canela-ai/src-tauri
         run: cargo test

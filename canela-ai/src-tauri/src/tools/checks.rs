@@ -104,9 +104,21 @@ pub fn plain(p: &Path) -> PathBuf {
 }
 
 /// Longitud máxima del PATH del proceso. En Windows, cmd.exe (que usa npm
-/// para lanzar las pruebas) deja de encontrar programas si el PATH es muy
-/// largo (> 8 191 caracteres).
+/// para lanzar las pruebas) deja de usar el PATH si supera 8 191 caracteres.
 const MAX_PATH_LEN: usize = 8000;
+/// Límite de cmd.exe para una variable de entorno.
+const CMD_MAX: usize = 8191;
+
+/// Cuánto PATH se puede pasar sin que, al añadir npm sus carpetas, se supere
+/// el límite de cmd.exe. Comprobado en Windows: con 5 857 caracteres npm
+/// encuentra `node`; con 7 956, no (npm antepone `node_modules\.bin` de cada
+/// carpeta superior del proyecto y la suya propia).
+pub fn path_budget(cwd: &Path) -> usize {
+    let npm_bins: usize = cwd.ancestors().map(|a| a.as_os_str().len() + "\\node_modules\\.bin;".len()).sum();
+    // node-gyp-bin de npm y otros añadidos; margen holgado.
+    let margin = 600;
+    CMD_MAX.saturating_sub(npm_bins + margin).clamp(1024, MAX_PATH_LEN)
+}
 
 /// PATH del proceso: primero la carpeta del programa, la de Node y las de
 /// Windows; después el PATH heredado (sin repetidos) hasta el límite. Así las
@@ -363,7 +375,8 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
         }
     }
     if cmd.set_path {
-        if let Some(path) = child_path(&cmd.program, cmd.path_limit) {
+        let limit = cmd.path_limit.min(path_budget(&cmd.cwd));
+        if let Some(path) = child_path(&cmd.program, limit) {
             c.env("PATH", path);
         }
     }
@@ -627,8 +640,8 @@ mod tests {
                 }
             }
         }
-        // 2) Experimento: npm test con PATH de distinta longitud y la salida
-        //    completa, para confirmar si el límite de cmd.exe es la causa.
+        // 2) Lo que confirmó la causa (Windows): con PATH ≤ 6 000 npm
+        //    encuentra node; con 7 956, no. Se muestra para seguimiento.
         std::fs::write(d.join("t.js"), "console.log('NODE ENCONTRADO')").unwrap();
         std::fs::write(
             d.join("package.json"),
@@ -636,18 +649,52 @@ mod tests {
         )
         .unwrap();
         let npm = plan(Kind::Pruebas, &d).unwrap();
-        eprintln!("carpeta del proyecto: {:?} ({} caracteres)", npm.cwd, npm.cwd.as_os_str().len());
-        for limit in [300, 2000, 4000, 6000, 8000] {
+        for limit in [2000, 6000, 8000] {
             let mut c = npm.clone();
             c.path_limit = limit;
-            let len = child_path(&c.program, limit).map(|p| p.len()).unwrap_or(0);
             let o = run(&c).await.unwrap();
-            eprintln!("== npm test con PATH ≤ {limit} (real {len}) → ok={} código={:?}", o.ok, o.code);
-            for l in o.output.lines().take(12) {
-                eprintln!("   | {}", l.chars().take(200).collect::<String>());
-            }
+            eprintln!("== npm test con PATH ≤ {limit} (presupuesto {}) → ok={}", path_budget(&c.cwd), o.ok);
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn path_budget_leaves_room_for_what_npm_adds() {
+        let shallow = path_budget(Path::new(r"C:\Proyectos\web"));
+        let deep = PathBuf::from(r"C:\Users\Ana María\Documents\Mis Proyectos Ñandú\cliente grande\frontend\paquetes\interfaz");
+        let deep_budget = path_budget(&deep);
+        assert!(deep_budget < shallow, "más profundo → menos presupuesto");
+        // Presupuesto + lo que añade npm (con margen) nunca supera cmd.exe.
+        let npm_adds: usize = deep.ancestors().map(|a| a.as_os_str().len() + 20).sum();
+        assert!(deep_budget + npm_adds + 300 <= CMD_MAX, "{deep_budget} + {npm_adds}");
+        // El valor que falló en Windows (7 956) ya no se usa con una ruta típica.
+        let ci = path_budget(Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\canela-checks-diag-8488"));
+        assert!((6000..7956).contains(&ci), "{ci}");
+    }
+
+    /// Regresión del fallo original: con el PATH enorme de «cargo test» (más
+    /// de 20 000 caracteres en Windows), npm test no encontraba node. Debe
+    /// funcionar en una carpeta profunda, con espacios y acentos.
+    #[tokio::test]
+    async fn npm_finds_node_in_deep_folders_with_spaces_regression() {
+        if which(&["npm"]).is_none() || which(&["node"]).is_none() {
+            eprintln!("(sin npm: prueba omitida)");
+            return;
+        }
+        let d = dir("regresion")
+            .join("Mis Proyectos Ñandú")
+            .join("cliente grande")
+            .join("frontend web");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("prueba uno.js"), "console.log('node encontrado: ' + process.version)").unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"name":"x","version":"1.0.0","scripts":{"test":"node \"prueba uno.js\""}}"#,
+        )
+        .unwrap();
+        let o = run(&plan(Kind::Pruebas, &d).unwrap()).await.unwrap();
+        assert!(o.ok && o.output.contains("node encontrado: v"), "{o:?}");
+        let _ = std::fs::remove_dir_all(dir("regresion"));
     }
 
     #[test]
@@ -732,9 +779,11 @@ mod tests {
             r#"{"name":"x","version":"1.0.0","scripts":{"test":"node t.js"}}"#,
         )
         .unwrap();
+        let guard = crate::TEST_ENV_LOCK.lock().await;
         std::env::set_var("CANELA_FAKE_API_KEY", "sk-no-debe-verse");
         let o = run(&plan(Kind::Pruebas, &d).unwrap()).await.unwrap();
         std::env::remove_var("CANELA_FAKE_API_KEY");
+        drop(guard);
         assert!(
             o.ok,
             "{o:?}\nPATH del proceso: {:?}",

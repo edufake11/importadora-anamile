@@ -649,6 +649,7 @@ mod tests {
     /// Transcripción contra un servidor local que imita a OpenAI.
     #[tokio::test]
     async fn transcribes_with_multipart_request() {
+        let _guard = crate::TEST_ENV_LOCK.lock().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(String::new()));

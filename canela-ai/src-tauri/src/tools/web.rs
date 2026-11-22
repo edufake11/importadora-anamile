@@ -209,10 +209,14 @@ pub fn html_to_text(html: &str) -> (Option<String>, String) {
 }
 
 fn wiki_base(lang: &str) -> String {
+    // En pruebas nunca se sale a internet: sin simulador, una dirección local
+    // a la que no responde nadie.
     #[cfg(test)]
-    if let Ok(u) = std::env::var("CANELA_TEST_WIKI_URL") {
-        return u;
+    {
+        let _ = lang;
+        std::env::var("CANELA_TEST_WIKI_URL").unwrap_or_else(|_| "http://127.0.0.1:9/sin-red".to_string())
     }
+    #[cfg(not(test))]
     format!("https://{lang}.wikipedia.org")
 }
 
@@ -367,6 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn wikipedia_search_returns_sources() {
+        let _guard = crate::TEST_ENV_LOCK.lock().await;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

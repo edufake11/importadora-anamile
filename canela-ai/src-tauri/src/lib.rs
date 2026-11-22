@@ -1,5 +1,10 @@
 //! CANELA AI — núcleo nativo (Tauri 2).
 
+/// Pruebas que cambian variables de entorno del proceso (simuladores de
+/// APIs): todas comparten este cerrojo para no pisarse entre sí.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 mod agents;
 mod ai;
 mod commands;

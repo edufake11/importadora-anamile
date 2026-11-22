@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 
 /// Las pruebas que redirigen la API con variables de entorno no deben
 /// solaparse entre sí.
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use crate::TEST_ENV_LOCK as ENV_LOCK;
 
 /// Sirve las respuestas indicadas (una por conexión) en trozos pequeños.
 async fn serve(responses: Vec<(&'static str, String)>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -298,9 +298,11 @@ async fn claude_agent_respects_denied_confirmation() {
 
     assert!(!root.join("x.md").exists(), "no debe crearse sin permiso");
     let evs = events.lock().unwrap().clone();
-    assert!(evs
-        .iter()
-        .any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, summary, .. } if summary == "No autorizado")));
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, summary, .. } if summary == "No autorizado")),
+        "{evs:?}"
+    );
     assert!(matches!(evs.last(), Some(StreamEvent::Done { .. })));
     let second_body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[1]).unwrap();
     let msgs = second_body["messages"].as_array().unwrap();
