@@ -392,18 +392,26 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
         c.process_group(0);
     }
     let child = c.spawn().map_err(|e| format!("No pude iniciar la comprobación: {e}"))?;
-    let mut guard = TreeGuard { pid: child.id() };
-    let result = tokio::time::timeout(cmd.timeout, child.wait_with_output()).await;
-    if result.is_ok() {
-        // Terminó solo: puede que deje procesos hijos; también se terminan.
-        if let Some(pid) = guard.pid.take() {
-            kill_tree(pid);
-        }
+    let pid = child.id();
+    // Orden importante: primero el futuro que contiene el proceso raíz y
+    // DESPUÉS el guardián. Si la respuesta se cancela, Rust destruye en orden
+    // inverso: el guardián termina el árbol (en Windows, `taskkill /T` sólo
+    // lo encuentra si la raíz sigue viva) y luego se termina la raíz.
+    let wait = child.wait_with_output();
+    tokio::pin!(wait);
+    let mut guard = TreeGuard { pid };
+    let result = tokio::select! {
+        r = &mut wait => Some(r),
+        _ = tokio::time::sleep(cmd.timeout) => None,
+    };
+    // Al agotarse el tiempo, el árbol se termina con la raíz aún viva. Si
+    // terminó solo, también se terminan los hijos que pudiera haber dejado.
+    if let Some(pid) = guard.pid.take() {
+        kill_tree(pid);
     }
-    drop(guard);
     let out = match result {
-        Ok(r) => r.map_err(|e| format!("La comprobación falló al ejecutarse: {e}"))?,
-        Err(_) => {
+        Some(r) => r.map_err(|e| format!("La comprobación falló al ejecutarse: {e}"))?,
+        None => {
             return Ok(Outcome {
                 ok: false,
                 code: None,
@@ -697,6 +705,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir("regresion"));
     }
 
+    /// ¿Sigue vivo el proceso? (un «zombi» ya terminado no cuenta)
+    fn alive(pid: &str) -> bool {
+        let pid = pid.trim();
+        if cfg!(windows) {
+            let out = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
+        } else {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let state = stat.rsplit(')').next().and_then(|r| r.split_whitespace().next()).unwrap_or("");
+            !stat.is_empty() && state != "Z"
+        }
+    }
+
+    /// Pulsar Detener mientras corren las pruebas: no queda ningún proceso
+    /// del árbol vivo (ni el nieto que lanza npm).
+    #[tokio::test]
+    async fn cancelling_a_check_kills_the_whole_process_tree() {
+        if which(&["npm"]).is_none() || which(&["node"]).is_none() || !(cfg!(windows) || cfg!(target_os = "linux")) {
+            eprintln!("(sin npm: prueba omitida)");
+            return;
+        }
+        let d = dir("cancelar con espacios");
+        let pidfile = d.join("pid.txt");
+        std::fs::write(
+            d.join("t.js"),
+            format!(
+                "require('fs').writeFileSync({:?}, String(process.pid)); setTimeout(() => {{}}, 60000)",
+                pidfile.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"name":"x","version":"1.0.0","scripts":{"test":"node t.js"}}"#,
+        )
+        .unwrap();
+        let cmd = plan(Kind::Pruebas, &d).unwrap();
+        let handle = tokio::spawn(async move { run(&cmd).await });
+        let started = std::time::Instant::now();
+        while !pidfile.exists() && started.elapsed() < Duration::from_secs(30) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let pid = std::fs::read_to_string(&pidfile).expect("las pruebas llegaron a empezar");
+        assert!(alive(&pid), "antes de cancelar, el proceso está vivo");
+        handle.abort();
+        let _ = handle.await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!alive(&pid), "tras cancelar quedó vivo el proceso {pid}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn verbatim_windows_paths_become_plain() {
         assert_eq!(plain(Path::new(r"\\?\C:\Users\x\app.js")), PathBuf::from(r"C:\Users\x\app.js"));
@@ -806,6 +868,21 @@ mod tests {
         let o = run(&c).await.unwrap();
         assert!(!o.ok && o.output.contains("se detuvo"), "{o:?}");
         assert!(started.elapsed() < Duration::from_secs(20));
+        // En Windows, el proceso de las pruebas (nieto de npm) no debe seguir vivo.
+        #[cfg(windows)]
+        {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let pid = std::fs::read_to_string(&pidfile).unwrap();
+            let out = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {}", pid.trim()), "/NH", "/FO", "CSV"])
+                .output()
+                .unwrap();
+            let listed = String::from_utf8_lossy(&out.stdout).to_string();
+            assert!(
+                !listed.contains(&format!("\"{}\"", pid.trim())),
+                "quedó vivo el proceso {pid}: {listed}"
+            );
+        }
         #[cfg(target_os = "linux")]
         {
             tokio::time::sleep(Duration::from_millis(500)).await;
