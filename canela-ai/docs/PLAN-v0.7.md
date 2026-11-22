@@ -171,7 +171,8 @@ Antes de crear un plan, Canela comprueba que el encargo se entiende. Si no, **pr
    - cada tarea, de 3 a 300 caracteres y sin caracteres de control;
    - **ninguna acción destructiva** (borrar, eliminar, vaciar, limpiar, mover, renombrar) que no esté en tu petición;
    - **ninguna dirección web** ni **dato de acceso** (contraseña, token, clave) que no estén en tu petición;
-   - cada paso debe corresponder a algo de tu petición: el modelo no puede inventar tareas;
+   - cada paso debe corresponder a algo de tu petición (la misma palabra, el mismo verbo —«crear» ≈ «crea»— o la misma raíz): el modelo no puede inventar tareas, pero puede reformularlas;
+   - si el modelo escribe rutas de Windows sin escapar («C:\Users\…»), el JSON se repara antes de validarlo;
    - el informe va al final y sólo si lo pediste (si no, se quita y se avisa);
    - si un paso está asignado a un agente que no corresponde, Canela lo reasigna y lo dice.
 3. Si el plan no pasa la validación, **se descarta**, responde un solo agente y se avisa del motivo («No usé el plan que propuso el modelo: el paso 2 añade «borra», que no pediste»).
@@ -194,7 +195,7 @@ Antes de crear un plan, Canela comprueba que el encargo se entiende. Si no, **pr
 | Cancelaciones | Detener mientras se aprueba un plan del modelo y aprobarlo después: no se ejecuta nada. Detener con un permiso pendiente dentro de un paso y aprobarlo después: la carpeta no se crea |
 | Integración (modelo simulado) | plan del modelo aceptado (consulta sin herramientas, JSON oculto, permiso antes de ejecutar, costo sumado); plan peligroso descartado (nada se borra, aviso, sigue un solo agente); respuesta que no es un plan (sigue un solo agente); aclaración sin llamar al modelo |
 
-Total: **210 pruebas de Rust** (antes 189) y 59 de interfaz. La suite completa se repitió 5 veces seguidas sin fallos.
+Total: **211 pruebas de Rust** (antes 189) y 59 de interfaz. La suite completa se repitió varias veces seguidas sin fallos.
 
 ## 5. Evaluación con 119 solicitudes nuevas (`src-tauri/src/coordination_eval.rs`)
 
@@ -247,3 +248,9 @@ Para corregirlos sin trampa hará falta otro conjunto nuevo.
 - La consulta de planificación al modelo sólo ocurre en los mensajes que la necesitan (3–4 de cada 119 en la evaluación). Usa el mismo modelo ya cargado, sin herramientas y con una respuesta corta.
 - En la app (Linux, versión de depuración): proceso principal ≈ 86 MB, CPU en reposo ≈ 2–4 %, igual que en la v0.7.1.
 - **Probado en la app (Linux, Ollama simulado):** un mensaje contradictorio recibió la aclaración sin llamar al modelo (0 llamadas). Un mensaje que las reglas no resolvían mostró la tarjeta «propuesto por el modelo» con la revisión de Canela; tras aprobarla, 2 pasos hechos y la tarea comprobada. En total hubo 4 llamadas: 1 para planificar y 3 para los pasos.
+
+## 7. Lo que encontró la compilación en Windows (GitHub Actions)
+
+La primera ejecución en Windows de la v0.7.2 (commits 12adec6 y 3400294) falló en **1 de 208 pruebas**. La prueba metía una ruta de Windows (`C:\Users\…`) en el JSON del plan simulado sin escapar las barras. El plan se rechazaba igual y nada se borraba, pero por otro motivo («JSON no válido»). Se corrigió la prueba y, como un modelo real podría escribir rutas así, también el validador:
+- repara las barras sin escapar antes de rendirse;
+- acepta tareas reformuladas por el modelo («Crear una tarea con lo encontrado» frente a «crea una tarea con lo que encuentres»), y sigue rechazando las inventadas.

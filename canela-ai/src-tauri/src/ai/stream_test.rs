@@ -1516,10 +1516,12 @@ async fn unsafe_model_plan_is_discarded() {
     let m = "qwen3:8b";
     let docs = std::env::temp_dir().join(format!("canela-docs-{}", std::process::id()));
     std::fs::create_dir_all(&docs).unwrap();
-    let plan_json = format!(
-        r#"{{"pasos":[{{"agente":"programador","tarea":"Revisar el código de la API"}},{{"agente":"archivos","tarea":"Borrar la carpeta {}"}}]}}"#,
-        docs.display()
-    );
+    // serde_json escapa bien las rutas de Windows (C:\Users\…).
+    let plan_json = serde_json::json!({"pasos": [
+        {"agente": "programador", "tarea": "Revisar el código de la API"},
+        {"agente": "archivos", "tarea": format!("Borrar la carpeta {}", docs.display())}
+    ]})
+    .to_string();
     let responses = vec![
         ("200 OK", ollama_final(m, &plan_json)),
         ("200 OK", ollama_final(m, "Revisé el código.")),

@@ -602,6 +602,26 @@ const STOP: &[&str] = &[
     "pasos", "informe", "resumen",
 ];
 
+/// Duplica las barras invertidas que no forman un escape JSON válido.
+fn repair_backslashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') => {
+                    out.push(c);
+                    out.push(chars.next().unwrap());
+                }
+                _ => out.push_str("\\\\"),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Valida un plan propuesto por el modelo. El modelo NO decide nada: si el
 /// plan no cumple todas las reglas se descarta y responde un solo agente.
 /// Devuelve el plan y notas de las correcciones que hizo Canela.
@@ -611,7 +631,11 @@ pub fn validate_model_plan(raw: &str, request: &str) -> Result<Plan, String> {
         .rfind('}')
         .filter(|&e| e > start)
         .ok_or("el modelo no devolvió un plan en JSON")?;
-    let v: serde_json::Value = serde_json::from_str(&raw[start..=end]).map_err(|_| "el plan del modelo no es JSON válido".to_string())?;
+    let body = &raw[start..=end];
+    // Rutas de Windows escritas sin escapar («C:\Users\…») se reparan.
+    let v: serde_json::Value = serde_json::from_str(body)
+        .or_else(|_| serde_json::from_str(&repair_backslashes(body)))
+        .map_err(|_| "el plan del modelo no es JSON válido".to_string())?;
     let pasos = v
         .get("pasos")
         .or_else(|| v.get("steps"))
@@ -672,9 +696,15 @@ pub fn validate_model_plan(raw: &str, request: &str) -> Result<Plan, String> {
         }
         // Cada tarea debe venir de la petición (al menos una palabra con contenido en común).
         let tw = words_of(task);
-        let shared = tw
-            .iter()
-            .any(|w| w.chars().count() >= 4 && !STOP.contains(&w.as_str()) && req_words.contains(w));
+        // Misma palabra, mismo verbo («crear» ≈ «crea») o misma raíz de 5 letras.
+        let stem = |w: &str| w.chars().take(5).collect::<String>();
+        let shared = tw.iter().any(|w| {
+            w.chars().count() >= 4
+                && !STOP.contains(&w.as_str())
+                && (req_words.contains(w)
+                    || verb_base(w).is_some_and(|b| req_bases.contains(&b))
+                    || (w.chars().count() >= 5 && req_words.iter().any(|r| r.chars().count() >= 5 && stem(r) == stem(w))))
+        });
         if synthesis {
             if !is_report(request) {
                 notes.push(format!("Quité el paso {n} (informe): no lo pediste."));
@@ -1732,6 +1762,14 @@ mod tests {
             let e = validate_model_plan(raw, REQ).unwrap_err();
             assert!(e.contains(why), "{raw} → {e}");
         }
+    }
+
+    #[test]
+    fn windows_paths_without_escaping_are_repaired() {
+        let req = r"revisa el código de C:\Proyectos\api y crea una tarea con lo que encuentres";
+        let raw = r#"{"pasos":[{"agente":"programador","tarea":"Revisar el código de C:\Proyectos\api"},{"agente":"productividad","tarea":"Crear una tarea con lo encontrado"}]}"#;
+        let p = validate_model_plan(raw, req).unwrap();
+        assert_eq!(p.steps[0].task, r"Revisar el código de C:\Proyectos\api");
     }
 
     #[test]
