@@ -91,24 +91,45 @@ pub fn plain(p: &Path) -> PathBuf {
     }
 }
 
-/// PATH del proceso: la carpeta del programa y la de Node van primero, para
-/// que las pruebas que lanza npm encuentren `node` aunque el PATH heredado
-/// no lo tenga.
+/// Longitud máxima del PATH del proceso. En Windows, cmd.exe (que usa npm
+/// para lanzar las pruebas) deja de encontrar programas si el PATH es muy
+/// largo (> 8 191 caracteres).
+const MAX_PATH_LEN: usize = 8000;
+
+/// PATH del proceso: primero la carpeta del programa, la de Node y las de
+/// Windows; después el PATH heredado (sin repetidos) hasta el límite. Así las
+/// pruebas que lanza npm encuentran `node` aunque el PATH heredado sea enorme.
 fn child_path(program: &Path) -> Option<std::ffi::OsString> {
     let mut parts: Vec<PathBuf> = Vec::new();
-    for p in [
+    let mut first: Vec<PathBuf> = [
         program.parent().map(Path::to_path_buf),
         which(&["node"]).and_then(|n| n.parent().map(Path::to_path_buf)),
     ]
     .into_iter()
     .flatten()
-    {
-        if !p.as_os_str().is_empty() && !parts.contains(&p) {
-            parts.push(p);
+    .collect();
+    if cfg!(windows) {
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let root = PathBuf::from(root);
+            first.push(root.join("System32"));
+            first.push(root.clone());
+            first.push(root.join("System32").join("Wbem"));
         }
     }
-    if let Some(old) = std::env::var_os("PATH") {
-        parts.extend(std::env::split_paths(&old));
+    let inherited: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let mut len = 0;
+    for p in first.into_iter().chain(inherited) {
+        if p.as_os_str().is_empty() || parts.contains(&p) {
+            continue;
+        }
+        let l = p.as_os_str().len() + 1;
+        if cfg!(windows) && len + l > MAX_PATH_LEN {
+            break;
+        }
+        len += l;
+        parts.push(p);
     }
     std::env::join_paths(parts).ok()
 }
@@ -404,6 +425,17 @@ mod tests {
         }
         for k in ["PATH", "HOME", "LANG", "NODE_ENV"] {
             assert!(!looks_secret(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn child_path_puts_node_first_and_stays_short_on_windows() {
+        let program = PathBuf::from("/opt/herramienta/bin/npm");
+        let p = child_path(&program).unwrap();
+        let parts: Vec<PathBuf> = std::env::split_paths(&p).collect();
+        assert_eq!(parts[0], PathBuf::from("/opt/herramienta/bin"));
+        if cfg!(windows) {
+            assert!(p.len() <= MAX_PATH_LEN, "{}", p.len());
         }
     }
 
