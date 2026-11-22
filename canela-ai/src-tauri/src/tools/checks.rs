@@ -54,6 +54,9 @@ pub struct CheckCmd {
     pub scrub_env: bool,
     /// Lanzar sin ventana de consola (Windows).
     pub hide_window: bool,
+    /// Fijar el PATH del proceso (siempre en la app; el diagnóstico lo
+    /// desactiva para comparar con el entorno heredado tal cual).
+    pub set_path: bool,
 }
 
 /// Busca un programa en el PATH (en Windows también .exe, .cmd y .bat).
@@ -173,6 +176,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     internal: None,
                     scrub_env: true,
                     hide_window: true,
+                    set_path: true,
                 }),
                 "py" => Ok(CheckCmd {
                     program: need(&["python", "python3", "py"], "Python")?,
@@ -184,6 +188,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     internal: None,
                     scrub_env: true,
                     hide_window: true,
+                    set_path: true,
                 }),
                 _ => Ok(CheckCmd {
                     program: PathBuf::new(),
@@ -195,6 +200,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                     internal: Some(target.to_path_buf()),
                     scrub_env: true,
                     hide_window: true,
+                    set_path: true,
                 }),
             }
         }
@@ -217,6 +223,7 @@ pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
                 internal: None,
                 scrub_env: true,
                 hide_window: true,
+                set_path: true,
             };
             if let Some(s) = package_script(&dir, script).filter(|s| !s.contains(NPM_DEFAULT_TEST)) {
                 let _ = s;
@@ -349,8 +356,10 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
             }
         }
     }
-    if let Some(path) = child_path(&cmd.program) {
-        c.env("PATH", path);
+    if cmd.set_path {
+        if let Some(path) = child_path(&cmd.program) {
+            c.env("PATH", path);
+        }
     }
     #[cfg(windows)]
     {
@@ -555,9 +564,15 @@ mod tests {
     /// activado o no, para identificar la causa exacta de un fallo en Windows.
     #[tokio::test]
     async fn diagnostico_entorno_de_npm() {
-        if which(&["npm"]).is_none() {
-            eprintln!("(sin npm)");
+        if which(&["npm"]).is_none() || which(&["node"]).is_none() {
+            eprintln!("(sin npm/node)");
             return;
+        }
+        // 1) Variables de ruta del propio proceso de pruebas.
+        for (k, v) in std::env::vars_os() {
+            if k.to_string_lossy().eq_ignore_ascii_case("path") {
+                eprintln!("proceso de pruebas: {:?} ({} caracteres)", k, v.len());
+            }
         }
         let d = dir("diag");
         let script = if cfg!(windows) {
@@ -570,18 +585,39 @@ mod tests {
             format!(r#"{{"name":"x","version":"1.0.0","scripts":{{"test":{script:?}}}}}"#),
         )
         .unwrap();
-        let base = plan(Kind::Pruebas, &d).unwrap();
-        eprintln!("npm detectado: {:?}; node: {:?}", base.program, which(&["node"]));
-        for (scrub, hide) in [(true, true), (false, true), (true, false), (false, false)] {
-            let mut c = base.clone();
-            c.scrub_env = scrub;
-            c.hide_window = hide;
-            let o = run(&c).await.unwrap();
-            eprintln!("== limpiar_entorno={scrub} sin_ventana={hide} → ok={} código={:?}", o.ok, o.code);
-            for l in o.output.lines() {
-                let low = l.to_lowercase();
-                if low.starts_with("path=") || low.starts_with("pathext=") || low.starts_with("comspec=") || low.contains("node") {
-                    eprintln!("   {}", l.chars().take(400).collect::<String>());
+        let npm = plan(Kind::Pruebas, &d).unwrap();
+        // node.exe directamente (sin npm): qué variables de ruta recibe.
+        let mut probe = npm.clone();
+        probe.program = which(&["node"]).unwrap();
+        probe.args = vec![
+            "-e".into(),
+            "console.log('node ve: ' + JSON.stringify(Object.keys(process.env).filter(k => /^path$/i.test(k)).map(k => k + '(' + process.env[k].length + ')')))".into(),
+        ];
+        eprintln!("npm: {:?}; node: {:?}", npm.program, probe.program);
+        // (limpiar entorno, fijar PATH, sin ventana)
+        for (scrub, set_path, hide) in [
+            (true, true, true),
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (false, false, true),
+        ] {
+            for (what, base) in [("node directo", &probe), ("npm test", &npm)] {
+                let mut c = base.clone();
+                c.scrub_env = scrub;
+                c.set_path = set_path;
+                c.hide_window = hide;
+                let o = run(&c).await.unwrap();
+                eprintln!(
+                    "== {what}: limpiar_entorno={scrub} fijar_path={set_path} sin_ventana={hide} → ok={} código={:?}",
+                    o.ok, o.code
+                );
+                for l in o.output.lines() {
+                    let low = l.to_lowercase();
+                    let key = low.split('=').next().unwrap_or("");
+                    if ["path", "pathext", "comspec"].contains(&key) || low.contains("node") || low.contains("info:") {
+                        eprintln!("   {}", l.chars().take(160).collect::<String>());
+                    }
                 }
             }
         }
