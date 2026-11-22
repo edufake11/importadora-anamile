@@ -25,6 +25,8 @@ mod settings;
 mod system;
 mod tools;
 mod verification;
+#[cfg(test)]
+mod verification_eval;
 mod vision;
 mod vision_cmds;
 mod voice;

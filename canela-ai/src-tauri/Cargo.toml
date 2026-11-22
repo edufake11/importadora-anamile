@@ -1,6 +1,6 @@
 [package]
 name = "canela-ai"
-version = "0.5.0"
+version = "0.8.0"
 description = "CANELA AI — mascota virtual e asistente inteligente de escritorio"
 edition = "2021"
 rust-version = "1.82"
@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "process"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 similar = "2.7.0"

@@ -146,3 +146,91 @@ Que Canela **no dé un trabajo por terminado porque la respuesta suene bien**, s
 - El detector de objetivos usa reglas y puede no reconocer formas poco comunes; entonces el resultado es «sin comprobar» (no dice «completo»).
 - Las cifras sólo se contrastan en investigaciones con fuentes leídas en esa misma respuesta.
 - Todo está probado con modelos **simulados**: falta ver con Qwen3, Claude y ChatGPT reales cuántas veces los objetivos y los avisos aciertan en el uso diario.
+
+---
+
+# Cierre de la v0.8 (rama de desarrollo)
+
+## 1. Estado real del proyecto (inventario)
+
+| Función | Implementada | Pruebas automáticas | Probada en Windows real |
+|---|---|---|---|
+| Mascota pixel art, animaciones, panel | Sí | Sprites y comportamiento (interfaz) | Sí (v0.5) |
+| Chat de texto con Claude, ChatGPT y Ollama | Sí | Servidores simulados (streaming, errores, herramientas) | Sí (v0.5) |
+| Voz: whisper.cpp local, Piper, «Hola, Canela» | Sí | Con audio y modelos reales en Linux; en Windows, sólo compilación | Sí (v0.5) |
+| Capturas autorizadas y visión | Sí | Redimensionado, recorte y permisos | Sí (v0.5) |
+| Memoria, tareas, rutinas, documentos | Sí | Base de datos y herramientas | Sí (v0.5) |
+| Diagnóstico de memoria, modos Equilibrado/Ahorro | Sí | Detector, descarga por inactividad | Sí (v0.5) |
+| Enrutador de modelos y límite de gasto (v0.6) | Sí | Exactitud del clasificador, presupuesto, reservas | **No** |
+| Detección de datos privados (v0.6.1) | Sí | Conjuntos etiquetados | **No** |
+| Agentes, coordinación y planificador (v0.7.x) | Sí | Planes, permisos, cancelación, evaluación con 229 solicitudes | **No** |
+| Verificación de resultados (v0.8) | Sí | 45 + 40 escenarios e integración con modelos simulados | **No** |
+| Comprobaciones de código (cierre v0.8) | Sí | Con Node, Python y npm reales en Linux; en Windows, las mismas pruebas en GitHub Actions | **No** (sólo en el servidor de GitHub) |
+
+Todo lo posterior a la v0.5 está probado con **modelos simulados**; con Qwen3, Claude y ChatGPT reales queda pendiente.
+
+## 2. Deuda técnica encontrada
+
+| Problema | Riesgo | Estado |
+|---|---|---|
+| Los instaladores experimentales decían «0.5.0» | Confundirlos con la versión estable | **Corregido**: ahora 0.8.0 (rama de desarrollo) |
+| El verificador daba «completo» a acciones sin comprobar (abrir apps, música) y a investigaciones sin respaldo | Éxitos aparentes | **Corregido** (punto 3) |
+| Rutinas y planes ejecutados por la IA no pasaban por la comprobación del resultado | Planes «hechos» a medias | **Corregido** (lo detectó una prueba nueva) |
+| Al agotarse el tiempo, `npm test` podía dejar vivo el proceso de las pruebas | Procesos huérfanos | **Corregido**: se termina el árbol de procesos (grupo en Linux, `taskkill /T` en Windows) |
+| `coordination.rs` (≈1 900 líneas) y `Chat.tsx` (≈1 400 líneas) muy grandes | Más difícil de mantener | Pendiente: separar en módulos |
+| La capa entre interfaz y backend (`commands.rs`, ventanas, credenciales) no tiene pruebas automáticas | Errores de integración | Pendiente: pruebas de humo en GitHub Actions |
+| Las acciones de GitHub usan Node 20 (aviso de obsolescencia) | Avisos; algún día fallará | Pendiente (no bloquea) |
+| El planificador por reglas acierta ≈ 82 % con datos nuevos | Planes que faltan o sobran | Pendiente: nivel 2 (clasificación contextual) |
+
+## 3. Verificador por tipo de tarea
+
+**Resultados posibles** (los que pediste):
+- **Completo y verificado** ✓
+- **Parcial** ◐
+- **No logrado** ✕
+- **Hecho, pero no verificable con la evidencia disponible** ?
+- **Sin comprobar**: charla, no había acción que comprobar.
+
+Un éxito parcial nunca se presenta como total, y lo que no se puede comprobar no se presenta como verificado.
+
+| Tipo | Qué se comprueba |
+|---|---|
+| **Archivos** | Que el archivo exista y que sea **el que se pidió** (si nombras «resumen.md», escribir otro no cuenta). El contenido debe ser el aprobado, sin errores evidentes de formato (JSON, sangría de YAML/Python). Organizar: que **no queden archivos sueltos** («7 de 10 movidos» = parcial) |
+| **Programación** | Sintaxis básica interna. Además, la herramienta nueva **`comprobar_codigo`** ejecuta comprobaciones reales de un **catálogo cerrado**: `node --check` y Python (sólo analizan, no ejecutan el programa), `npm test`, `cargo test`, `pytest`, `npm run build`, `cargo check` y TypeScript. «Corrige y comprueba que funciona» sin ejecutar la comprobación = **parcial** |
+| **Investigación** | **Procedencia**: debe citar fuentes que se consultaron de verdad (citar otra = fallo). **Respaldo** de cada afirmación frente a las páginas leídas. Coincidir con la fuente **no prueba** que algo sea verdad, y una afirmación o cifra sin respaldo queda **«no verificable»**, no «falsa» |
+| **Tareas y recordatorios** | Que la tarea exista con el título, **la fecha y el recordatorio** pedidos. Editar o completar: que los cambios estén guardados. Cantidades («crea 3» y se crearon 2 = parcial) |
+| **Automatizaciones** | Cuántos pasos se completaron de verdad («2 de 3» = parcial; «0 de 3» = no logrado) |
+| **Consultas** (leer, buscar, medir el equipo, listar tareas) | El registro de la consulta es la evidencia. **Responder datos sin haber consultado = no logrado** («Tienes 3 tareas» sin mirarlas) |
+| **Abrir apps, música, carpetas** | Se hacen, pero su efecto no se puede comprobar: **«sin verificar»**, nunca «completo» |
+
+Además, cada resultado se apunta en **Actividad** («verificación»), para revisar errores y medir más adelante.
+
+### Seguridad de `comprobar_codigo`
+
+- **El modelo no escribe comandos**: sólo elige el tipo (sintaxis, pruebas, compilar) y una ruta dentro de las carpetas autorizadas. El programa decide el comando según los archivos del proyecto (`package.json`, `Cargo.toml`, `pytest.ini`…). Un campo «comando» inventado por el modelo se ignora; una prueba lo demuestra.
+- **Sin intérprete de comandos**: el programa se lanza directamente, con argumentos fijos.
+- **Siempre pide permiso** mostrando el comando exacto y la carpeta. Si ejecutará código del proyecto, lo advierte. La revisión interna de sintaxis no lanza ningún proceso.
+- Se **quitan del entorno** las variables con aspecto de secreto (KEY, TOKEN, SECRET, PASSWORD…); una prueba lo comprueba.
+- **Límite de tiempo** (30 s la sintaxis, 300 s las pruebas). Al agotarse o al pulsar Detener, se termina **todo el árbol de procesos**.
+- La salida se recorta, se ocultan claves y se trata como **datos, no instrucciones**. Lo que se haga después de leerla pide confirmación.
+- Sólo la usan la programadora y Canela general.
+
+**Limitación honesta:** si apruebas «pruebas» o «compilar», se ejecuta el código de tu proyecto con tus permisos de usuario. No hay un entorno aislado (sandbox) ni se bloquea internet en esos procesos. Por eso siempre se pregunta antes.
+
+## 4. Mediciones
+
+| Medida | Resultado |
+|---|---|
+| **Escenarios nuevos del cierre (45), escritos ANTES de cambiar el verificador** | Antes: **27/45 (60 %), 7 «completos» falsos**. Después: **45/45, 0 «completos» falsos** (no es a ciegas: el mismo equipo escribió los escenarios y el verificador) |
+| Escenarios anteriores (40) | 40/40. Se reetiquetaron 5 que tenían categorías anteriores a las pedidas («pon música» era «completo»; ahora es «sin verificar»), con un comentario en el código |
+| Pruebas | **244 de Rust** (antes 231) y **64 de interfaz** (antes 62); suite repetida 3 veces sin fallos |
+| Comprobaciones reales en Linux | `node --check` y Python no ejecutan el programa (un archivo marcador lo demuestra). `npm test` no ve las claves del entorno. El límite de tiempo termina el proceso hijo de npm |
+| Costo | Verificación ≈ 0,2 ms y **sin llamadas extra al modelo**. Las comprobaciones de código sólo se ejecutan si se piden y se aprueban |
+
+## 5. Qué sigue (propuesta, sin fechas)
+
+1. **v0.8.1 (calidad)**: separar `coordination.rs` y `Chat.tsx`, pruebas de humo de la app en GitHub Actions y actualizar las acciones de GitHub.
+2. **v0.9 (memoria semántica)**: búsqueda por significado con un modelo local pequeño de embeddings (descarga con permiso), duplicados, contradicciones, recuerdos antiguos o inciertos y memoria de proyectos.
+3. **v0.10 (investigación)**: búsqueda web real con varias fuentes, comparación y contradicciones entre fuentes.
+4. **v0.11 (evaluación)**: batería reproducible con modelos reales (calidad, latencia, memoria, costo) en tu PC.
+5. **Planificador nivel 2**: clasificación contextual (intención, entidades, dependencias) antes de recurrir al modelo.

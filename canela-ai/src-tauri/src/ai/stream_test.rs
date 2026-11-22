@@ -1987,7 +1987,8 @@ async fn multi_step_plan_reports_partial_results() {
     let evs = run_plan(ollama_env(&base, m, db, Arc::new(Confirmations::default()), "x"), plan, |_| true).await;
     assert!(folder.is_dir());
     let steps = final_plan(&evs);
-    assert_eq!(statuses(&steps), vec!["hecho", "no_logrado"]);
+    // Creó 1 de las 2 tareas pedidas: el paso queda «incompleto» (parcial).
+    assert_eq!(statuses(&steps), vec!["hecho", "incompleto"]);
     let p2 = steps[1].verdict.as_ref().unwrap();
     assert!(p2.items[0].problem.as_deref().unwrap().contains("1 de 2"), "{p2:?}");
     assert!(
@@ -2082,4 +2083,213 @@ async fn cancelled_answers_never_claim_completion() {
         .iter()
         .any(|e| matches!(e, StreamEvent::Report { .. } | StreamEvent::Done { .. })));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------ cierre v0.8
+
+/// Programación: Canela ejecuta una comprobación REAL del catálogo (con
+/// permiso) y el resultado decide si está hecho. Un campo «comando» inventado
+/// por el modelo se ignora: el comando lo decide el programa.
+#[tokio::test]
+async fn code_checks_run_for_real_and_decide_the_result() {
+    if crate::tools::checks::which(&["node"]).is_none() {
+        eprintln!("(sin Node.js: prueba omitida)");
+        return;
+    }
+    let m = "qwen3:8b";
+    let dir = scratch("check");
+    let marker = dir.join("pwned.txt");
+    for (content, expected) in [("function f() { return 1 }\n", "completo"), ("function f( {\n", "no_logrado")] {
+        let file = dir.join("app.js");
+        std::fs::write(&file, content).unwrap();
+        let args = serde_json::json!({
+            "tipo": "sintaxis",
+            "ruta": file.to_string_lossy(),
+            "comando": format!("touch {}", marker.to_string_lossy())
+        });
+        let responses = vec![
+            ("200 OK", ollama_tool(m, "comprobar_codigo", args)),
+            ("200 OK", ollama_final(m, "Listo, ya lo comprobé.")),
+        ];
+        let (url, _) = serve(responses).await;
+        let base = url.trim_end_matches("/v1/messages").to_string();
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let evs = run_collect(
+            ollama_env(&base, m, db, Arc::new(Confirmations::default()), "comprueba la sintaxis de app.js"),
+            true,
+        )
+        .await;
+        let v = verdict_of(&evs);
+        assert_eq!(v.status, expected, "{content}: {v:?}");
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ConfirmRequest { details, .. } if details.contains("node --check app.js"))));
+        if expected == "no_logrado" {
+            assert!(v.items[0].problem.as_deref().unwrap().contains("FALLÓ"), "{v:?}");
+        }
+    }
+    assert!(!marker.exists(), "el comando del modelo nunca se ejecuta");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Si no autorizas la comprobación, no se lanza ningún proceso.
+#[tokio::test]
+async fn denied_code_check_runs_nothing() {
+    if crate::tools::checks::which(&["npm"]).is_none() {
+        eprintln!("(sin npm: prueba omitida)");
+        return;
+    }
+    let m = "qwen3:8b";
+    let dir = scratch("deny");
+    let marker = dir.join("ejecutado.txt");
+    std::fs::write(
+        dir.join("t.js"),
+        format!("require('fs').writeFileSync({:?}, 'x')", marker.to_string_lossy()),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"x","version":"1.0.0","scripts":{"test":"node t.js"}}"#,
+    )
+    .unwrap();
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(
+                m,
+                "comprobar_codigo",
+                serde_json::json!({"tipo": "pruebas", "ruta": dir.to_string_lossy()}),
+            ),
+        ),
+        ("200 OK", ollama_final(m, "Todas las pruebas pasan.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db,
+            Arc::new(Confirmations::default()),
+            "ejecuta las pruebas de mi proyecto",
+        ),
+        false,
+    )
+    .await;
+    assert!(!marker.exists(), "no se ejecutó nada");
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "no_logrado");
+    assert!(done_notice(&evs).contains("la comprobación no lo confirma") || done_notice(&evs).contains("No se logró"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Automatizaciones: un plan que completa 1 de 2 pasos → parcial, con el
+/// avance medido.
+#[tokio::test]
+async fn automation_progress_is_measured() {
+    let m = "qwen3:8b";
+    let plan = serde_json::json!({
+        "titulo": "Limpieza",
+        "pasos": [
+            {"herramienta": "crear_tarea", "parametros": {"titulo": "Revisar facturas"}, "descripcion": "Crear tarea"},
+            {"herramienta": "eliminar_tarea", "parametros": {"id": 999}, "descripcion": "Borrar la 999"}
+        ]
+    });
+    let responses = vec![
+        ("200 OK", ollama_tool(m, "ejecutar_plan", plan)),
+        ("200 OK", ollama_final(m, "Listo, plan ejecutado.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(&base, m, db, Arc::new(Confirmations::default()), "ejecuta el plan de limpieza"),
+        true,
+    )
+    .await;
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "parcial", "{v:?}");
+    assert!(v.items[0].problem.as_deref().unwrap().contains("1 de 2"), "{v:?}");
+}
+
+/// Tareas, recordatorios y carpetas: se comprueba lo que quedó guardado.
+#[tokio::test]
+async fn reminders_updates_and_organizing_are_checked() {
+    let m = "qwen3:8b";
+    let dir = scratch("org");
+    for f in ["a.pdf", "b.jpg", "c.txt"] {
+        std::fs::write(dir.join(f), "x").unwrap();
+    }
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(
+                m,
+                "crear_tarea",
+                serde_json::json!({"titulo": "Dentista", "recordatorio": "2099-03-10 09:00"}),
+            ),
+        ),
+        (
+            "200 OK",
+            ollama_tool(m, "actualizar_tarea", serde_json::json!({"id": 1, "completada": true})),
+        ),
+        (
+            "200 OK",
+            ollama_tool(m, "organizar_carpeta", serde_json::json!({"ruta": dir.to_string_lossy()})),
+        ),
+        ("200 OK", ollama_final(m, "Hecho.")),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(
+            &base,
+            m,
+            db.clone(),
+            Arc::new(Confirmations::default()),
+            "crea una tarea para el dentista con recordatorio el 10 de marzo, marca como hecha la tarea 1 y organiza la carpeta de descargas",
+        ),
+        true,
+    )
+    .await;
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "completo", "{v:?}");
+    let t = db.task_get(1).unwrap().unwrap();
+    assert!(t.done && t.remind_at.as_deref() == Some("2099-03-10 09:00"));
+    assert!(!dir.join("a.pdf").exists(), "se movió a su subcarpeta");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Investigación: una afirmación sin respaldo en las fuentes queda «no
+/// verificable» (no «completo» ni «falso»).
+#[tokio::test]
+async fn unsupported_research_claims_are_not_verifiable() {
+    let _guard = ENV_LOCK.lock().await;
+    let m = "qwen3:8b";
+    let wiki = fake_wikipedia("Raza alemana de patas cortas criada para cazar tejones").await;
+    std::env::set_var("CANELA_TEST_WIKI_URL", &wiki);
+    let answer = "El teckel es una raza alemana de patas cortas. Es la raza favorita de la familia real británica desde hace siglos.\nFuente: https://es.wikipedia.org/wiki/Teckel";
+    let responses = vec![
+        (
+            "200 OK",
+            ollama_tool(m, "buscar_wikipedia", serde_json::json!({"consulta": "Teckel"})),
+        ),
+        ("200 OK", ollama_final(m, answer)),
+    ];
+    let (url, _) = serve(responses).await;
+    let base = url.trim_end_matches("/v1/messages").to_string();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let evs = run_collect(
+        ollama_env(&base, m, db, Arc::new(Confirmations::default()), "investiga el teckel"),
+        true,
+    )
+    .await;
+    std::env::remove_var("CANELA_TEST_WIKI_URL");
+    let v = verdict_of(&evs);
+    assert_eq!(v.status, "no_verificable", "{v:?}");
+    let claims = v.items.iter().find(|i| i.what.starts_with("Afirmaciones")).unwrap();
+    assert!(claims.problem.as_deref().unwrap().contains("familia real"), "{claims:?}");
+    assert!(done_notice(&evs).contains("no todo se puede verificar"));
 }

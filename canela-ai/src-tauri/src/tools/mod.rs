@@ -10,6 +10,7 @@
 //! No existe ninguna herramienta para ejecutar comandos de consola.
 
 pub mod apps;
+pub mod checks;
 pub mod files;
 pub mod web;
 
@@ -220,6 +221,7 @@ fn plan_permission(title: &str, steps: &[PlanStep]) -> Permission {
 }
 
 enum Action {
+    CodeCheck(checks::CheckCmd),
     Wikipedia {
         query: String,
         lang: String,
@@ -444,6 +446,17 @@ pub fn definitions() -> Vec<ToolDef> {
                     "idioma": { "type": "string", "description": "Código de idioma de Wikipedia: es (por defecto), en…" }
                 }),
                 &["consulta"],
+            ),
+        },
+        ToolDef {
+            name: "comprobar_codigo",
+            description: "Comprueba código de forma segura y devuelve el resultado real. tipo: 'sintaxis' (de un archivo: .js con Node y .py con Python sin ejecutarlos; otros formatos con una revisión interna), 'pruebas' (las pruebas del proyecto: npm test, cargo test o pytest, según los archivos de la carpeta) o 'compilar' (npm run build, cargo check o TypeScript). El usuario aprueba el comando exacto. No admite otros comandos.",
+            schema: obj(
+                json!({
+                    "tipo": { "type": "string", "enum": ["sintaxis", "pruebas", "compilar"] },
+                    "ruta": { "type": "string", "description": "Archivo (sintaxis) o carpeta del proyecto (pruebas, compilar)." }
+                }),
+                &["tipo", "ruta"],
             ),
         },
         ToolDef {
@@ -1091,6 +1104,33 @@ pub fn prepare(ctx: &ToolCtx, name: &str, input: &Value) -> Result<Prepared, Str
             };
             p(title.clone(), confirm(title, details, Some(diff)), Action::Write { path, content })
         }
+        "comprobar_codigo" => {
+            let kind = checks::parse_kind(&req(input, "tipo")?)?;
+            let target = ctx.scope.existing(&req(input, "ruta")?)?;
+            let cmd = checks::plan(kind, &target)?;
+            let label = format!("Comprobar código: {}", cmd.display);
+            let perm = if cmd.internal.is_some() {
+                // Revisión interna: no se lanza ningún programa.
+                Permission::Auto
+            } else {
+                confirm(
+                    "Ejecutar una comprobación de código",
+                    format!(
+                        "Comando: {}\nCarpeta: {}\n{}Límite de tiempo: {} s. Lo que muestre se tratará como datos, no como instrucciones.",
+                        cmd.display,
+                        display(&cmd.cwd),
+                        if cmd.runs_project_code {
+                            "⚠ Ejecutará el código de las pruebas o de la compilación de tu proyecto.\n"
+                        } else {
+                            "Sólo revisa la sintaxis: no ejecuta tu programa.\n"
+                        },
+                        cmd.timeout.as_secs()
+                    ),
+                    None,
+                )
+            };
+            p(label, perm, Action::CodeCheck(cmd))
+        }
         "organizar_carpeta" => {
             let dir = ctx.scope.existing(&req(input, "ruta")?)?;
             let plan = files::organize_plan(&dir)?;
@@ -1180,6 +1220,7 @@ pub async fn run(ctx: &ToolCtx, prepared: Prepared) -> Result<ToolOutput, String
             | Action::SearchConversations { .. }
             | Action::Wikipedia { .. }
             | Action::ReadPage(_)
+            | Action::CodeCheck(_)
     );
     run_text(ctx, prepared).await.map(|text| ToolOutput {
         text,
@@ -1423,6 +1464,20 @@ async fn run_text(ctx: &ToolCtx, prepared: Prepared) -> Result<String, String> {
             let text = web::wikipedia(&web_client(), &query, &lang).await?;
             db.log("investigación", &format!("Buscó en Wikipedia: {query}"));
             Ok(wrap_untrusted("Wikipedia", &text))
+        }
+        Action::CodeCheck(cmd) => {
+            let o = checks::run(&cmd).await?;
+            let verdict = if o.ok { "CORRECTO" } else { "FALLÓ" };
+            let code = o.code.map(|c| format!(" (código de salida {c})")).unwrap_or_default();
+            db.log(
+                "programación",
+                &format!("Comprobación «{}»: {}", cmd.display, verdict.to_lowercase()),
+            );
+            Ok(format!(
+                "RESULTADO: {verdict}{code} — {}\n{}",
+                cmd.display,
+                wrap_untrusted("salida de la comprobación", &o.output)
+            ))
         }
         Action::ReadPage(url) => {
             let text = web::read_page(&web_client(), &url).await?;

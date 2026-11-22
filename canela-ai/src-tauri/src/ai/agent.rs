@@ -70,6 +70,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
         status: status.to_string(),
         verified,
         detail,
+        progress: None,
     };
     // Si falla antes de empezar, el registro dice al menos sobre qué era.
     let target = call
@@ -195,7 +196,23 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
             ok: true,
             summary: label.clone(),
         });
+        // v0.8: se comprueba cuántos pasos se completaron de verdad.
+        let check = crate::agents::verify(ctx, &call.name, &input, &text);
+        if let Some(c) = &check {
+            emit(StreamEvent::ToolVerified {
+                call_id: call.id.clone(),
+                ok: c.ok,
+                detail: c.detail.clone(),
+            });
+        }
         let first_line = text.lines().next().unwrap_or("").to_string();
+        let mut rec = record(
+            "ok",
+            &label,
+            check.as_ref().map(|c| c.ok),
+            Some(check.as_ref().map(|c| c.detail.clone()).unwrap_or(first_line)),
+        );
+        rec.progress = check.and_then(|c| c.progress);
         return (
             ToolResult {
                 id: call.id.clone(),
@@ -205,7 +222,7 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                 images: vec![],
             },
             untrusted,
-            record("ok", &label, None, Some(first_line)),
+            rec,
         );
     }
     match tools::run(ctx, prepared).await {
@@ -224,7 +241,9 @@ async fn execute(env: &AgentEnv, ctx: &ToolCtx, call: &ToolCall, emit: &Emit, ta
                     detail: c.detail.clone(),
                 });
             }
-            let rec = record("ok", &label, check.as_ref().map(|c| c.ok), check.map(|c| c.detail));
+            let progress = check.as_ref().and_then(|c| c.progress);
+            let mut rec = record("ok", &label, check.as_ref().map(|c| c.ok), check.map(|c| c.detail));
+            rec.progress = progress;
             (
                 ToolResult {
                     id: call.id.clone(),
@@ -394,6 +413,7 @@ fn final_report(
     }
     let verdict = crate::verification::assess(goal, actions, answer, fetched);
     let unfinished = matches!(verdict.status.as_str(), "parcial" | "no_logrado");
+    let unverified = verdict.status == "no_verificable";
     if unfinished && crate::verification::claims_done(answer) && did_something {
         warnings.push(format!(
             "La respuesta da a entender que terminó, pero la comprobación no lo confirma. {}",
@@ -401,7 +421,7 @@ fn final_report(
         ));
     }
     let mut lines: Vec<String> = Vec::new();
-    if unfinished {
+    if unfinished || unverified {
         lines.push(verdict.summary.clone());
     }
     if !warnings.is_empty() {
@@ -477,6 +497,12 @@ pub async fn run(env: AgentEnv, emit: Emit) {
     let finish = |emit: &Emit, actions: &[ActionRecord], fetched: &str, done: StreamEvent| {
         let text = answer.lock().unwrap().clone();
         let (warnings, notice, verdict) = final_report(&goal, actions, &text, fetched);
+        // v0.8: registro de resultados (Actividad) para revisar errores y medir.
+        if let Some(ctx) = &env.tools {
+            if !verdict.items.is_empty() {
+                ctx.db.log("verificación", &verdict.summary);
+            }
+        }
         if !actions.is_empty() || !warnings.is_empty() || !verdict.items.is_empty() {
             emit(StreamEvent::Report {
                 agent: agent_name.clone(),

@@ -44,6 +44,7 @@ Este documento describe cómo está construida Canela. Las secciones marcadas **
 │ tools/          herramientas                                                                   │
 │   mod.rs          definiciones, validación (prepare), permisos y ejecución (run)               │
 │   web.rs          (v0.7) Wikipedia y lectura de páginas públicas (sin red local, 2 MB, 15 s)   │
+│   checks.rs       (v0.8) comprobaciones de código de un catálogo cerrado (con permiso)      │
 │   files.rs        archivos limitados a carpetas autorizadas                                    │
 │   apps.rs         abrir apps del menú Inicio, webs http(s) y rutas                             │
 └───────────────▲────────────────────────────────────────────────────▲────────────────────────────┘

@@ -107,12 +107,20 @@ export interface ActionRecord {
   /** true = comprobado; false = la comprobación falló; null = no comprobable. */
   verified: boolean | null;
   detail: string | null;
+  /** v0.8: avance medido [hecho, total] (rutinas, organizar…). */
+  progress?: [number, number] | null;
 }
 
 /** v0.8: un objetivo de la petición y si se cumplió (lo comprueba el programa). */
 export interface VerdictItem {
   what: string;
-  status: "cumplido" | "fallido" | "no_intentado";
+  status:
+    | "cumplido"
+    | "sin_verificar"
+    | "parcial"
+    | "fallido"
+    | "no_intentado"
+    | "no_verificable";
   evidence: string | null;
   problem: string | null;
   fix: string | null;
@@ -120,7 +128,12 @@ export interface VerdictItem {
 
 /** v0.8: ¿se consiguió lo pedido? */
 export interface Verdict {
-  status: "completo" | "parcial" | "no_logrado" | "sin_comprobar";
+  status:
+    | "completo"
+    | "parcial"
+    | "no_logrado"
+    | "no_verificable"
+    | "sin_comprobar";
   items: VerdictItem[];
   summary: string;
 }
@@ -135,6 +148,7 @@ export interface PlanStep {
     | "pendiente"
     | "en_curso"
     | "hecho"
+    | "sin_verificar"
     | "incompleto"
     | "no_logrado"
     | "error"

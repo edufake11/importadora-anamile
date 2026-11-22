@@ -1376,6 +1376,7 @@ function PlanCard({
               ["Hecho", r.done],
               ["Pendiente", r.pending],
               ["Errores", r.errors],
+              ["Sin verificar", r.unverified],
             ] as const
           ).map(
             ([title, items]) =>

@@ -1,0 +1,481 @@
+//! Comprobaciones de código (v0.8): un catálogo CERRADO de comandos.
+//!
+//! - El modelo sólo elige el TIPO de comprobación («sintaxis», «pruebas»,
+//!   «compilar») y una ruta dentro de las carpetas autorizadas. El programa
+//!   decide el comando a partir de los archivos del proyecto; nunca se ejecuta
+//!   texto generado por el modelo.
+//! - Sin intérprete de comandos: el programa se lanza directamente, con
+//!   argumentos fijos, en la carpeta del proyecto.
+//! - Variables de entorno con aspecto de secreto (KEY, TOKEN, SECRET,
+//!   PASSWORD…) se quitan antes de lanzar el proceso.
+//! - Límite de tiempo; si se supera o se cancela la respuesta, el proceso se
+//!   termina. La salida se recorta, se ocultan claves y se trata como datos.
+//! - Las comprobaciones que ejecutan código del proyecto (pruebas, compilar)
+//!   siempre piden permiso mostrando el comando exacto. La sintaxis de .js y
+//!   .py usa Node/Python SIN ejecutar el programa; los demás formatos se
+//!   revisan dentro de Canela, sin lanzar ningún proceso.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind {
+    Sintaxis,
+    Pruebas,
+    Compilar,
+}
+
+pub fn parse_kind(s: &str) -> Result<Kind, String> {
+    match s.trim().to_lowercase().as_str() {
+        "sintaxis" => Ok(Kind::Sintaxis),
+        "pruebas" | "tests" | "test" => Ok(Kind::Pruebas),
+        "compilar" | "compilacion" | "compilación" | "build" => Ok(Kind::Compilar),
+        other => Err(format!(
+            "Tipo de comprobación «{other}» no admitido. Sólo: sintaxis, pruebas o compilar."
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckCmd {
+    /// Programa a lanzar (ruta completa). Vacío = revisión interna.
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    /// Cómo se muestra al usuario («npm test»).
+    pub display: String,
+    /// ¿Ejecuta código del proyecto? (pruebas, compilación)
+    pub runs_project_code: bool,
+    pub timeout: Duration,
+    /// Revisión interna de este archivo (sin procesos).
+    pub internal: Option<PathBuf>,
+}
+
+/// Busca un programa en el PATH (en Windows también .exe, .cmd y .bat).
+pub fn which(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ""] } else { &[""] };
+    for dir in std::env::split_paths(&path) {
+        for n in names {
+            for e in exts {
+                let p = dir.join(format!("{n}{e}"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+const PY_AST: &str = "import ast,sys;ast.parse(open(sys.argv[1],encoding='utf-8').read(),sys.argv[1])";
+const NPM_DEFAULT_TEST: &str = "no test specified";
+
+fn package_script(dir: &Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v["scripts"][name].as_str().map(str::to_string)
+}
+
+fn need(names: &[&str], what: &str) -> Result<PathBuf, String> {
+    which(names).ok_or_else(|| format!("No encontré {what} instalado en este equipo; no puedo hacer esta comprobación."))
+}
+
+/// Decide el comando (o la revisión interna) para una comprobación.
+pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
+    let secs = |s| Duration::from_secs(s);
+    match kind {
+        Kind::Sintaxis => {
+            if !target.is_file() {
+                return Err("Para revisar la sintaxis indica un archivo, no una carpeta.".into());
+            }
+            let ext = target.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let cwd = target.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let file = target.to_string_lossy().to_string();
+            let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            match ext.as_str() {
+                "js" | "mjs" | "cjs" => Ok(CheckCmd {
+                    program: need(&["node"], "Node.js")?,
+                    args: vec!["--check".into(), file],
+                    cwd,
+                    display: format!("node --check {name}"),
+                    runs_project_code: false,
+                    timeout: secs(30),
+                    internal: None,
+                }),
+                "py" => Ok(CheckCmd {
+                    program: need(&["python", "python3", "py"], "Python")?,
+                    args: vec!["-c".into(), PY_AST.into(), file],
+                    cwd,
+                    display: format!("Python: revisar la sintaxis de {name} (sin ejecutarlo)"),
+                    runs_project_code: false,
+                    timeout: secs(30),
+                    internal: None,
+                }),
+                _ => Ok(CheckCmd {
+                    program: PathBuf::new(),
+                    args: vec![],
+                    cwd,
+                    display: format!("revisión interna de la sintaxis de {name}"),
+                    runs_project_code: false,
+                    timeout: secs(5),
+                    internal: Some(target.to_path_buf()),
+                }),
+            }
+        }
+        Kind::Pruebas | Kind::Compilar => {
+            let dir = if target.is_file() {
+                target.parent().unwrap_or(target)
+            } else {
+                target
+            }
+            .to_path_buf();
+            let has = |f: &str| dir.join(f).exists();
+            let script = if kind == Kind::Pruebas { "test" } else { "build" };
+            let cmd = |program: PathBuf, args: &[&str], display: &str| CheckCmd {
+                program,
+                args: args.iter().map(|a| a.to_string()).collect(),
+                cwd: dir.clone(),
+                display: display.to_string(),
+                runs_project_code: true,
+                timeout: secs(300),
+                internal: None,
+            };
+            if let Some(s) = package_script(&dir, script).filter(|s| !s.contains(NPM_DEFAULT_TEST)) {
+                let _ = s;
+                let npm = need(&["npm"], "npm (Node.js)")?;
+                return Ok(if kind == Kind::Pruebas {
+                    cmd(npm, &["test"], "npm test")
+                } else {
+                    cmd(npm, &["run", "build"], "npm run build")
+                });
+            }
+            if has("Cargo.toml") {
+                let cargo = need(&["cargo"], "Rust (cargo)")?;
+                return Ok(if kind == Kind::Pruebas {
+                    cmd(cargo, &["test"], "cargo test")
+                } else {
+                    cmd(cargo, &["check"], "cargo check")
+                });
+            }
+            if kind == Kind::Pruebas && (has("pytest.ini") || has("pyproject.toml") || has("setup.cfg") || has("tests")) {
+                let py = need(&["python", "python3", "py"], "Python")?;
+                return Ok(cmd(py, &["-m", "pytest", "-q"], "python -m pytest -q"));
+            }
+            let tsc = dir.join("node_modules").join("typescript").join("bin").join("tsc");
+            if kind == Kind::Compilar && has("tsconfig.json") && tsc.is_file() {
+                let node = need(&["node"], "Node.js")?;
+                let mut c = cmd(node, &[], "tsc --noEmit (TypeScript del proyecto)");
+                c.args = vec![tsc.to_string_lossy().to_string(), "--noEmit".into()];
+                return Ok(c);
+            }
+            Err(if kind == Kind::Pruebas {
+                "No encontré pruebas configuradas en esa carpeta (package.json con «test», Cargo.toml o pytest).".into()
+            } else {
+                "No encontré cómo compilar esa carpeta (package.json con «build», Cargo.toml o tsconfig.json con TypeScript instalado)."
+                    .into()
+            })
+        }
+    }
+}
+
+fn looks_secret(name: &str) -> bool {
+    let n = name.to_uppercase();
+    ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CANELA_DEV"]
+        .iter()
+        .any(|k| n.contains(k))
+}
+
+/// Resultado de una comprobación.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outcome {
+    pub ok: bool,
+    pub code: Option<i32>,
+    pub output: String,
+}
+
+const MAX_OUTPUT: usize = 3000;
+
+fn tail(s: &str) -> String {
+    let n = s.chars().count();
+    if n <= MAX_OUTPUT {
+        s.to_string()
+    } else {
+        format!("[…]{}", s.chars().skip(n - MAX_OUTPUT).collect::<String>())
+    }
+}
+
+/// Termina el proceso y TODOS los que lanzó (npm lanza node, cargo lanza
+/// rustc…). Comando fijo del sistema, sin intérprete.
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .creation_flags(0x0800_0000)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        // El proceso se lanzó en su propio grupo: se termina el grupo entero.
+        let _ = std::process::Command::new("kill")
+            // «--» para que «-PID» se lea como grupo de procesos y no como señal.
+            .args(["-s", "KILL", "--", &format!("-{pid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Si la respuesta se cancela a mitad, el árbol de procesos se termina.
+struct TreeGuard {
+    pid: Option<u32>,
+}
+
+impl Drop for TreeGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            kill_tree(pid);
+        }
+    }
+}
+
+/// Ejecuta la comprobación. Si la respuesta se cancela, el proceso termina.
+pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
+    if let Some(file) = &cmd.internal {
+        let content = std::fs::read_to_string(file).map_err(|e| format!("No pude leer el archivo: {e}"))?;
+        let problems = crate::verification::code_check(&file.to_string_lossy(), &content);
+        return Ok(Outcome {
+            ok: problems.is_empty(),
+            code: None,
+            output: if problems.is_empty() {
+                "Sin errores de sintaxis evidentes (revisión básica; no ejecuta el código).".into()
+            } else {
+                problems.join("\n")
+            },
+        });
+    }
+    let mut c = tokio::process::Command::new(&cmd.program);
+    c.args(&cmd.args)
+        .current_dir(&cmd.cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (k, _) in std::env::vars_os() {
+        if looks_secret(&k.to_string_lossy()) {
+            c.env_remove(&k);
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Sin ventana de consola.
+        c.creation_flags(0x0800_0000);
+    }
+    #[cfg(unix)]
+    {
+        c.process_group(0);
+    }
+    let child = c.spawn().map_err(|e| format!("No pude iniciar la comprobación: {e}"))?;
+    let mut guard = TreeGuard { pid: child.id() };
+    let result = tokio::time::timeout(cmd.timeout, child.wait_with_output()).await;
+    if result.is_ok() {
+        // Terminó solo: puede que deje procesos hijos; también se terminan.
+        if let Some(pid) = guard.pid.take() {
+            kill_tree(pid);
+        }
+    }
+    drop(guard);
+    let out = match result {
+        Ok(r) => r.map_err(|e| format!("La comprobación falló al ejecutarse: {e}"))?,
+        Err(_) => {
+            return Ok(Outcome {
+                ok: false,
+                code: None,
+                output: format!("Tardó más de {} s y se detuvo.", cmd.timeout.as_secs()),
+            })
+        }
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&err);
+    }
+    Ok(Outcome {
+        ok: out.status.success(),
+        code: out.status.code(),
+        output: crate::ai::pricing::redact_secrets(&tail(text.trim())),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("canela-checks-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn only_known_kinds_are_accepted() {
+        assert_eq!(parse_kind("pruebas").unwrap(), Kind::Pruebas);
+        for bad in ["rm -rf /", "powershell", "npm install", "", "ejecutar"] {
+            assert!(parse_kind(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_command_comes_from_the_project_not_from_the_model() {
+        let d = dir("detect");
+        assert!(plan(Kind::Pruebas, &d).unwrap_err().contains("No encontré pruebas"));
+        // El «test» por defecto de npm no cuenta como pruebas.
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        assert!(plan(Kind::Pruebas, &d).is_err());
+        if which(&["npm"]).is_some() {
+            std::fs::write(d.join("package.json"), r#"{"scripts":{"test":"node t.js","build":"node b.js"}}"#).unwrap();
+            let p = plan(Kind::Pruebas, &d).unwrap();
+            assert_eq!(
+                (p.display.as_str(), p.args.clone(), p.runs_project_code),
+                ("npm test", vec!["test".to_string()], true)
+            );
+            assert_eq!(plan(Kind::Compilar, &d).unwrap().display, "npm run build");
+        }
+        let f = d.join("datos.json");
+        std::fs::write(&f, "{}").unwrap();
+        let p = plan(Kind::Sintaxis, &f).unwrap();
+        assert_eq!(p.internal.as_deref(), Some(f.as_path()), "JSON se revisa dentro de Canela");
+        assert!(plan(Kind::Sintaxis, &d).is_err(), "sintaxis necesita un archivo");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn secret_looking_variables_are_removed() {
+        for k in ["OPENAI_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "MY_SECRET", "CANELA_DEV_API_KEY"] {
+            assert!(looks_secret(k), "{k}");
+        }
+        for k in ["PATH", "HOME", "LANG", "NODE_ENV"] {
+            assert!(!looks_secret(k), "{k}");
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_syntax_check_runs_no_process() {
+        let d = dir("internal");
+        let f = d.join("c.json");
+        std::fs::write(&f, r#"{"a": 1,}"#).unwrap();
+        let o = run(&plan(Kind::Sintaxis, &f).unwrap()).await.unwrap();
+        assert!(!o.ok && o.output.contains("JSON no válido"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn node_syntax_check_does_not_run_the_program() {
+        if which(&["node"]).is_none() {
+            eprintln!("(sin Node.js: prueba omitida)");
+            return;
+        }
+        let d = dir("node");
+        let marker = d.join("ejecutado.txt");
+        let good = d.join("ok.js");
+        // Si se EJECUTARA, crearía el archivo marcador.
+        std::fs::write(
+            &good,
+            format!("require('fs').writeFileSync({:?}, 'x');\n", marker.to_string_lossy()),
+        )
+        .unwrap();
+        let o = run(&plan(Kind::Sintaxis, &good).unwrap()).await.unwrap();
+        assert!(o.ok, "{o:?}");
+        assert!(!marker.exists(), "--check no ejecuta el programa");
+        let bad = d.join("mal.js");
+        std::fs::write(&bad, "function f( {\n").unwrap();
+        let o = run(&plan(Kind::Sintaxis, &bad).unwrap()).await.unwrap();
+        assert!(!o.ok && o.code == Some(1), "{o:?}");
+        assert!(o.output.contains("SyntaxError"), "{}", o.output);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn python_syntax_check_does_not_run_the_program() {
+        if which(&["python", "python3", "py"]).is_none() {
+            eprintln!("(sin Python: prueba omitida)");
+            return;
+        }
+        let d = dir("py");
+        let marker = d.join("ejecutado.txt");
+        let good = d.join("ok.py");
+        std::fs::write(&good, format!("open({:?}, 'w').write('x')\n", marker.to_string_lossy())).unwrap();
+        let o = run(&plan(Kind::Sintaxis, &good).unwrap()).await.unwrap();
+        assert!(o.ok, "{o:?}");
+        assert!(!marker.exists(), "sólo se analiza, no se ejecuta");
+        let bad = d.join("mal.py");
+        std::fs::write(&bad, "def f(:\n    pass\n").unwrap();
+        let o = run(&plan(Kind::Sintaxis, &bad).unwrap()).await.unwrap();
+        assert!(!o.ok, "{o:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn project_tests_run_with_a_time_limit_and_without_secrets() {
+        if which(&["npm"]).is_none() || which(&["node"]).is_none() {
+            eprintln!("(sin npm: prueba omitida)");
+            return;
+        }
+        let d = dir("npm");
+        // La prueba falla si ve la clave en su entorno.
+        std::fs::write(
+            d.join("t.js"),
+            "if (process.env.CANELA_FAKE_API_KEY) { console.log('VIO LA CLAVE'); process.exit(2) } console.log('1 prueba ok')",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"name":"x","version":"1.0.0","scripts":{"test":"node t.js"}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CANELA_FAKE_API_KEY", "sk-no-debe-verse");
+        let o = run(&plan(Kind::Pruebas, &d).unwrap()).await.unwrap();
+        std::env::remove_var("CANELA_FAKE_API_KEY");
+        assert!(o.ok, "{o:?}");
+        assert!(o.output.contains("1 prueba ok") && !o.output.contains("VIO LA CLAVE"));
+        // Límite de tiempo: el proceso de las pruebas (hijo de npm) también termina.
+        let pidfile = d.join("pid.txt");
+        std::fs::write(
+            d.join("t.js"),
+            format!(
+                "require('fs').writeFileSync({:?}, String(process.pid)); setTimeout(() => {{}}, 60000)",
+                pidfile.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let mut c = plan(Kind::Pruebas, &d).unwrap();
+        c.timeout = Duration::from_secs(3);
+        let started = std::time::Instant::now();
+        let o = run(&c).await.unwrap();
+        assert!(!o.ok && o.output.contains("se detuvo"), "{o:?}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+        #[cfg(target_os = "linux")]
+        {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let pid = std::fs::read_to_string(&pidfile).unwrap();
+            // Un proceso terminado puede quedar como «zombi» (estado Z) hasta
+            // que lo recoja su padre: eso no es un proceso vivo.
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())).unwrap_or_default();
+            let state = stat.rsplit(')').next().and_then(|r| r.split_whitespace().next()).unwrap_or("");
+            assert!(stat.is_empty() || state == "Z", "quedó vivo el proceso {pid} (estado {state})");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

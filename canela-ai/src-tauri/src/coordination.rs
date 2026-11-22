@@ -62,7 +62,7 @@ pub struct StepReport {
     pub agent: AgentId,
     pub name: String,
     pub task: String,
-    /// «pendiente» | «en_curso» | «hecho» | «incompleto» | «no_logrado» | «error» | «cancelado»
+    /// «pendiente» | «en_curso» | «hecho» | «sin_verificar» | «incompleto» | «no_logrado» | «error» | «cancelado»
     pub status: String,
     pub attempts: u32,
     pub actions: Vec<ActionRecord>,
@@ -190,6 +190,8 @@ const VERBS: &[&str] = &[
     "descarga",
     "repasa",
     "escanea",
+    "completa",
+    "edita",
 ];
 /// Palabras de VERBS que también son sustantivos frecuentes: sólo cuentan
 /// en imperativo o con pronombre, nunca en sus otras formas («listas»,
@@ -868,6 +870,7 @@ pub fn counts_line(steps: &[StepReport]) -> String {
     for (k, label) in [
         ("incompleto", "incompletos"),
         ("no_logrado", "no logrados"),
+        ("sin_verificar", "sin verificar"),
         ("error", "con error"),
         ("cancelado", "cancelados"),
         ("pendiente", "pendientes"),
@@ -1243,6 +1246,9 @@ async fn execute(env: AgentEnv, plan: Plan, emit: Emit, prior_usage: Usage, prio
                 s.status = "no_logrado".into();
             } else if incomplete || outcome == "parcial" {
                 s.status = "incompleto".into();
+            } else if outcome == "no_verificable" {
+                // Se hizo, pero no todo se puede comprobar con la evidencia.
+                s.status = "sin_verificar".into();
             } else {
                 s.status = "hecho".into();
             }

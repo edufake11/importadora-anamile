@@ -425,3 +425,78 @@ describe("resultado comprobado (v0.8)", () => {
     ]);
   });
 });
+
+describe("cierre v0.8: hecho pero no verificable", () => {
+  it("no lo presenta como éxito total", () => {
+    const v = verdictView({
+      status: "no_verificable",
+      summary:
+        "Hecho, pero no todo se puede verificar con la evidencia disponible: 1 de 2 objetivos verificados.",
+      items: [
+        {
+          what: "Crear la tarea",
+          status: "cumplido",
+          evidence: "Crear tarea (comprobado)",
+          problem: null,
+          fix: null,
+        },
+        {
+          what: "Abrir lo pedido («abre la calculadora»)",
+          status: "sin_verificar",
+          evidence: "Abrir calculadora",
+          problem:
+            "Se hizo, pero su efecto no se puede comprobar con la evidencia disponible.",
+          fix: "Compruébalo tú mismo.",
+        },
+      ],
+    })!;
+    expect(
+      v.title.startsWith("Resultado: hecho, sin poder verificarlo todo"),
+    ).toBe(true);
+    expect(v.lines[1].icon).toBe("?");
+    expect(v.lines[1].fix).toBe("Compruébalo tú mismo.");
+  });
+
+  it("el informe del plan separa lo no verificado", () => {
+    const r = planReport([
+      {
+        index: 1,
+        agent: "investigador",
+        name: "investigadora",
+        task: "Investiga el teckel",
+        status: "sin_verificar",
+        attempts: 1,
+        warnings: [],
+        error: null,
+        actions: [
+          {
+            tool: "buscar_wikipedia",
+            label: "Wikipedia: Teckel",
+            status: "ok",
+            verified: null,
+            detail: null,
+          },
+        ],
+        verdict: {
+          status: "no_verificable",
+          summary: "",
+          items: [
+            {
+              what: "Afirmaciones con respaldo en las fuentes leídas",
+              status: "no_verificable",
+              evidence: null,
+              problem:
+                "No encontré respaldo para: «Es la favorita de la reina».",
+              fix: "Trátalo como no confirmado.",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(r.done).toEqual(["Paso 1 · investigadora: Wikipedia: Teckel"]);
+    expect(r.errors).toEqual([]);
+    expect(r.unverified).toEqual([
+      "Paso 1 · investigadora: Afirmaciones con respaldo en las fuentes leídas — No encontré respaldo para: «Es la favorita de la reina». Cómo arreglarlo: Trátalo como no confirmado.",
+    ]);
+  });
+});

@@ -47,6 +47,7 @@ const PROGRAMADOR: &[&str] = &[
     "escribir_archivo",
     "crear_carpeta",
     "analizar_proyecto",
+    "comprobar_codigo",
     "abrir_con",
     "buscar_en_documentos",
     "indexar_documentos",
@@ -479,6 +480,8 @@ pub fn select_for_clause(text: &str) -> AgentId {
 pub struct Check {
     pub ok: bool,
     pub detail: String,
+    /// v0.8: avance medido [hecho, total], si aplica (rutinas, organizar…).
+    pub progress: Option<[usize; 2]>,
 }
 
 fn task_id_in(text: &str) -> Option<i64> {
@@ -501,15 +504,26 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
             let id = task_id_in(output)?;
             let found = ctx.db.task_list(crate::db::TaskFilter::All).ok()?.into_iter().find(|t| t.id == id);
             Some(match found {
-                Some(t) if t.title.trim() == s("titulo").trim() => Check {
-                    ok: true,
-                    detail: format!("la tarea #{id} existe en la base de datos"),
+                Some(t) if t.title.trim() == s("titulo").trim() => match task_fields_differ(&t, input) {
+                    // v0.8: la fecha y el recordatorio pedidos también deben haber quedado guardados.
+                    Some(problem) => Check {
+                        progress: None,
+                        ok: false,
+                        detail: format!("la tarea #{id} existe, pero {problem}"),
+                    },
+                    None => Check {
+                        progress: None,
+                        ok: true,
+                        detail: format!("la tarea #{id} existe en la base de datos con los datos pedidos"),
+                    },
                 },
                 Some(t) => Check {
+                    progress: None,
                     ok: false,
                     detail: format!("la tarea #{id} existe pero su título es «{}»", t.title),
                 },
                 None => Check {
+                    progress: None,
                     ok: false,
                     detail: format!("la tarea #{id} NO aparece en la base de datos"),
                 },
@@ -519,6 +533,7 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
             let id = input.get("id").and_then(|v| v.as_i64())?;
             let still = ctx.db.task_list(crate::db::TaskFilter::All).ok()?.iter().any(|t| t.id == id);
             Some(Check {
+                progress: None,
                 ok: !still,
                 detail: if still {
                     format!("la tarea #{id} SIGUE en la base de datos")
@@ -536,11 +551,13 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
                     let problems = crate::verification::code_check(&path.to_string_lossy(), &c);
                     if problems.is_empty() {
                         Check {
+                            progress: None,
                             ok: true,
                             detail: format!("el archivo existe y tiene el contenido esperado ({} bytes)", c.len()),
                         }
                     } else {
                         Check {
+                            progress: None,
                             ok: false,
                             detail: format!(
                                 "el archivo se guardó con el contenido aprobado, pero tiene un posible error de sintaxis: {}",
@@ -550,10 +567,12 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
                     }
                 }
                 Ok(c) => Check {
+                    progress: None,
                     ok: false,
                     detail: format!("el archivo existe pero su contenido es distinto ({} bytes)", c.len()),
                 },
                 Err(_) => Check {
+                    progress: None,
                     ok: false,
                     detail: "el archivo NO existe".into(),
                 },
@@ -562,6 +581,7 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
         "crear_carpeta" => {
             let path = ctx.scope.target(&s("ruta")).ok()?;
             Some(Check {
+                progress: None,
                 ok: path.is_dir(),
                 detail: if path.is_dir() {
                     "la carpeta existe".into()
@@ -579,6 +599,7 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
                 .iter()
                 .any(|m| m.content.trim() == content.trim());
             Some(Check {
+                progress: None,
                 ok: found,
                 detail: if found {
                     "el recuerdo está guardado".into()
@@ -590,6 +611,7 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
         "guardar_rutina" => {
             let ok = ctx.db.routine_get(&s("nombre")).ok().flatten().is_some();
             Some(Check {
+                progress: None,
                 ok,
                 detail: if ok {
                     "la rutina está guardada".into()
@@ -598,8 +620,120 @@ pub fn verify(ctx: &crate::tools::ToolCtx, tool: &str, input: &serde_json::Value
                 },
             })
         }
+        // v0.8: editar o completar una tarea → los cambios están en la base de datos.
+        "actualizar_tarea" => {
+            let id = input.get("id").and_then(|v| v.as_i64())?;
+            let t = ctx.db.task_get(id).ok().flatten();
+            Some(match t {
+                None => Check {
+                    progress: None,
+                    ok: false,
+                    detail: format!("la tarea #{id} NO aparece en la base de datos"),
+                },
+                Some(t) => {
+                    let mut problems = Vec::new();
+                    if let Some(done) = input.get("completada").and_then(|v| v.as_bool()) {
+                        if t.done != done {
+                            problems.push(if done { "no quedó completada" } else { "sigue completada" }.to_string());
+                        }
+                    }
+                    if !s("titulo").is_empty() && t.title.trim() != s("titulo").trim() {
+                        problems.push(format!("su título es «{}»", t.title));
+                    }
+                    if let Some(p) = task_fields_differ(&t, input) {
+                        problems.push(p);
+                    }
+                    if problems.is_empty() {
+                        Check {
+                            progress: None,
+                            ok: true,
+                            detail: format!("la tarea #{id} tiene los cambios pedidos"),
+                        }
+                    } else {
+                        Check {
+                            progress: None,
+                            ok: false,
+                            detail: format!("la tarea #{id}: {}", problems.join("; ")),
+                        }
+                    }
+                }
+            })
+        }
+        // v0.8: organizar → ¿quedan archivos sueltos sin mover?
+        "organizar_carpeta" => {
+            let dir = ctx.scope.existing(&s("ruta")).ok()?;
+            let moved = output
+                .split_whitespace()
+                .skip_while(|w| *w != "Moví")
+                .nth(1)
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+            let left = crate::tools::files::organize_plan(&dir).map(|p| p.len()).unwrap_or(0);
+            let total = moved + left;
+            Some(Check {
+                progress: Some([moved, total]),
+                ok: left == 0 && moved > 0,
+                detail: if left == 0 {
+                    format!("se movieron {moved} archivos y no quedan sueltos")
+                } else {
+                    format!("quedan {left} de {total} archivos sin mover")
+                },
+            })
+        }
+        // v0.8: rutinas y planes → cuántos pasos se completaron de verdad.
+        "ejecutar_plan" | "ejecutar_rutina" => {
+            let (done, total) = steps_done(output)?;
+            Some(Check {
+                progress: Some([done, total]),
+                ok: done == total,
+                detail: format!("{done} de {total} pasos completados"),
+            })
+        }
+        // v0.8: comprobaciones de código → el programa vio el resultado.
+        "comprobar_codigo" => {
+            let ok = output.starts_with("RESULTADO: CORRECTO");
+            let first = output.lines().next().unwrap_or("").to_string();
+            Some(Check {
+                progress: None,
+                ok,
+                detail: first.trim_start_matches("RESULTADO: ").to_string(),
+            })
+        }
         _ => None,
     }
+}
+
+/// «… 2 de 3 pasos completados» → (2, 3).
+fn steps_done(output: &str) -> Option<(usize, usize)> {
+    let i = output.find(" pasos completados")?;
+    let head: Vec<&str> = output[..i].split_whitespace().collect();
+    let n = head.len();
+    if n < 3 || head[n - 2] != "de" {
+        return None;
+    }
+    Some((head[n - 3].parse().ok()?, head[n - 1].parse().ok()?))
+}
+
+/// ¿La fecha o el recordatorio pedidos NO coinciden con lo guardado?
+fn task_fields_differ(t: &crate::db::Task, input: &serde_json::Value) -> Option<String> {
+    let want = |k: &str, date_only: bool| {
+        input
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .and_then(|v| crate::db::normalize_datetime(v, date_only).ok())
+    };
+    if let Some(d) = want("fecha", true) {
+        if t.due.as_deref() != Some(d.as_str()) {
+            return Some(format!("la fecha guardada es {:?} y se pidió {d}", t.due));
+        }
+    }
+    if let Some(r) = want("recordatorio", false) {
+        if t.remind_at.as_deref() != Some(r.as_str()) {
+            return Some("el recordatorio NO quedó guardado como se pidió".into());
+        }
+    }
+    None
 }
 
 // ------------------------------------------------------------ informe
@@ -614,6 +748,9 @@ pub struct ActionRecord {
     /// Some(true) = comprobado; Some(false) = la comprobación falló; None = no comprobable.
     pub verified: Option<bool>,
     pub detail: Option<String>,
+    /// v0.8: avance medido [hecho, total] (p. ej. 2 de 3 pasos de una rutina).
+    #[serde(default)]
+    pub progress: Option<[usize; 2]>,
 }
 
 /// ¿El texto afirma haber hecho algo? (para detectar respuestas que «fingen»).

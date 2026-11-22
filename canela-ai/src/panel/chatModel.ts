@@ -299,6 +299,8 @@ export interface PlanSummary {
   done: string[];
   pending: string[];
   errors: string[];
+  /** v0.8: hecho, pero sin evidencia suficiente para confirmarlo. */
+  unverified: string[];
 }
 
 /**
@@ -306,7 +308,12 @@ export interface PlanSummary {
  * lo que registró el backend.
  */
 export function planReport(steps: PlanStep[]): PlanSummary {
-  const out: PlanSummary = { done: [], pending: [], errors: [] };
+  const out: PlanSummary = {
+    done: [],
+    pending: [],
+    errors: [],
+    unverified: [],
+  };
   for (const s of steps) {
     const who = `Paso ${s.index} · ${s.name}`;
     const v = s.verdict;
@@ -329,13 +336,17 @@ export function planReport(steps: PlanStep[]): PlanSummary {
       const why = [it.problem, it.fix && `Cómo arreglarlo: ${it.fix}`]
         .filter(Boolean)
         .join(" ");
-      if (it.status === "fallido")
+      if (it.status === "fallido" || it.status === "parcial")
         out.errors.push(`${who}: ${it.what} — ${why}`);
       else if (it.status === "no_intentado")
         out.pending.push(`${who}: ${it.what} — ${why}`);
+      else if (it.status === "sin_verificar" || it.status === "no_verificable")
+        out.unverified.push(`${who}: ${it.what} — ${why}`);
     }
     if (
-      (s.status === "hecho" || s.status === "incompleto") &&
+      (s.status === "hecho" ||
+        s.status === "incompleto" ||
+        s.status === "sin_verificar") &&
       !s.actions.some((a) => a.status === "ok")
     )
       out.done.push(`${who}: ${s.task}`);
@@ -353,6 +364,7 @@ export const PLAN_ICON: Record<PlanStep["status"], string> = {
   pendiente: "○",
   en_curso: "…",
   hecho: "✓",
+  sin_verificar: "?",
   incompleto: "◐",
   no_logrado: "✕",
   error: "✕",
@@ -360,22 +372,32 @@ export const PLAN_ICON: Record<PlanStep["status"], string> = {
 };
 
 /** v0.8: cómo mostrar el resultado comprobado de una respuesta. */
+const VERDICT_TITLE: Record<Verdict["status"], string> = {
+  completo: "Resultado: completo y verificado ✓",
+  parcial: "Resultado: parcial ◐",
+  no_logrado: "Resultado: no logrado ✕",
+  no_verificable: "Resultado: hecho, sin poder verificarlo todo ?",
+  sin_comprobar: "",
+};
+
+const ITEM_ICON: Record<Verdict["items"][number]["status"], string> = {
+  cumplido: "✓",
+  sin_verificar: "?",
+  no_verificable: "?",
+  parcial: "◐",
+  fallido: "✕",
+  no_intentado: "○",
+};
+
 export function verdictView(v: Verdict | undefined | null): {
   title: string;
   lines: { icon: string; text: string; fix?: string }[];
 } | null {
   if (!v || v.status === "sin_comprobar" || v.items.length === 0) return null;
-  const title =
-    v.status === "completo"
-      ? `Resultado: completo ✓ — ${v.summary}`
-      : v.status === "parcial"
-        ? `Resultado: parcial ◐ — ${v.summary}`
-        : `Resultado: no logrado ✕ — ${v.summary}`;
   return {
-    title,
+    title: `${VERDICT_TITLE[v.status]} — ${v.summary}`,
     lines: v.items.map((it) => ({
-      icon:
-        it.status === "cumplido" ? "✓" : it.status === "fallido" ? "✕" : "○",
+      icon: ITEM_ICON[it.status] ?? "○",
       text:
         it.status === "cumplido"
           ? `${it.what}${it.evidence ? ` — ${it.evidence}` : ""}`
