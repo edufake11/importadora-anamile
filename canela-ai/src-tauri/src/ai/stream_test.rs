@@ -2111,7 +2111,7 @@ async fn code_checks_run_for_real_and_decide_the_result() {
             ("200 OK", ollama_tool(m, "comprobar_codigo", args)),
             ("200 OK", ollama_final(m, "Listo, ya lo comprobé.")),
         ];
-        let (url, _) = serve(responses).await;
+        let (url, bodies) = serve(responses).await;
         let base = url.trim_end_matches("/v1/messages").to_string();
         let db = Arc::new(Db::open_in_memory().unwrap());
         let evs = run_collect(
@@ -2120,7 +2120,9 @@ async fn code_checks_run_for_real_and_decide_the_result() {
         )
         .await;
         let v = verdict_of(&evs);
-        assert_eq!(v.status, expected, "{content}: {v:?}");
+        // Si falla, se muestra lo que respondió la comprobación (diagnóstico).
+        let sent = bodies.lock().unwrap().get(1).cloned().unwrap_or_default();
+        assert_eq!(v.status, expected, "{content}: {v:?}\nResultado de la herramienta: {sent}");
         assert!(evs
             .iter()
             .any(|e| matches!(e, StreamEvent::ConfirmRequest { details, .. } if details.contains("node --check app.js"))));

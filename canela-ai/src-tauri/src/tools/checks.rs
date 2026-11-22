@@ -81,8 +81,41 @@ fn need(names: &[&str], what: &str) -> Result<PathBuf, String> {
     which(names).ok_or_else(|| format!("No encontré {what} instalado en este equipo; no puedo hacer esta comprobación."))
 }
 
+/// En Windows, las rutas normalizadas tienen la forma `\\?\C:\…`, que
+/// Node, npm y cmd.exe no aceptan bien: se pasa la ruta normal `C:\…`.
+pub fn plain(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// PATH del proceso: la carpeta del programa y la de Node van primero, para
+/// que las pruebas que lanza npm encuentren `node` aunque el PATH heredado
+/// no lo tenga.
+fn child_path(program: &Path) -> Option<std::ffi::OsString> {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    for p in [
+        program.parent().map(Path::to_path_buf),
+        which(&["node"]).and_then(|n| n.parent().map(Path::to_path_buf)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !p.as_os_str().is_empty() && !parts.contains(&p) {
+            parts.push(p);
+        }
+    }
+    if let Some(old) = std::env::var_os("PATH") {
+        parts.extend(std::env::split_paths(&old));
+    }
+    std::env::join_paths(parts).ok()
+}
+
 /// Decide el comando (o la revisión interna) para una comprobación.
 pub fn plan(kind: Kind, target: &Path) -> Result<CheckCmd, String> {
+    let target = &plain(target);
     let secs = |s| Duration::from_secs(s);
     match kind {
         Kind::Sintaxis => {
@@ -270,6 +303,9 @@ pub async fn run(cmd: &CheckCmd) -> Result<Outcome, String> {
             c.env_remove(&k);
         }
     }
+    if let Some(path) = child_path(&cmd.program) {
+        c.env("PATH", path);
+    }
     #[cfg(windows)]
     {
         // Sin ventana de consola.
@@ -371,6 +407,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn verbatim_windows_paths_become_plain() {
+        assert_eq!(plain(Path::new(r"\\?\C:\Users\x\app.js")), PathBuf::from(r"C:\Users\x\app.js"));
+        // Rutas de red (\\?\UNC\…) y normales no se tocan.
+        assert_eq!(plain(Path::new(r"\\?\UNC\srv\x")), PathBuf::from(r"\\?\UNC\srv\x"));
+        assert_eq!(plain(Path::new("/home/x/app.js")), PathBuf::from("/home/x/app.js"));
+    }
+
     #[tokio::test]
     async fn internal_syntax_check_runs_no_process() {
         let d = dir("internal");
@@ -448,7 +492,11 @@ mod tests {
         std::env::set_var("CANELA_FAKE_API_KEY", "sk-no-debe-verse");
         let o = run(&plan(Kind::Pruebas, &d).unwrap()).await.unwrap();
         std::env::remove_var("CANELA_FAKE_API_KEY");
-        assert!(o.ok, "{o:?}");
+        assert!(
+            o.ok,
+            "{o:?}\nPATH del proceso: {:?}",
+            child_path(&plan(Kind::Pruebas, &d).unwrap().program)
+        );
         assert!(o.output.contains("1 prueba ok") && !o.output.contains("VIO LA CLAVE"));
         // Límite de tiempo: el proceso de las pruebas (hijo de npm) también termina.
         let pidfile = d.join("pid.txt");
