@@ -439,6 +439,7 @@ body.lock:has(.bnav)::after{display:none}
 .hero-trust{display:none}.hero-photo{min-height:190px}#novedades{padding-top:34px}#novedades .section-head{margin-bottom:18px}}
 /* /portada compacta en celular */
 
+
 /* agotados */
 .pill.out{top:auto;bottom:12px;background:#6e5a64}
 .product.sold .ph img{filter:grayscale(.6);opacity:.7}
